@@ -4,6 +4,8 @@ services:
     runtime: nvidia
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_USE_RESPONSES=${OPENAI_USE_RESPONSES:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - OPENAI_TRACING_KEY=${OPENAI_TRACING_KEY:-}
       - NVIDIA_VISIBLE_DEVICES=all

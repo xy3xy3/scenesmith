@@ -48,7 +48,7 @@ from scenesmith.agent_utils.scoring import (
 from scenesmith.agent_utils.turn_trimming_session import TurnTrimmingSession
 from scenesmith.prompts import prompt_registry
 from scenesmith.utils.logging import BaseLogger
-from scenesmith.utils.openai import encode_image_to_base64
+from scenesmith.utils.openai import create_openai_run_config, encode_image_to_base64
 
 console_logger = logging.getLogger(__name__)
 
@@ -383,9 +383,12 @@ class BaseStatefulAgent(ABC):
         """
         intra_cfg = self.cfg.session_memory.intra_turn_observation_stripping
         if intra_cfg.enabled:
-            return RunConfig(call_model_input_filter=IntraTurnImageFilter(cfg=self.cfg))
+            return create_openai_run_config(
+                self.cfg,
+                call_model_input_filter=IntraTurnImageFilter(cfg=self.cfg),
+            )
 
-        return RunConfig()
+        return create_openai_run_config(self.cfg)
 
     def _should_reset_to_checkpoint(
         self,

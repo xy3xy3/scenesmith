@@ -24,6 +24,7 @@ from openai.types.shared import Reasoning
 
 from scenesmith.prompts import prompt_registry
 from scenesmith.prompts.registry import SessionMemoryPrompts
+from scenesmith.utils.openai import create_async_openai_client, get_openai_use_responses
 
 console_logger = logging.getLogger(__name__)
 
@@ -382,7 +383,7 @@ class TurnTrimmingSession:
     def _get_openai_client(self) -> AsyncOpenAI:
         """Get or create the OpenAI client for summarization."""
         if self._openai_client is None:
-            self._openai_client = AsyncOpenAI()
+            self._openai_client = create_async_openai_client(self._cfg)
         return self._openai_client
 
     async def _summarize_turn(self, turn: Turn, turn_number: int) -> str:
@@ -424,13 +425,30 @@ class TurnTrimmingSession:
         )
 
         try:
-            response = await self._get_openai_client().responses.create(
-                model=self._summarization_model,
-                instructions=summarization_prompt,
-                input=text,
-                reasoning=reasoning,
-            )
-            summary = response.output_text or "[Summary generation failed]"
+            if get_openai_use_responses(self._cfg):
+                response = await self._get_openai_client().responses.create(
+                    model=self._summarization_model,
+                    instructions=summarization_prompt,
+                    input=text,
+                    reasoning=reasoning,
+                )
+                summary = response.output_text or "[Summary generation failed]"
+            else:
+                response = await self._get_openai_client().chat.completions.create(
+                    model=self._summarization_model,
+                    messages=[
+                        {"role": "system", "content": summarization_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    reasoning_effort=(
+                        self._summarization_thinking
+                        if self._summarization_thinking != "none"
+                        else None
+                    ),
+                )
+                summary = (
+                    response.choices[0].message.content or "[Summary generation failed]"
+                )
         except Exception as e:
             console_logger.error(f"Summarization failed: {e}")
             # Fallback: just strip images without summarizing.

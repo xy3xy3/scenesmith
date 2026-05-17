@@ -567,6 +567,46 @@ class TestBlenderServer(unittest.TestCase):
         status = server.get_process_status()
         self.assertEqual(status, "Exited with code 0")
 
+    @patch("scenesmith.agent_utils.blender.server_manager.time.sleep")
+    @patch("scenesmith.agent_utils.blender.server_manager.requests.get")
+    def test_wait_until_ready_retries_after_non_200(self, mock_get, mock_sleep):
+        """Test readiness probe retries when server returns a transient non-200."""
+        server = BlenderServer(host="127.0.0.1", port=8080)
+        server._running = True
+        server._actual_port = 8080
+        server._server_process = Mock()
+        server._server_process.poll.return_value = None
+
+        first_response = Mock()
+        first_response.status_code = 503
+        second_response = Mock()
+        second_response.status_code = 200
+        mock_get.side_effect = [first_response, second_response]
+
+        server.wait_until_ready(timeout=5.0, poll_interval=0.25)
+
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(0.25)
+
+    def test_wait_until_ready_reports_early_process_exit_with_log_tail(self):
+        """Test readiness failure includes exit status and log snippet."""
+        log_file = self.temp_dir / "blender.log"
+        log_file.write_text("startup failed\ntraceback line\n")
+
+        server = BlenderServer(host="127.0.0.1", port=8080, log_file=log_file)
+        server._running = True
+        server._actual_port = 8080
+        server._server_process = Mock()
+        server._server_process.poll.return_value = 1
+
+        with self.assertRaises(RuntimeError) as context:
+            server.wait_until_ready(timeout=1.0, poll_interval=0.01)
+
+        message = str(context.exception)
+        self.assertIn("exited before becoming ready", message)
+        self.assertIn("Exited with code 1", message)
+        self.assertIn("startup failed", message)
+
 
 class TestPortUtilities(unittest.TestCase):
     """Test cases for port availability utility functions."""

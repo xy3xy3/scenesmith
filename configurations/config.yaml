@@ -8,6 +8,10 @@ openai:
   #   "flex"     - Lower cost, slower processing (Batch API rates)
   #   "priority" - Lower latency, premium pricing
   service_tier: "default"
+  # Optional custom OpenAI-compatible endpoint (for proxies / self-hosted gateways).
+  base_url: ${oc.env:OPENAI_BASE_URL,null}
+  # Compatibility toggle for providers that do not fully implement the Responses API.
+  use_responses: ${oc.decode:${oc.env:OPENAI_USE_RESPONSES,true}}
 
 defaults:
   - experiment: indoor_scene_generation # Experiment yaml file name in configurations/experiment folder

@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf
 from scenesmith.agent_utils.articulated_retrieval_server import (
     ArticulatedRetrievalServer,
 )
+from scenesmith.agent_utils.articulated_retrieval_server.config import ArticulatedConfig
 from scenesmith.agent_utils.geometry_generation_server import GeometryGenerationServer
 from scenesmith.agent_utils.house import HouseLayout, HouseScene, RoomGeometry
 from scenesmith.agent_utils.hssd_retrieval_server import HssdRetrievalServer
@@ -43,7 +44,7 @@ from scenesmith.manipuland_agents.stateful_manipuland_agent import (
 )
 from scenesmith.utils.logging import ConsoleLogger, FileLoggingContext
 from scenesmith.utils.parallel import run_parallel_isolated
-from scenesmith.utils.print_utils import bold_green, yellow
+from scenesmith.utils.print_utils import bold_green
 from scenesmith.wall_agents.stateful_wall_agent import StatefulWallAgent
 
 console_logger = logging.getLogger(__name__)
@@ -95,6 +96,39 @@ def _get_retrieval_gpu_device() -> str | None:
             return f"cuda:{gpu_count - 1}"
     except ImportError:
         pass
+    return None
+
+
+def _select_articulated_server_config(
+    cfg: DictConfig,
+) -> tuple[str, DictConfig] | None:
+    """Pick an articulated config that is both enabled and has usable sources.
+
+    The articulated retrieval server is shared across multiple agent types, but
+    each agent owns its own articulated source configuration. We should only
+    start the shared server when at least one agent both:
+    1. Enables the articulated retrieval strategy, and
+    2. Has at least one articulated source enabled and available.
+
+    Returns:
+        Tuple of (agent_name, articulated_config) for the first usable agent
+        configuration, or None if articulated retrieval should be skipped.
+    """
+    candidates = [
+        ("furniture", cfg.furniture_agent),
+        ("manipuland", cfg.manipuland_agent),
+        ("wall", cfg.wall_agent),
+        ("ceiling", cfg.ceiling_agent),
+    ]
+
+    for agent_name, agent_cfg in candidates:
+        if not agent_cfg.asset_manager.router.strategies.articulated.enabled:
+            continue
+
+        articulated_cfg = agent_cfg.asset_manager.articulated
+        if ArticulatedConfig.from_config(articulated_cfg).has_enabled_sources:
+            return agent_name, articulated_cfg
+
     return None
 
 
@@ -1482,39 +1516,26 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
 
     def _start_articulated_server(self) -> None:
         """Start articulated retrieval server (if articulated strategy is enabled)."""
-        # Check if articulated strategy is enabled for any agent.
-        furniture_articulated_enabled = (
-            self.cfg.furniture_agent.asset_manager.router.strategies.articulated.enabled
-        )
-        manipuland_articulated_enabled = (
-            self.cfg.manipuland_agent.asset_manager.router.strategies.articulated.enabled
-        )
-        wall_articulated_enabled = (
-            self.cfg.wall_agent.asset_manager.router.strategies.articulated.enabled
-        )
-        ceiling_articulated_enabled = (
-            self.cfg.ceiling_agent.asset_manager.router.strategies.articulated.enabled
-        )
-
-        if not (
-            furniture_articulated_enabled
-            or manipuland_articulated_enabled
-            or wall_articulated_enabled
-            or ceiling_articulated_enabled
-        ):
+        selected_config = _select_articulated_server_config(self.cfg)
+        if selected_config is None:
+            console_logger.info(
+                "Skipping articulated retrieval server: no agent has both "
+                "articulated strategy enabled and at least one usable articulated "
+                "source configured"
+            )
             return
+
+        selected_agent_name, articulated_config = selected_config
 
         # Get server configuration from experiment config.
         server_config = self.cfg.experiment.articulated_retrieval_server
-
-        # Get articulated data configuration from furniture agent config.
-        articulated_config = self.cfg.furniture_agent.asset_manager.articulated
 
         retrieval_device = _get_retrieval_gpu_device()
         console_logger.info(
             f"Starting articulated retrieval server on "
             f"{server_config.host}:{server_config.port} "
-            f"(CLIP device: {retrieval_device or 'default'})"
+            f"(CLIP device: {retrieval_device or 'default'}, "
+            f"config source: {selected_agent_name})"
         )
 
         self.articulated_server = ArticulatedRetrievalServer(
@@ -2004,7 +2025,7 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
             console_logger.info("=" * 60)
             console_logger.info(bold_green("ALL SCENES COMPLETED!"))
             console_logger.info("=" * 60)
-            console_logger.info(yellow("Press Ctrl+C to exit the script."))
+            console_logger.info("Cleaning up background services...")
             console_logger.info("=" * 60)
 
         finally:

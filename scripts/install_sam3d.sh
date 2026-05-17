@@ -9,34 +9,89 @@ set -euo pipefail
 SAM3D_OBJECTS_COMMIT="${SAM3D_OBJECTS_COMMIT:-81a82373a3a7f4cbb00bd5b32aaf6b4d0f659ddd}"
 SAM3_COMMIT="${SAM3_COMMIT:-11dec2936de97f2857c1f76b66d982d5a001155d}"
 
+REPO_ROOT=$(pwd)
+
+# Prefer the project's Python environment when available so header detection and
+# package installs target the same interpreter.
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+    PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+elif [ -x "${REPO_ROOT}/.venv/bin/python" ]; then
+    PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN=$(command -v python)
+else
+    PYTHON_BIN=$(command -v python3)
+fi
+
+UV_PIP=(uv pip install --python "$PYTHON_BIN")
+
 echo "========================================="
 echo "SAM3D Installation Script"
 echo "========================================="
 echo ""
+echo "Using Python: $PYTHON_BIN"
+echo ""
+
+TOTAL_MEM_GB=$(awk '/MemTotal/ {printf "%d", $2 / 1024 / 1024}' /proc/meminfo)
+CPU_COUNT=$(nproc)
+IS_WSL=false
+if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+    IS_WSL=true
+fi
 
 # Check for Python development headers (required for nvdiffrast JIT compilation).
 echo "Step 0: Checking system dependencies..."
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PYTHON_HEADER="/usr/include/x86_64-linux-gnu/python${PYTHON_VERSION}/pyconfig.h"
+PYTHON_VERSION=$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PYTHON_INCLUDE_DIR=$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_config_var("INCLUDEPY") or "")')
+PYTHON_HEADER="${PYTHON_INCLUDE_DIR}/pyconfig.h"
 
 if [ ! -f "$PYTHON_HEADER" ]; then
-    echo "⚠️  Python development headers not found at $PYTHON_HEADER"
+    # Fall back to common distro include locations when Python reports an empty or
+    # incomplete include path.
+    for candidate in \
+        "/usr/include/x86_64-linux-gnu/python${PYTHON_VERSION}/pyconfig.h" \
+        "/usr/include/python${PYTHON_VERSION}/pyconfig.h"
+    do
+        if [ -f "$candidate" ]; then
+            PYTHON_HEADER="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -f "$PYTHON_HEADER" ]; then
+    echo "✓ Python development headers found at $PYTHON_HEADER"
+else
+    echo "⚠️  Python development headers not found for Python ${PYTHON_VERSION}"
     echo "   These are required for nvdiffrast JIT compilation (texture baking)."
     echo ""
-    read -p "Install libpython${PYTHON_VERSION}-dev? (requires sudo) [Y/n]: " -n 1 -r
-    echo ""
 
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        echo "Installing Python development headers..."
-        sudo apt-get update && sudo apt-get install -y libpython${PYTHON_VERSION}-dev
-        echo "✓ Installed libpython${PYTHON_VERSION}-dev"
+    PYTHON_DEV_PACKAGE=""
+    for package in "python${PYTHON_VERSION}-dev" "libpython${PYTHON_VERSION}-dev"; do
+        if apt-cache show "$package" >/dev/null 2>&1; then
+            PYTHON_DEV_PACKAGE="$package"
+            break
+        fi
+    done
+
+    if [ -n "$PYTHON_DEV_PACKAGE" ]; then
+        read -p "Install ${PYTHON_DEV_PACKAGE}? (requires sudo) [Y/n]: " -n 1 -r
+        echo ""
+
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo "Installing Python development headers..."
+            sudo apt-get update && sudo apt-get install -y "$PYTHON_DEV_PACKAGE"
+            echo "✓ Installed $PYTHON_DEV_PACKAGE"
+        else
+            echo "⚠️  Skipping. nvdiffrast texture baking may fail without Python headers."
+            echo "   Install manually: sudo apt-get install $PYTHON_DEV_PACKAGE"
+        fi
     else
-        echo "⚠️  Skipping. nvdiffrast texture baking may fail without Python headers."
-        echo "   Install manually: sudo apt-get install libpython${PYTHON_VERSION}-dev"
+        echo "⚠️  No matching apt package found for Python ${PYTHON_VERSION}."
+        echo "   If you're using a uv-managed Python, recreate the venv with a bundled interpreter"
+        echo "   or install a matching python-dev package from an external repository."
     fi
-else
-    echo "✓ Python development headers found"
 fi
 
 echo ""
@@ -44,14 +99,35 @@ echo ""
 # Auto-detect and validate CUDA installation.
 echo "Step 1: Detecting CUDA installation..."
 
-# First check if nvcc is in PATH.
-if command -v nvcc &> /dev/null; then
+TORCH_CUDA_VERSION=$("$PYTHON_BIN" - <<'PYEOF'
+try:
+    import torch
+    print(torch.version.cuda or "")
+except Exception:
+    print("")
+PYEOF
+)
+
+FOUND_IN_PATH=false
+PREFERRED_CUDA_HOME=""
+
+if [ -n "$TORCH_CUDA_VERSION" ] && [ -x "/usr/local/cuda-${TORCH_CUDA_VERSION}/bin/nvcc" ]; then
+    PREFERRED_CUDA_HOME="/usr/local/cuda-${TORCH_CUDA_VERSION}"
+elif [ -n "$TORCH_CUDA_VERSION" ] && [ -x "/usr/local/cuda-${TORCH_CUDA_VERSION%.*}/bin/nvcc" ]; then
+    PREFERRED_CUDA_HOME="/usr/local/cuda-${TORCH_CUDA_VERSION%.*}"
+fi
+
+if [ -n "$PREFERRED_CUDA_HOME" ]; then
+    NVCC_PATH="$PREFERRED_CUDA_HOME/bin/nvcc"
+    export PATH="$PREFERRED_CUDA_HOME/bin:$PATH"
+    FOUND_IN_PATH=true
+    echo "✓ Selected CUDA toolkit matching PyTorch at $PREFERRED_CUDA_HOME"
+elif command -v nvcc &> /dev/null; then
     NVCC_PATH=$(which nvcc)
     FOUND_IN_PATH=true
 else
     # Check common CUDA installation locations.
-    FOUND_IN_PATH=false
-    for cuda_path in /usr/local/cuda-12.4 /usr/local/cuda-12.* /usr/local/cuda ~/miniforge3 ~/miniconda3 ~/anaconda3; do
+    for cuda_path in /usr/local/cuda-12.4 /usr/local/cuda-12 /usr/local/cuda /usr/local/cuda-13.0 /usr/local/cuda-13 ~/miniforge3 ~/miniconda3 ~/anaconda3; do
         if [ -f "$cuda_path/bin/nvcc" ]; then
             echo "✓ Found CUDA installation at $cuda_path"
             NVCC_PATH="$cuda_path/bin/nvcc"
@@ -66,14 +142,48 @@ if [ "$FOUND_IN_PATH" = true ]; then
     CUDA_VERSION=$(nvcc --version | grep -oP "release \K[0-9.]+")
     echo "✓ Found CUDA $CUDA_VERSION"
 
-    # Verify CUDA 12.x.
-    if [[ ! "$CUDA_VERSION" =~ ^12\. ]]; then
-        echo "✗ Error: CUDA $CUDA_VERSION found, but SAM3D requires CUDA 12.x"
-        echo ""
-        echo "Please install CUDA 12.x:"
-        echo "  - System-wide: https://developer.nvidia.com/cuda-downloads"
-        echo "  - Conda: conda install cuda-toolkit=12.4 -c nvidia"
-        exit 1
+    if [ -n "$TORCH_CUDA_VERSION" ]; then
+        echo "✓ PyTorch expects CUDA $TORCH_CUDA_VERSION"
+        TORCH_VERSION=$("$PYTHON_BIN" -c 'import torch; print(torch.__version__)')
+
+        CUDA_MAJOR=${CUDA_VERSION%%.*}
+        TORCH_CUDA_MAJOR=${TORCH_CUDA_VERSION%%.*}
+
+        if [ "$CUDA_MAJOR" != "$TORCH_CUDA_MAJOR" ]; then
+            echo "✗ Error: nvcc reports CUDA $CUDA_VERSION, but PyTorch was built for CUDA $TORCH_CUDA_VERSION"
+            echo ""
+            echo "Building CUDA extensions against a different major CUDA runtime can fail or"
+            echo "produce incorrect behavior."
+            echo ""
+            echo "Recommended fixes:"
+            echo "  1. Use a CUDA $TORCH_CUDA_VERSION toolkit (best for this environment)"
+            echo "  2. Recreate the Python env with a PyTorch build that matches your installed CUDA toolkit"
+            echo ""
+            TORCH_CUDA_TAG=$(printf '%s' "$TORCH_CUDA_VERSION" | tr -d .)
+            echo "For this repo today, using CUDA 12.4 is the safest path because the current env"
+            echo "has torch ${TORCH_VERSION} built for cu${TORCH_CUDA_TAG}."
+            exit 1
+        fi
+
+        if [ "$CUDA_VERSION" != "$TORCH_CUDA_VERSION" ]; then
+            echo "⚠️  Toolkit version ($CUDA_VERSION) differs from PyTorch CUDA version ($TORCH_CUDA_VERSION)."
+            echo "   Same-major combinations often work, but this is less tested than an exact match."
+        fi
+    else
+        echo "⚠️  Could not detect PyTorch CUDA version from $PYTHON_BIN."
+        if [[ ! "$CUDA_VERSION" =~ ^12\. && ! "$CUDA_VERSION" =~ ^13\. ]]; then
+            echo "✗ Error: Unsupported CUDA toolkit version $CUDA_VERSION"
+            echo ""
+            echo "Please install CUDA 12.x or a CUDA 13.x environment that matches your PyTorch build."
+            exit 1
+        fi
+    fi
+
+    if [[ "$CUDA_VERSION" =~ ^13\. ]]; then
+        export NVCC_FLAGS="-static-global-template-stub=false${NVCC_FLAGS:+ $NVCC_FLAGS}"
+        echo "⚠️  CUDA 13 detected. Applying PyTorch3D NVCC workaround:"
+        echo "   NVCC_FLAGS=-static-global-template-stub=false"
+        echo "   Note: the SAM3D dependency stack is not fully validated on CUDA 13."
     fi
 
     # Auto-detect CUDA_HOME from nvcc location.
@@ -154,6 +264,34 @@ fi
 echo ""
 echo "Step 2: Cloning repositories..."
 
+# Limit parallel compilation for heavy CUDA/C++ extensions. PyTorch3D and
+# Kaolin can otherwise spawn enough compiler processes to OOM WSL2 even on
+# machines with many CPU cores.
+if [ -n "${SAM3D_BUILD_JOBS:-}" ]; then
+    BUILD_JOBS="$SAM3D_BUILD_JOBS"
+else
+    BUILD_JOBS=$((TOTAL_MEM_GB / 6))
+    if [ "$BUILD_JOBS" -lt 1 ]; then
+        BUILD_JOBS=1
+    fi
+    if [ "$BUILD_JOBS" -gt "$CPU_COUNT" ]; then
+        BUILD_JOBS="$CPU_COUNT"
+    fi
+    if [ "$IS_WSL" = true ] && [ "$BUILD_JOBS" -gt 4 ]; then
+        BUILD_JOBS=4
+    elif [ "$IS_WSL" = false ] && [ "$BUILD_JOBS" -gt 8 ]; then
+        BUILD_JOBS=8
+    fi
+fi
+
+export MAX_JOBS="$BUILD_JOBS"
+export CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS"
+export MAKEFLAGS="-j$BUILD_JOBS"
+echo "✓ Limiting extension builds to $BUILD_JOBS parallel jobs"
+if [ "$IS_WSL" = true ]; then
+    echo "  WSL detected; conservative build parallelism helps avoid OOM kills"
+fi
+
 # Create external directory if it doesn't exist.
 mkdir -p external
 cd external
@@ -189,7 +327,7 @@ cd SAM3
 # Install SAM3 with notebooks extras (includes inference dependencies).
 # This includes: decord, pycocotools, opencv-python, einops, scikit-image, scikit-learn.
 echo "Installing SAM3 with inference dependencies..."
-uv pip install -e ".[notebooks]"
+"${UV_PIP[@]}" -e ".[notebooks]"
 cd ..
 echo "✓ SAM3 installed"
 
@@ -205,17 +343,17 @@ cd sam-3d-objects
 # Filter out packages that conflict with our environment or aren't needed.
 echo "Installing sam-3d-objects core dependencies..."
 grep -v -E "^(torch|torchvision|torchaudio|cuda-python|nvidia-|MoGe|flash_attn|bpy|wandb|jupyter|tensorboard|Flask|webdataset|sagemaker)" requirements.txt > /tmp/filtered_requirements.txt
-uv pip install -r /tmp/filtered_requirements.txt
+"${UV_PIP[@]}" -r /tmp/filtered_requirements.txt
 
 # Now install CUDA-dependent packages with --no-build-isolation.
 echo ""
 echo "Installing gsplat (requires PyTorch at build time)..."
-uv pip install --no-build-isolation \
+"${UV_PIP[@]}" --no-build-isolation \
     "git+https://github.com/nerfstudio-project/gsplat.git@2323de5905d5e90e035f792fe65bad0fedd413e7"
 
 echo ""
 echo "Installing nvdiffrast (requires CUDA)..."
-uv pip install --no-build-isolation \
+"${UV_PIP[@]}" --no-build-isolation \
     "git+https://github.com/NVlabs/nvdiffrast.git"
 
 echo ""
@@ -223,7 +361,7 @@ echo "Pre-compiling nvdiffrast CUDA extensions..."
 echo "(This triggers PyTorch JIT compilation - may take 1-2 minutes)"
 
 # Pre-compilation script - ensures nvdiffrast is ready to use.
-python3 << 'PYEOF'
+if "$PYTHON_BIN" << 'PYEOF'
 import sys
 import os
 
@@ -258,8 +396,7 @@ except Exception as e:
     print("NOTE: nvdiffrast will compile on first SAM3D use (~2-5 min delay)")
     sys.exit(0)  # Non-fatal
 PYEOF
-
-if [ $? -eq 0 ]; then
+then
     echo "✓ nvdiffrast pre-compiled successfully"
 else
     echo "⚠️  nvdiffrast pre-compilation skipped (will compile on first use)"
@@ -267,23 +404,23 @@ fi
 
 echo ""
 echo "Installing kaolin 0.17.0 (requires CUDA, building from source)..."
-uv pip install --no-build-isolation \
+"${UV_PIP[@]}" --no-build-isolation \
     "git+https://github.com/NVIDIAGameWorks/kaolin.git@v0.17.0"
 
 echo ""
 echo "Installing pytorch3d from source..."
-uv pip install --no-build-isolation \
+"${UV_PIP[@]}" --no-build-isolation \
     "git+https://github.com/facebookresearch/pytorch3d.git"
 
 # Install inference-specific requirements.
 echo ""
 echo "Installing inference dependencies..."
-uv pip install seaborn==0.13.2 gradio==5.49.0 imageio utils3d
+"${UV_PIP[@]}" seaborn==0.13.2 gradio==5.49.0 imageio utils3d
 
 # Install MoGe (depth model used by SAM 3D Objects).
 echo ""
 echo "Installing MoGe depth model..."
-uv pip install "git+https://github.com/microsoft/MoGe.git@a8c37341bc0325ca99b9d57981cc3bb2bd3e255b"
+"${UV_PIP[@]}" "git+https://github.com/microsoft/MoGe.git@a8c37341bc0325ca99b9d57981cc3bb2bd3e255b"
 
 cd ..
 
@@ -293,46 +430,77 @@ echo "✓ All dependencies installed"
 echo ""
 echo "Step 5: Downloading model checkpoints..."
 echo ""
-echo "⚠️  Important: HuggingFace authentication required!"
-echo "    1. Request access: https://huggingface.co/facebook/sam3"
-echo "    2. Request access: https://huggingface.co/facebook/sam-3d-objects"
-echo "    3. Login: hf auth login (or huggingface-cli login)"
-echo ""
-read -p "Have you requested access and logged in? [y/N]: " -n 1 -r
-echo ""
-
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Please complete authentication steps above and re-run the script."
-    exit 1
-fi
 
 # Create checkpoints directory.
 mkdir -p checkpoints
 
-# Download SAM3 checkpoint.
-if [ ! -f "checkpoints/sam3.pt" ]; then
-    echo "Downloading SAM3 checkpoint (sam3.pt)..."
-    hf download facebook/sam3 sam3.pt --local-dir checkpoints
-    echo "✓ Downloaded sam3.pt"
-else
-    echo "✓ sam3.pt already exists"
+# Choose download source.
+CHECKPOINT_SOURCE=${SCENESMITH_CHECKPOINT_SOURCE:-}
+if [ -z "$CHECKPOINT_SOURCE" ]; then
+    echo "Choose checkpoint download source:"
+    echo "  1. HuggingFace (official source, requires access approval + login)"
+    echo "  2. ModelScope (domestic mirror, no HuggingFace CLI needed)"
+    read -p "Select source [1/2, default: 1]: " CHECKPOINT_SOURCE_CHOICE
+    case "${CHECKPOINT_SOURCE_CHOICE:-1}" in
+        2) CHECKPOINT_SOURCE="modelscope" ;;
+        *) CHECKPOINT_SOURCE="huggingface" ;;
+    esac
 fi
 
-# Download SAM 3D Objects checkpoints (entire checkpoints folder).
-if [ ! -f "checkpoints/.sam3d_objects_downloaded" ]; then
-    echo "Downloading SAM 3D Objects checkpoints..."
-    hf download facebook/sam-3d-objects \
-        --repo-type model \
-        --local-dir checkpoints/sam-3d-objects-download \
-        --include "checkpoints/*"
+if [ "$CHECKPOINT_SOURCE" = "huggingface" ]; then
+    echo ""
+    echo "⚠️  Important: HuggingFace authentication required!"
+    echo "    1. Request access: https://huggingface.co/facebook/sam3"
+    echo "    2. Request access: https://huggingface.co/facebook/sam-3d-objects"
+    echo "    3. Login: hf auth login (or huggingface-cli login)"
+    echo ""
+    read -p "Have you requested access and logged in? [y/N]: " -n 1 -r
+    echo ""
 
-    # Move checkpoints to correct location.
-    mv checkpoints/sam-3d-objects-download/checkpoints/* checkpoints/
-    rm -rf checkpoints/sam-3d-objects-download
-    touch checkpoints/.sam3d_objects_downloaded
-    echo "✓ Downloaded SAM 3D Objects checkpoints"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Please complete authentication steps above and re-run the script."
+        exit 1
+    fi
+
+    # Download SAM3 checkpoint.
+    if [ ! -f "checkpoints/sam3.pt" ]; then
+        echo "Downloading SAM3 checkpoint (sam3.pt) from HuggingFace..."
+        hf download facebook/sam3 sam3.pt --local-dir checkpoints
+        echo "✓ Downloaded sam3.pt"
+    else
+        echo "✓ sam3.pt already exists"
+    fi
+
+    # Download SAM 3D Objects checkpoints (entire checkpoints folder).
+    if [ ! -f "checkpoints/.sam3d_objects_downloaded" ]; then
+        echo "Downloading SAM 3D Objects checkpoints from HuggingFace..."
+        hf download facebook/sam-3d-objects \
+            --repo-type model \
+            --local-dir checkpoints/sam-3d-objects-download \
+            --include "checkpoints/*"
+
+        # Move checkpoints to correct location.
+        mv checkpoints/sam-3d-objects-download/checkpoints/* checkpoints/
+        rm -rf checkpoints/sam-3d-objects-download
+        touch checkpoints/.sam3d_objects_downloaded
+        echo "✓ Downloaded SAM 3D Objects checkpoints"
+    else
+        echo "✓ SAM 3D Objects checkpoints already exist"
+    fi
+elif [ "$CHECKPOINT_SOURCE" = "modelscope" ]; then
+    echo "Using ModelScope mirror for checkpoint download..."
+    echo "  SAM3: https://www.modelscope.cn/models/facebook/sam3/summary"
+    echo "  SAM 3D Objects: https://www.modelscope.cn/models/facebook/sam-3d-objects/summary"
+    echo ""
+    echo "Installing ModelScope client..."
+    "${UV_PIP[@]}" modelscope
+    echo "Downloading checkpoints from ModelScope with resume support..."
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/download_modelscope_checkpoints.py" \
+        --output-dir "$PWD/checkpoints"
 else
-    echo "✓ SAM 3D Objects checkpoints already exist"
+    echo "✗ Unknown checkpoint source: $CHECKPOINT_SOURCE"
+    echo "  Supported values: huggingface, modelscope"
+    exit 1
 fi
 
 cd ..

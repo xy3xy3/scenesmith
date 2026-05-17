@@ -119,6 +119,7 @@ class ScenePromptGenerator:
             system_prompt=system_prompt,
             user_input=f"TASK: {task_description}",
             output_type=ScenePromptGeneratorOutput,
+            cfg=self.cfg,
         )
 
         console_logger.info(

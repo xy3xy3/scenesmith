@@ -7,16 +7,17 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from google import genai
 from google.genai import types
 from omegaconf import DictConfig
-from openai import OpenAI
 from PIL import Image
 
 from scenesmith.prompts import PROMPTS_DATA_DIR
 from scenesmith.prompts.manager import PromptManager
 from scenesmith.prompts.registry import ImageGenerationPrompts
+from scenesmith.utils.openai import create_openai_client
 
 console_logger = logging.getLogger(__name__)
 
@@ -119,12 +120,18 @@ class BaseImageGenerator(ABC):
 class OpenAIImageGenerator(BaseImageGenerator):
     """Image generation using OpenAI gpt-image-1.5 via the Images API."""
 
-    def __init__(self, client: OpenAI | None = None, quality: str = "low"):
+    def __init__(
+        self,
+        client: Any | None = None,
+        quality: str = "low",
+        cfg: DictConfig | None = None,
+    ):
         """Initialize the generator.
 
         Args:
             client: Optional OpenAI client to reuse. If None, creates a new one.
             quality: Image quality. Options: "auto", "low", "medium", "high".
+            cfg: Optional config used to resolve a custom OpenAI-compatible base_url.
 
         Raises:
             ValueError: If OPENAI_API_KEY environment variable is not set.
@@ -134,7 +141,7 @@ class OpenAIImageGenerator(BaseImageGenerator):
                 "OPENAI_API_KEY environment variable is required for OpenAI image "
                 "generation. Set it with: export OPENAI_API_KEY='your-key'"
             )
-        self.client = client or OpenAI()
+        self.client = client or create_openai_client(cfg)
         self.prompt_manager = PromptManager(prompts_dir=PROMPTS_DATA_DIR)
         self.image_quality = quality
         self.model = "gpt-image-1.5"
@@ -592,7 +599,7 @@ def create_image_generator(backend: str, config: DictConfig) -> BaseImageGenerat
         ValueError: If unknown backend is specified.
     """
     if backend == "openai":
-        return OpenAIImageGenerator(quality=config.openai.quality)
+        return OpenAIImageGenerator(quality=config.openai.quality, cfg=config)
     elif backend == "gemini":
         return GeminiImageGenerator(
             aspect_ratio=config.gemini.aspect_ratio,

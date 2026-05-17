@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from scenesmith.prompts import RobotEvalPrompts, prompt_registry
 from scenesmith.robot_eval.dmd_scene import DMDScene
 from scenesmith.robot_eval.tools import create_state_tools, create_vision_tools
+from scenesmith.utils.openai import create_openai_run_config
 
 if TYPE_CHECKING:
     from scenesmith.agent_utils.blender.server_manager import BlenderServer
@@ -144,7 +145,10 @@ class PolicyInterfaceAgent:
         console_logger.info(f"Resolving task: {task_description}")
 
         result: RunResult = await Runner.run(
-            starting_agent=self.agent, input=task_description, max_turns=max_turns
+            starting_agent=self.agent,
+            input=task_description,
+            max_turns=max_turns,
+            run_config=create_openai_run_config(self.cfg),
         )
         output = result.final_output_as(PolicyInterfaceOutput)
 

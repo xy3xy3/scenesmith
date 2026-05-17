@@ -8,27 +8,34 @@ import logging
 
 from typing import TypeVar
 
+from omegaconf import DictConfig
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+
+from scenesmith.utils.openai import create_async_openai_client, get_openai_base_url
 
 console_logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
-# Lazy-initialized client.
-_client: AsyncOpenAI | None = None
+# Lazy-initialized clients keyed by base_url.
+_clients: dict[str | None, AsyncOpenAI] = {}
 
 
-def _get_client() -> AsyncOpenAI:
+def _get_client(cfg: DictConfig | None = None) -> AsyncOpenAI:
     """Get or create the async OpenAI client."""
-    global _client
-    if _client is None:
-        _client = AsyncOpenAI()
-    return _client
+    base_url = get_openai_base_url(cfg)
+    if base_url not in _clients:
+        _clients[base_url] = create_async_openai_client(cfg)
+    return _clients[base_url]
 
 
 async def structured_llm_call(
-    model: str, system_prompt: str, user_input: str, output_type: type[T]
+    model: str,
+    system_prompt: str,
+    user_input: str,
+    output_type: type[T],
+    cfg: DictConfig | None = None,
 ) -> T:
     """Make an async LLM call with structured Pydantic output.
 
@@ -41,6 +48,7 @@ async def structured_llm_call(
         system_prompt: System instructions for the LLM.
         user_input: User message/query.
         output_type: Pydantic model class for structured output.
+        cfg: Optional config used to resolve a custom OpenAI-compatible base_url.
 
     Returns:
         Parsed Pydantic model instance.
@@ -48,7 +56,7 @@ async def structured_llm_call(
     Raises:
         OpenAI API errors if the call fails.
     """
-    client = _get_client()
+    client = _get_client(cfg)
 
     response = await client.beta.chat.completions.parse(
         model=model,

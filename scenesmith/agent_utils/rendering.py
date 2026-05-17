@@ -1344,7 +1344,7 @@ def save_scene_as_blend(
     output_path: Path,
     blender_server_host: str = "127.0.0.1",
     blender_server_port_range: tuple[int, int] = (8000, 8050),
-    server_startup_delay: float = 0.1,
+    server_startup_delay: float = 1.0,
     port_cleanup_delay: float = 0.1,
 ) -> Path:
     """Export scene to a .blend file.
@@ -1374,6 +1374,7 @@ def save_scene_as_blend(
         port_range=blender_server_port_range,
         server_startup_delay=server_startup_delay,
         port_cleanup_delay=port_cleanup_delay,
+        log_file=output_path.with_suffix(".blender_server.log"),
     )
     server.start()
     server.wait_until_ready()
@@ -1445,7 +1446,7 @@ def save_directive_as_blend(
     output_path: Path,
     blender_server_host: str = "127.0.0.1",
     blender_server_port_range: tuple[int, int] = (8000, 8050),
-    server_startup_delay: float = 0.1,
+    server_startup_delay: float = 1.0,
     port_cleanup_delay: float = 0.1,
     scene_dir: Path | None = None,
     max_retries: int = 3,
@@ -1476,6 +1477,7 @@ def save_directive_as_blend(
     # NOTE: Virtual display NOT needed for Blender. Blender runs headless natively.
 
     console_logger.info(f"Exporting directive to .blend file: {output_path}")
+    log_file = output_path.with_suffix(".blender_server.log")
 
     for attempt in range(max_retries):
         server = BlenderServer(
@@ -1483,6 +1485,7 @@ def save_directive_as_blend(
             port_range=blender_server_port_range,
             server_startup_delay=server_startup_delay,
             port_cleanup_delay=port_cleanup_delay,
+            log_file=log_file,
         )
         server.start()
         server.wait_until_ready()

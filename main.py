@@ -37,6 +37,18 @@ def run_local(cfg: DictConfig):
     register_resolvers()
     OmegaConf.resolve(cfg)
 
+    # Optional CLI shortcut for running a single prompt directly, e.g.:
+    # python main.py +name=my_run +prompt="A modern bedroom with..."
+    if "prompt" in cfg and cfg.prompt:
+        with open_dict(cfg):
+            if cfg.experiment.csv_path:
+                console_logger.warning(
+                    "Both +prompt and experiment.csv_path were provided; "
+                    "using the direct prompt and ignoring csv_path."
+                )
+            cfg.experiment.csv_path = None
+            cfg.experiment.prompts = [str(cfg.prompt)]
+
     # Get yaml names.
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
     cfg_choice = OmegaConf.to_container(hydra_cfg.runtime.choices)

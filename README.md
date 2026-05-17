@@ -195,6 +195,13 @@ Docker usage (Docker Compose forwards them from the host).
 # Required: OpenAI API key for GPT-5 agents and default image generation
 export OPENAI_API_KEY="your-openai-key"
 
+# Optional: custom OpenAI-compatible API base URL
+# Useful for proxies, gateways, Azure-compatible shims, or domestic mirrors
+export OPENAI_BASE_URL="https://your-openai-compatible-endpoint/v1"
+
+# Optional: disable Responses API for OpenAI-compatible providers with partial support
+export OPENAI_USE_RESPONSES=false
+
 # Optional: Google API key for Gemini image generation backend
 # Only required if using image_generation.backend: "gemini" in config
 export GOOGLE_API_KEY="your-google-key"
@@ -203,6 +210,12 @@ export GOOGLE_API_KEY="your-google-key"
 # Allows traces to appear on a different account than is used for billing
 export OPENAI_TRACING_KEY="your-tracing-key"
 ```
+
+If you prefer config files over environment variables, you can also set
+`openai.base_url` in `configurations/config.yaml` or an experiment override.
+If your upstream is OpenAI-compatible but does not fully support the Responses API,
+set `openai.use_responses=false` (or `OPENAI_USE_RESPONSES=false`) to use the
+more widely supported Chat Completions path for agents and summarization.
 
 ---
 
@@ -560,6 +573,14 @@ python main.py +name=run_name
 
 Set the scene prompts in `experiment.prompts` (`configurations/experiment/base_experiment.yaml`).
 Set `floor_plan_agent.mode="house"` for house scenes and `floor_plan_agent.mode="room"` for single room scenes.
+
+You can also run a single prompt directly from the CLI without editing config files:
+
+```sh
+python main.py +name=run_name +prompt="A modern living room with a sofa, rug, coffee table, and two floor lamps."
+```
+
+If `+prompt` is provided, it overrides `experiment.csv_path` and uses only that one prompt for the run.
 
 Note that you will need >=24GB of GPU memory for Hunyuan3D asset generation and >=32GB for SAM3D asset generation. The material and articulated retrieval servers require additional GPU memory when enabled. Hence, we recommend >=45GB of GPU memory to run the full pipeline as documented in the research paper. All code was tested with an L40S GPU.
 

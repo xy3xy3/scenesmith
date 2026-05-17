@@ -12,6 +12,7 @@ ensure_cuda_env()
 # Now safe to import CUDA-dependent code.
 import gc
 import logging
+import os
 import threading
 import time
 
@@ -27,6 +28,22 @@ from scipy import ndimage
 from scenesmith.agent_utils.mesh_utils import load_mesh_as_trimesh
 
 console_logger = logging.getLogger(__name__)
+
+
+def _get_sam3d_precision_overrides() -> tuple[str | None, str | None]:
+    """Return optional precision overrides for SAM3D pipeline instantiation.
+
+    By default we preserve the upstream pipeline config. SceneSmith can still
+    force specific precisions via environment variables when debugging provider
+    or GPU-specific issues:
+    - SCENESMITH_SAM3D_DTYPE
+    - SCENESMITH_SAM3D_SHAPE_DTYPE
+    """
+    dtype = os.environ.get("SCENESMITH_SAM3D_DTYPE")
+    shape_model_dtype = os.environ.get("SCENESMITH_SAM3D_SHAPE_DTYPE")
+    if shape_model_dtype is None:
+        shape_model_dtype = dtype
+    return dtype, shape_model_dtype
 
 
 class SAM3DPipelineManager:
@@ -90,7 +107,6 @@ class SAM3DPipelineManager:
         console_logger.debug(f"PID={__import__('os').getpid()}")
 
         try:
-            import os
             import sys
 
             console_logger.debug("Setting LIDRA_SKIP_INIT=1")
@@ -165,6 +181,17 @@ class SAM3DPipelineManager:
         # Disable model compilation to avoid warmup bug (missing run_layout_model
         # method). This follows the official demo.py pattern.
         config.compile_model = False
+
+        dtype_override, shape_model_dtype_override = _get_sam3d_precision_overrides()
+        if dtype_override is not None:
+            config.dtype = dtype_override
+        if shape_model_dtype_override is not None:
+            config.shape_model_dtype = shape_model_dtype_override
+        if dtype_override is not None or shape_model_dtype_override is not None:
+            console_logger.info(
+                "Using SAM3D precision overrides: "
+                f"dtype={dtype_override}, shape_model_dtype={shape_model_dtype_override}"
+            )
 
         # Use nvdiffrast rendering engine for full quality (matches demo_text_to_3d.py).
         # Pre-initializing nvdiffrast before Warp (via _pre_init_nvdiffrast) ensures
@@ -373,9 +400,9 @@ def generate_mask(
 
     # Convert tensors to numpy (move from GPU to CPU if needed).
     if torch.is_tensor(scores):
-        scores = scores.cpu().numpy()
+        scores = scores.detach().to(dtype=torch.float32).cpu().numpy()
     if torch.is_tensor(masks):
-        masks = masks.cpu().numpy()
+        masks = masks.detach().cpu().numpy()
 
     # Check if any masks were detected.
     if len(scores) == 0:

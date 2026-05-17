@@ -2,7 +2,7 @@ import logging
 
 from typing import Any
 
-from openai import OpenAI
+from scenesmith.utils.openai import create_openai_client, get_openai_use_responses
 
 console_logger = logging.getLogger(__name__)
 
@@ -16,15 +16,17 @@ class VLMService:
     Chat API for standard models) based on model capabilities.
     """
 
-    def __init__(self, service_tier: str | None = None) -> None:
+    def __init__(self, service_tier: str | None = None, cfg: Any | None = None) -> None:
         """Initialize OpenAI client.
 
         Args:
             service_tier: Optional service tier for API processing priority.
                 Valid values: "default", "flex", "priority", or None to use
                 project default.
+            cfg: Optional config used to resolve a custom OpenAI-compatible base_url.
         """
-        self.client = OpenAI()
+        self.client = create_openai_client(cfg)
+        self._use_responses = get_openai_use_responses(cfg)
         # Cache for model type detection.
         self._reasoning_models = {"gpt-5", "gpt-5.2", "o3", "o4"}
         self.service_tier = service_tier
@@ -55,7 +57,7 @@ class VLMService:
             Response content as string.
         """
         # Check if model supports reasoning.
-        if model in self._reasoning_models:
+        if model in self._reasoning_models and self._use_responses:
             # Use Responses API with reasoning for reasoning-capable models.
             input_messages = self._convert_to_responses_format(
                 messages=messages, vision_detail=vision_detail
@@ -97,11 +99,17 @@ class VLMService:
 
             return response.output_text
         else:
-            # Use Chat Completions API for standard models.
+            # Use Chat Completions API for standard models, or as a compatibility
+            # fallback when an OpenAI-compatible provider does not fully support
+            # the Responses API.
             messages = self._add_vision_detail_to_messages(
                 messages=messages, vision_detail=vision_detail
             )
             kwargs = {"model": model, "messages": messages}
+
+            if model in self._reasoning_models:
+                kwargs["reasoning_effort"] = reasoning_effort
+                kwargs["verbosity"] = verbosity
 
             # Add response format if specified.
             if response_format:

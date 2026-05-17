@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from scenesmith.agent_utils.vlm_service import VLMService
@@ -20,10 +21,10 @@ class TestVLMService(unittest.TestCase):
         """Clean up test fixtures."""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_vlm_initialization(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_vlm_initialization(self, mock_create_openai_client):
         """Test VLMService initializes OpenAI client properly."""
-        mock_openai_class.return_value = self.mock_openai_client
+        mock_create_openai_client.return_value = self.mock_openai_client
 
         vlm_service = VLMService()
 
@@ -32,13 +33,13 @@ class TestVLMService(unittest.TestCase):
         self.assertEqual(vlm_service.client, self.mock_openai_client)
 
         # Verify OpenAI client was created.
-        mock_openai_class.assert_called_once()
+        mock_create_openai_client.assert_called_once()
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_create_completion_basic(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_create_completion_basic(self, mock_create_openai_client):
         """Test create_completion with basic parameters for standard models."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock the chat completions API for standard models.
         mock_response = Mock()
@@ -69,13 +70,13 @@ class TestVLMService(unittest.TestCase):
         call_args = mock_openai_client.chat.completions.create.call_args
         self.assertEqual(call_args[1]["model"], model)
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
     def test_create_completion_with_reasoning_effort_and_verbosity(
-        self, mock_openai_class
+        self, mock_create_openai_client
     ):
         """Test create_completion with reasoning effort and verbosity for reasoning models."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock the responses API.
         mock_response = Mock()
@@ -107,11 +108,11 @@ class TestVLMService(unittest.TestCase):
         self.assertIn("text", call_args[1])
         self.assertEqual(call_args[1]["text"]["verbosity"], verbosity)
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_create_completion_with_json_format(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_create_completion_with_json_format(self, mock_create_openai_client):
         """Test create_completion with JSON response format."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock the chat completions API for standard models.
         mock_response = Mock()
@@ -143,11 +144,11 @@ class TestVLMService(unittest.TestCase):
         self.assertEqual(call_args[1]["model"], model)
         self.assertEqual(call_args[1]["response_format"], {"type": "json_object"})
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_error_handling_for_api_failures(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_error_handling_for_api_failures(self, mock_create_openai_client):
         """Test handling of OpenAI API errors."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock chat API to raise an error for standard models.
         mock_openai_client.chat.completions.create.side_effect = Exception(
@@ -168,11 +169,11 @@ class TestVLMService(unittest.TestCase):
 
         self.assertIn("API rate limit exceeded", str(context.exception))
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_message_conversion_to_responses_format(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_message_conversion_to_responses_format(self, mock_create_openai_client):
         """Test that messages work correctly for reasoning models with images."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock the responses API for reasoning models.
         mock_response = Mock()
@@ -211,12 +212,12 @@ class TestVLMService(unittest.TestCase):
         call_args = mock_openai_client.responses.create.call_args
         self.assertIn("input", call_args[1])
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_vision_detail_parameter_chat_completions(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_vision_detail_parameter_chat_completions(self, mock_create_openai_client):
         """Test that vision_detail parameter is added to image_url objects for Chat
         API."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock the chat completions API for standard models.
         mock_response = Mock()
@@ -269,11 +270,11 @@ class TestVLMService(unittest.TestCase):
         self.assertIsNotNone(image_content)
         self.assertEqual(image_content["image_url"]["detail"], "high")
 
-    @patch("scenesmith.agent_utils.vlm_service.OpenAI")
-    def test_vision_detail_parameter_responses_api(self, mock_openai_class):
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_vision_detail_parameter_responses_api(self, mock_create_openai_client):
         """Test vision_detail parameter handling for Responses API (reasoning models)."""
         mock_openai_client = Mock()
-        mock_openai_class.return_value = mock_openai_client
+        mock_create_openai_client.return_value = mock_openai_client
 
         # Mock the responses API for reasoning models.
         mock_response = Mock()
@@ -326,6 +327,36 @@ class TestVLMService(unittest.TestCase):
 
         self.assertIsNotNone(image_content)
         self.assertEqual(image_content["detail"], "high")
+
+    @patch("scenesmith.agent_utils.vlm_service.create_openai_client")
+    def test_reasoning_model_can_fallback_to_chat_completions(
+        self, mock_create_openai_client
+    ):
+        """Test compatibility mode that disables Responses API for reasoning models."""
+        mock_openai_client = Mock()
+        mock_create_openai_client.return_value = mock_openai_client
+
+        mock_response = Mock()
+        mock_choice = Mock()
+        mock_message = Mock()
+        mock_message.content = "Fallback chat response"
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+        mock_openai_client.chat.completions.create.return_value = mock_response
+
+        cfg = SimpleNamespace(openai=SimpleNamespace(use_responses=False))
+        vlm_service = VLMService(cfg=cfg)
+
+        result = vlm_service.create_completion(
+            model="gpt-5.2",
+            messages=[{"role": "user", "content": "Reason with tools disabled"}],
+            reasoning_effort="high",
+            verbosity="medium",
+        )
+
+        self.assertEqual(result, "Fallback chat response")
+        mock_openai_client.responses.create.assert_not_called()
+        mock_openai_client.chat.completions.create.assert_called_once()
 
 
 if __name__ == "__main__":
