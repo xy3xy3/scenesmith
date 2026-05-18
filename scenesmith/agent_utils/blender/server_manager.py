@@ -16,6 +16,12 @@ from scenesmith.utils.network_utils import find_available_port, is_port_availabl
 console_logger = logging.getLogger(__name__)
 
 
+def _env_var_enabled(name: str) -> bool:
+    """Parse a boolean-like environment variable."""
+    value = os.environ.get(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 class BlenderServer:
     """Manages a Flask-based Blender rendering server.
 
@@ -222,8 +228,49 @@ class BlenderServer:
         return target_port
 
     def _is_bwrap_available(self) -> bool:
-        """Check if bubblewrap is installed."""
-        return shutil.which("bwrap") is not None
+        """Check if bubblewrap is installed and usable in this environment."""
+        if _env_var_enabled("SCENESMITH_DISABLE_BWRAP"):
+            console_logger.info(
+                "Bubblewrap disabled via SCENESMITH_DISABLE_BWRAP; "
+                "falling back to shared GPU access."
+            )
+            return False
+
+        bwrap_path = shutil.which("bwrap")
+        if bwrap_path is None:
+            return False
+
+        # Some environments ship bubblewrap but disallow unprivileged user
+        # namespaces, which causes "setting up uid map: Permission denied".
+        # Probe a tiny sandbox first so we can gracefully fall back.
+        probe_cmd = [
+            bwrap_path,
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--dev-bind",
+            "/dev/null",
+            "/dev/null",
+            "/bin/true",
+        ]
+        result = subprocess.run(
+            probe_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True
+
+        stderr = (result.stderr or "").strip()
+        console_logger.warning(
+            "bubblewrap is installed but unusable in this environment "
+            f"(exit code {result.returncode}). Falling back to shared GPU access. "
+            f"Details: {stderr}"
+        )
+        return False
 
     def _build_bwrap_command(self, cmd: list[str], gpu_id: int) -> list[str]:
         """Wrap command in bubblewrap for GPU isolation.
