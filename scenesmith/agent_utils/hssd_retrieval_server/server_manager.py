@@ -4,6 +4,8 @@ import time
 
 from threading import Thread
 
+import requests
+
 from werkzeug.serving import BaseWSGIServer, make_server
 
 from scenesmith.utils.network_utils import is_port_available
