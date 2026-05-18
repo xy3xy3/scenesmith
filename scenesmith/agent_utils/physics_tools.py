@@ -1,6 +1,11 @@
 """Physics computation utilities for inertia and mass properties."""
 
+import json
 import logging
+import os
+import subprocess
+import sys
+import tempfile
 
 from pathlib import Path
 
@@ -16,7 +21,7 @@ from scenesmith.agent_utils.clearance_zones import (
     compute_window_clearance_violations,
 )
 from scenesmith.agent_utils.physics_validation import (
-    compute_scene_collisions,
+    CollisionPair,
     compute_thin_covering_boundary_violations,
     compute_thin_covering_overlaps,
     filter_collisions_by_agent,
@@ -30,6 +35,175 @@ from scenesmith.agent_utils.physics_validation import (
 from scenesmith.agent_utils.room import AgentType, RoomScene, UniqueID
 
 console_logger = logging.getLogger(__name__)
+
+
+def _compute_scene_collisions_isolated(
+    scene: RoomScene,
+    penetration_threshold: float,
+    floor_penetration_tolerance: float,
+    current_furniture_id: UniqueID | None,
+    manipuland_furniture_tolerance_m: float,
+    timeout_seconds: float = 180.0,
+) -> tuple[list[CollisionPair] | None, str | None]:
+    """Run Drake collision queries in a subprocess so native crashes stay isolated.
+
+    Drake/FCL/Qhull occasionally segfault on degenerate geometry. When that happens
+    in-process, the entire scene generation run is lost. This helper serializes the
+    current room scene, executes only the broadphase collision query in a fresh
+    Python subprocess, and returns either collision pairs or an error description.
+    """
+    payload = {
+        "scene_dir": str(scene.scene_dir),
+        "room_id": scene.room_id,
+        "room_type": scene.room_type,
+        "scene_state": scene.to_state_dict(),
+        "penetration_threshold": penetration_threshold,
+        "floor_penetration_tolerance": floor_penetration_tolerance,
+        "current_furniture_id": (
+            str(current_furniture_id) if current_furniture_id is not None else None
+        ),
+        "manipuland_furniture_tolerance_m": manipuland_furniture_tolerance_m,
+    }
+
+    worker_script = """
+import json
+import sys
+import traceback
+
+from pathlib import Path
+
+from scenesmith.agent_utils.physics_validation import compute_scene_collisions
+from scenesmith.agent_utils.room import RoomScene, UniqueID
+
+payload_path = Path(sys.argv[1])
+result_path = Path(sys.argv[2])
+payload = json.loads(payload_path.read_text())
+
+scene = RoomScene(
+    room_geometry=None,
+    scene_dir=Path(payload["scene_dir"]),
+    room_id=payload["room_id"],
+    room_type=payload["room_type"],
+)
+scene.restore_from_state_dict(payload["scene_state"])
+
+current_furniture_id = payload["current_furniture_id"]
+if current_furniture_id is not None:
+    current_furniture_id = UniqueID(current_furniture_id)
+
+try:
+    collisions = compute_scene_collisions(
+        scene=scene,
+        penetration_threshold=payload["penetration_threshold"],
+        floor_penetration_tolerance=payload["floor_penetration_tolerance"],
+        current_furniture_id=current_furniture_id,
+        manipuland_furniture_tolerance_m=payload[
+            "manipuland_furniture_tolerance_m"
+        ],
+    )
+    result = {
+        "status": "ok",
+        "collisions": [
+            {
+                "object_a_name": c.object_a_name,
+                "object_a_id": c.object_a_id,
+                "object_b_name": c.object_b_name,
+                "object_b_id": c.object_b_id,
+                "penetration_depth": c.penetration_depth,
+            }
+            for c in collisions
+        ],
+    }
+    result_path.write_text(json.dumps(result))
+except Exception as exc:
+    result = {
+        "status": "error",
+        "error": str(exc),
+        "traceback": traceback.format_exc(),
+    }
+    result_path.write_text(json.dumps(result))
+    raise
+""".strip()
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = dict(**os.environ)
+    pythonpath_entries = [str(repo_root)]
+    if env.get("PYTHONPATH"):
+        pythonpath_entries.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
+    with tempfile.TemporaryDirectory(prefix="scenesmith_physics_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        payload_path = tmp_path / "payload.json"
+        result_path = tmp_path / "result.json"
+        payload_path.write_text(json.dumps(payload))
+
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    worker_script,
+                    str(payload_path),
+                    str(result_path),
+                ],
+                cwd=repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return None, (
+                "Physics collision query timed out in isolated subprocess after "
+                f"{timeout_seconds:.0f}s."
+            )
+
+        if completed.returncode != 0:
+            details = []
+            if result_path.exists():
+                try:
+                    result = json.loads(result_path.read_text())
+                    if result.get("error"):
+                        details.append(result["error"])
+                    if result.get("traceback"):
+                        console_logger.warning(
+                            "Isolated physics subprocess traceback:\n%s",
+                            result["traceback"],
+                        )
+                except json.JSONDecodeError:
+                    pass
+            if completed.stderr.strip():
+                details.append(completed.stderr.strip())
+            elif completed.stdout.strip():
+                details.append(completed.stdout.strip())
+
+            detail_suffix = f" Details: {' | '.join(details)}" if details else ""
+            return (
+                None,
+                "Physics collision query crashed in isolated subprocess "
+                f"(exit code {completed.returncode}).{detail_suffix}",
+            )
+
+        if not result_path.exists():
+            return None, (
+                "Physics collision query subprocess exited successfully but did not "
+                "produce a result file."
+            )
+
+        result = json.loads(result_path.read_text())
+        collisions = [
+            CollisionPair(
+                object_a_name=item["object_a_name"],
+                object_a_id=item["object_a_id"],
+                object_b_name=item["object_b_name"],
+                object_b_id=item["object_b_id"],
+                penetration_depth=item["penetration_depth"],
+            )
+            for item in result.get("collisions", [])
+        ]
+        return collisions, None
 
 
 def _format_violations(violations: list, header: str, log_header: str) -> list[str]:
@@ -180,14 +354,19 @@ def check_physics_violations(
     console_logger.info("Checking physics violations")
     cfg_physics = cfg.physics_validation
 
-    # Compute all violation types upfront.
-    collisions = compute_scene_collisions(
+    # Run native Drake collision queries in a subprocess so geometry-induced
+    # segfaults do not terminate the entire generation job.
+    collisions, collision_query_error = _compute_scene_collisions_isolated(
         scene=scene,
         penetration_threshold=cfg_physics.object_penetration_threshold_m,
         floor_penetration_tolerance=cfg_physics.floor_penetration_tolerance_m,
         current_furniture_id=current_furniture_id,
         manipuland_furniture_tolerance_m=cfg_physics.manipuland_furniture_tolerance_m,
     )
+    if collision_query_error is not None:
+        console_logger.warning(collision_query_error)
+        collisions = []
+
     thin_covering_overlaps = compute_thin_covering_overlaps(scene)
     thin_covering_boundary_violations = compute_thin_covering_boundary_violations(
         scene=scene, wall_thickness=cfg_physics.wall_thickness
@@ -242,7 +421,7 @@ def check_physics_violations(
             violations=window_violations, scene=scene, agent_type=agent_type
         )
 
-    return _build_violation_message(
+    result = _build_violation_message(
         collisions=collisions,
         thin_covering_overlaps=thin_covering_overlaps,
         thin_covering_boundary_violations=thin_covering_boundary_violations,
@@ -250,6 +429,21 @@ def check_physics_violations(
         open_violations=open_violations,
         height_violations=height_violations,
         window_violations=window_violations,
+    )
+    if collision_query_error is None:
+        return result
+
+    if result == "No physics violations detected. All objects are properly placed.":
+        return (
+            "Physics validation partially completed. No non-collision violations "
+            "were detected, but object-object collision status is unknown because "
+            f"the isolated Drake collision query failed. {collision_query_error}"
+        )
+
+    return (
+        f"{result}\n\n"
+        "Collision-query warning: object-object collision status may be incomplete "
+        f"because the isolated Drake collision query failed. {collision_query_error}"
     )
 
 
