@@ -520,17 +520,17 @@ def remove_mesh_floaters(
 ) -> Path:
     """Remove disconnected mesh components (floaters) based on spatial distance.
 
-    Splits the mesh into connected components and removes floaters that are
-    spatially separated from the main mesh using a distance-based clustering
-    algorithm. This approach correctly preserves small legitimate parts (handles,
-    knobs) that are close to the main mesh while removing actual floaters that
-    are far away, regardless of their size.
+    Identifies connected face components and removes floaters that are spatially
+    separated from the main mesh using a distance-based clustering algorithm.
+    This approach correctly preserves small legitimate parts (handles, knobs)
+    that are close to the main mesh while removing actual floaters that are far
+    away, regardless of their size.
 
     Algorithm:
-    1. Split mesh into connected components
+    1. Find connected face components without materializing per-component meshes
     2. Find largest component by volume (seed for main cluster)
     3. Iteratively add components within distance_threshold to main cluster
-    4. Remove all components not in the main cluster
+    4. Remove all components not in the main cluster in-place via a face mask
 
     Args:
         mesh_path: Path to input mesh file (GLB, GLTF, OBJ, STL, etc.). Must exist.
@@ -560,10 +560,27 @@ def remove_mesh_floaters(
     # Load mesh and ensure it's a single Trimesh object.
     mesh = load_mesh_as_trimesh(mesh_path, force_merge=True)
 
-    # Split mesh into connected components.
-    components = mesh.split()
+    face_count = len(mesh.faces)
+    if face_count == 0:
+        raise ValueError(f"Mesh contains no faces: {mesh_path}")
 
-    console_logger.info(f"Found {len(components)} connected component(s)")
+    # Find connected face components without splitting the full mesh into many
+    # independent Trimesh objects. This avoids large peak-memory spikes on big
+    # HSSD meshes where split() would duplicate vertex/face arrays for every
+    # connected component at once.
+    components = [
+        np.asarray(component, dtype=np.int64)
+        for component in trimesh.graph.connected_components(
+            mesh.face_adjacency,
+            min_len=1,
+            nodes=np.arange(face_count),
+        )
+    ]
+
+    console_logger.info(
+        f"Found {len(components)} connected component(s) "
+        f"across {face_count} faces and {len(mesh.vertices)} vertices"
+    )
 
     # If only one component, no floaters to remove.
     if len(components) <= 1:
@@ -573,8 +590,15 @@ def remove_mesh_floaters(
             mesh.export(final_output_path)
         return final_output_path
 
-    # Calculate volumes for all components to find the largest (seed).
-    volumes = np.array([comp.volume for comp in components])
+    # Calculate bounds and volumes one component at a time to keep memory usage
+    # close to a single full-mesh copy.
+    component_bounds = np.zeros((len(components), 2, 3), dtype=np.float64)
+    volumes = np.zeros(len(components), dtype=np.float64)
+    for idx, face_indices in enumerate(components):
+        component_mesh = mesh.submesh([face_indices], append=True, repair=False)
+        component_bounds[idx] = component_mesh.bounds
+        volumes[idx] = component_mesh.volume
+
     largest_idx = np.argmax(volumes)
 
     console_logger.info(
@@ -591,12 +615,12 @@ def remove_mesh_floaters(
     while changed and remaining_indices:
         changed = False
         for idx in list(remaining_indices):
-            comp_bounds = components[idx].bounds
+            comp_bounds = component_bounds[idx]
 
             # Check distance to any component in main cluster.
             min_dist_to_cluster = float("inf")
             for cluster_idx in main_cluster_indices:
-                cluster_bounds = components[cluster_idx].bounds
+                cluster_bounds = component_bounds[cluster_idx]
                 dist = _compute_bbox_min_distance(comp_bounds, cluster_bounds)
                 min_dist_to_cluster = min(min_dist_to_cluster, dist)
 
@@ -611,14 +635,12 @@ def remove_mesh_floaters(
                     f"volume: {volumes[idx]:.6f})"
                 )
 
-    # Build kept and removed component lists.
-    kept_components = [components[i] for i in sorted(main_cluster_indices)]
     removed_indices = remaining_indices
     removed_count = len(removed_indices)
     removed_volume = sum(volumes[i] for i in removed_indices)
 
     console_logger.info(
-        f"Keeping {len(kept_components)} component(s), "
+        f"Keeping {len(main_cluster_indices)} component(s), "
         f"removing {removed_count} floater(s) "
         f"(total removed volume: {removed_volume:.6f})"
     )
@@ -627,11 +649,16 @@ def remove_mesh_floaters(
     for idx in sorted(removed_indices):
         console_logger.info(f"Removed floater {idx}: volume={volumes[idx]:.6f}")
 
-    # Combine kept components.
-    if len(kept_components) == 1:
-        cleaned_mesh = kept_components[0]
-    else:
-        cleaned_mesh = trimesh.util.concatenate(kept_components)
+    # Remove floaters in-place by keeping only faces that belong to the main
+    # spatial cluster. This preserves mesh visuals/materials without allocating
+    # another full concatenated mesh.
+    kept_face_mask = np.zeros(face_count, dtype=bool)
+    for idx in main_cluster_indices:
+        kept_face_mask[components[idx]] = True
+
+    if not np.all(kept_face_mask):
+        mesh.update_faces(kept_face_mask)
+        mesh.remove_unreferenced_vertices()
 
     # Determine output path.
     final_output_path = output_path if output_path is not None else mesh_path
@@ -640,7 +667,7 @@ def remove_mesh_floaters(
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Export cleaned mesh.
-    cleaned_mesh.export(final_output_path)
+    mesh.export(final_output_path)
 
     console_logger.info(f"Cleaned mesh saved to {final_output_path}")
 

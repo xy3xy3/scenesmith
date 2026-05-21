@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import trimesh
@@ -456,6 +457,30 @@ class TestRemoveMeshFloaters(unittest.TestCase):
             combined.volume - 0.01,
             msg="Large far component should have been removed",
         )
+
+    def test_remove_floaters_avoids_mesh_split_peak_memory_path(self):
+        """Test floater removal no longer relies on Trimesh.split()."""
+        main_mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        floater = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
+        floater.apply_translation([2.0, 0, 0])
+
+        input_path = self.temp_path / "no_split_input.glb"
+        output_path = self.temp_path / "no_split_output.glb"
+        trimesh.util.concatenate([main_mesh, floater]).export(input_path)
+
+        with patch.object(
+            trimesh.Trimesh,
+            "split",
+            side_effect=AssertionError("remove_mesh_floaters should not call split"),
+        ):
+            remove_mesh_floaters(
+                mesh_path=input_path,
+                output_path=output_path,
+                distance_threshold=0.05,
+            )
+
+        cleaned_mesh = trimesh.load(output_path, force="mesh")
+        self.assertAlmostEqual(cleaned_mesh.volume, main_mesh.volume, delta=0.01)
 
 
 class TestChooseFallbackFrontAxis(unittest.TestCase):
