@@ -43,6 +43,11 @@ from scenesmith.manipuland_agents.stateful_manipuland_agent import (
     StatefulManipulandAgent,
 )
 from scenesmith.utils.logging import ConsoleLogger, FileLoggingContext
+from scenesmith.utils.memory_debug import (
+    maybe_dump_tracemalloc,
+    maybe_log_memory,
+    maybe_start_tracemalloc,
+)
 from scenesmith.utils.parallel import run_parallel_isolated
 from scenesmith.utils.print_utils import bold_green
 from scenesmith.wall_agents.stateful_wall_agent import StatefulWallAgent
@@ -547,6 +552,10 @@ def _generate_room(
     """
     room_start_time = time.time()
 
+    # Optional memory instrumentation (enabled via env vars).
+    maybe_log_memory(room_dir, tag="room_start")
+    maybe_dump_tracemalloc(room_dir, tag="room_start")
+
     # Create scene and add walls and floor from room geometry.
     scene = RoomScene(
         room_geometry=room_geometry,
@@ -663,6 +672,8 @@ def _generate_room(
             name="scene_after_furniture",
         )
         console_logger.info("Saved furniture checkpoint (scene_after_furniture)")
+        maybe_log_memory(room_dir, tag="after_furniture_checkpoint")
+        maybe_dump_tracemalloc(room_dir, tag="after_furniture_checkpoint")
     elif start_idx == 1:
         # Starting from wall_objects - load scene from saved furniture state.
         console_logger.info("Loading scene from saved furniture state for wall_objects")
@@ -735,6 +746,8 @@ def _generate_room(
             name="scene_after_wall_objects",
         )
         console_logger.info("Saved wall_objects checkpoint (scene_after_wall_objects)")
+        maybe_log_memory(room_dir, tag="after_wall_objects_checkpoint")
+        maybe_dump_tracemalloc(room_dir, tag="after_wall_objects_checkpoint")
     elif start_idx == 2:
         # Starting from ceiling_mounted - load scene from saved wall_objects state.
         console_logger.info("Loading scene from saved wall_objects state for ceiling")
@@ -796,6 +809,8 @@ def _generate_room(
         console_logger.info(
             "Saved ceiling_objects checkpoint (scene_after_ceiling_objects)"
         )
+        maybe_log_memory(room_dir, tag="after_ceiling_objects_checkpoint")
+        maybe_dump_tracemalloc(room_dir, tag="after_ceiling_objects_checkpoint")
     else:
         # Starting from manipulands - load scene from saved ceiling_objects state.
         console_logger.info("Loading scene from saved ceiling_objects state")
@@ -914,6 +929,8 @@ def _generate_room(
     _export_scene_blend_file(
         scene=scene, scene_dir=room_dir, cfg_dict=cfg_dict, name="final_scene"
     )
+    maybe_log_memory(room_dir, tag="final_scene_logged")
+    maybe_dump_tracemalloc(room_dir, tag="final_scene_logged")
 
     # Export to SceneEval format if enabled.
     sceneeval_cfg = cfg_dict["experiment"]["sceneeval_export"]
@@ -1645,6 +1662,11 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
 
         # Create a logger for this scene.
         logger = ConsoleLogger(output_dir=scene_dir)
+
+        # Optional memory instrumentation (enabled via env vars).
+        maybe_start_tracemalloc()
+        maybe_log_memory(scene_dir, tag="scene_start")
+        maybe_dump_tracemalloc(scene_dir, tag="scene_start")
 
         # Get pipeline stage configuration.
         pipeline_cfg = cfg_dict["experiment"]["pipeline"]

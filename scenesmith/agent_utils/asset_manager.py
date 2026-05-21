@@ -68,6 +68,10 @@ from scenesmith.agent_utils.thin_covering_generator import (
 )
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.utils.logging import BaseLogger
+from scenesmith.utils.memory_debug import (
+    maybe_dump_asset_tracemalloc,
+    maybe_log_asset_memory,
+)
 
 if TYPE_CHECKING:
     from scenesmith.agent_utils.asset_router import AssetRouter
@@ -1829,22 +1833,35 @@ class AssetManager:
             f"Processing mesh ({geometry_path}) to simulation asset "
             f"(object_type={object_type.value})"
         )
+        maybe_log_asset_memory(self.debug_dir, tag=f"{config.short_name}:start")
+        maybe_dump_asset_tracemalloc(self.debug_dir, tag=f"{config.short_name}:start")
 
         # Convert GLB to Y-up GLTF (enables VLM analysis in Blender's Z-up space).
         # Uses BlenderServer for crash isolation.
         gltf_path = config.sdf_dir / f"{config.short_name}.gltf"
+        maybe_log_asset_memory(self.debug_dir, tag=f"{config.short_name}:pre_glb2gltf")
         self.blender_server.convert_glb_to_gltf(
             input_path=geometry_path,
             output_path=gltf_path,
             export_yup=True,
         )
+        maybe_log_asset_memory(self.debug_dir, tag=f"{config.short_name}:post_glb2gltf")
 
         # Remove floaters from mesh before VLM analysis.
         console_logger.info("Removing disconnected mesh floaters")
+        maybe_log_asset_memory(
+            self.debug_dir, tag=f"{config.short_name}:pre_remove_floaters"
+        )
         remove_mesh_floaters(
             mesh_path=gltf_path,
             output_path=gltf_path,
             distance_threshold=self.cfg.asset_manager.floater_distance_threshold,
+        )
+        maybe_log_asset_memory(
+            self.debug_dir, tag=f"{config.short_name}:post_remove_floaters"
+        )
+        maybe_dump_asset_tracemalloc(
+            self.debug_dir, tag=f"{config.short_name}:post_remove_floaters"
         )
 
         # VLM analysis for orientation, material, mass.
@@ -1872,6 +1889,10 @@ class AssetManager:
             debug_output_dir=debug_dir,
             prompt_type=prompt_type,
             include_vertical_views=include_vertical_views,
+        )
+        maybe_log_asset_memory(self.debug_dir, tag=f"{config.short_name}:post_vlm")
+        maybe_dump_asset_tracemalloc(
+            self.debug_dir, tag=f"{config.short_name}:post_vlm"
         )
 
         console_logger.info(
