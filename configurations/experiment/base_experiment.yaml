@@ -71,6 +71,18 @@ sceneeval_export:
   enabled: true
   asset_id_prefix: "scenesmith"
 
+# Embedded SceneBenchmark rule critic.
+scenebenchmark_critic:
+  enabled: false
+  metrics: ["spatial_accessibility", "functional_dependency"]
+  room_stage_hooks: ["scene_after_furniture", "final_scene"]
+  house_stage_hooks: ["combined_house_after_furniture", "combined_house"]
+  inject_into_llm_critic: true
+  hard_gate: false
+  max_issues_for_prompt: 8
+  fail_gate_threshold: 1
+  degraded_gate_threshold: 999999
+
 # Physical feasibility post-processing configuration.
 # Two-stage process: projection (IK-based) → simulation (physics settling).
 projection:

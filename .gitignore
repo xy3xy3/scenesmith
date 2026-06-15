@@ -15,3 +15,4 @@ debug_furniture_agent
 tmp/
 latest-run
 local/
+config.yml

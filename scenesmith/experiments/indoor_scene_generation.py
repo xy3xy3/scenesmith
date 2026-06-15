@@ -42,6 +42,11 @@ from scenesmith.furniture_agents.stateful_furniture_agent import StatefulFurnitu
 from scenesmith.manipuland_agents.stateful_manipuland_agent import (
     StatefulManipulandAgent,
 )
+from scenesmith.scenebenchmark_critic import (
+    write_house_stage_report,
+    write_room_stage_report,
+)
+from scenesmith.scenebenchmark_critic.config import critic_config_from_any
 from scenesmith.utils.logging import ConsoleLogger, FileLoggingContext
 from scenesmith.utils.memory_debug import (
     maybe_dump_tracemalloc,
@@ -664,7 +669,15 @@ def _generate_room(
                 )
 
         # Always save state after furniture stage (unconditional for resumability).
-        logger.log_scene(scene=scene, name="scene_after_furniture")
+        furniture_stage_dir = logger.log_scene(
+            scene=scene, name="scene_after_furniture"
+        )
+        write_room_stage_report(
+            scene,
+            furniture_stage_dir,
+            config=cfg_dict,
+            stage="scene_after_furniture",
+        )
         _export_scene_blend_file(
             scene=scene,
             scene_dir=room_dir,
@@ -925,7 +938,13 @@ def _generate_room(
             )
 
     # Log and export final scene.
-    logger.log_scene(scene=scene, name="final_scene")
+    final_stage_dir = logger.log_scene(scene=scene, name="final_scene")
+    write_room_stage_report(
+        scene,
+        final_stage_dir,
+        config=cfg_dict,
+        stage="final_scene",
+    )
     _export_scene_blend_file(
         scene=scene, scene_dir=room_dir, cfg_dict=cfg_dict, name="final_scene"
     )
@@ -1202,6 +1221,53 @@ def _reconstruct_room_scene(worker_result: dict, scene_dir: Path) -> RoomScene:
     room_scene.restore_from_state_dict(scene_state)
 
     return room_scene
+
+
+def _load_room_scene_state(state_path: Path) -> RoomScene:
+    """Load a RoomScene from a saved scene_state.json checkpoint."""
+    room_dir = state_path.parents[2]
+    room_id = room_dir.name.removeprefix("room_")
+    with open(state_path) as f:
+        state = json.load(f)
+
+    room_geometry = None
+    if state.get("room_geometry"):
+        room_geometry = RoomGeometry.from_dict(
+            state["room_geometry"], scene_dir=room_dir
+        )
+
+    scene = RoomScene(
+        room_geometry=room_geometry,
+        scene_dir=room_dir,
+        room_id=room_id,
+        text_description=state.get("text_description", ""),
+        action_log_path=room_dir / "action_log.json",
+    )
+    scene.restore_from_state_dict(state)
+    return scene
+
+
+def _load_house_scene_state(state_path: Path) -> HouseScene:
+    """Load a HouseScene from a combined house_state.json checkpoint."""
+    scene_dir = state_path.parents[1]
+    with open(state_path) as f:
+        state = json.load(f)
+    return HouseScene.from_state_dict(state, house_dir=scene_dir)
+
+
+def _house_stage_object_types(stage: str) -> list[ObjectType] | None:
+    """Return the object-type filter represented by a combined house stage."""
+    if stage == "combined_house_after_furniture":
+        return [ObjectType.FURNITURE]
+    if stage == "combined_house_after_wall_objects":
+        return [ObjectType.FURNITURE, ObjectType.WALL_MOUNTED]
+    if stage == "combined_house_after_ceiling":
+        return [
+            ObjectType.FURNITURE,
+            ObjectType.WALL_MOUNTED,
+            ObjectType.CEILING_MOUNTED,
+        ]
+    return None
 
 
 def _run_parallel_room_generation(
@@ -1877,8 +1943,15 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
                     snapshot_count = stage_to_count.get(stop_stage, len(snapshots))
 
                     for name, types in snapshots[:snapshot_count]:
-                        house_scene.assemble(
+                        combined_dir = house_scene.assemble(
                             cfg=cfg_dict, output_name=name, include_object_types=types
+                        )
+                        write_house_stage_report(
+                            house_scene,
+                            combined_dir,
+                            config=cfg_dict,
+                            stage=name,
+                            include_object_types=types,
                         )
 
                     console_logger.info(
@@ -2062,4 +2135,61 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
         """
         Evaluate previously generated scenes.
         """
-        raise NotImplementedError
+        critic_config = critic_config_from_any(self.cfg)
+        if not critic_config.enabled:
+            console_logger.info(
+                "SceneBenchmark critic is disabled; skipping evaluate_scenes"
+            )
+            return
+
+        scene_dirs = sorted(
+            path
+            for path in self.output_dir.glob("scene_*")
+            if path.is_dir() and path.name.startswith("scene_")
+        )
+        if not scene_dirs:
+            console_logger.warning(
+                "No scene_* directories found under %s", self.output_dir
+            )
+            return
+
+        room_reports = 0
+        house_reports = 0
+        for scene_dir in scene_dirs:
+            for room_dir in sorted(scene_dir.glob("room_*")):
+                states_dir = room_dir / "scene_states"
+                for stage in critic_config.room_stage_hooks:
+                    state_path = states_dir / stage / "scene_state.json"
+                    if not state_path.exists():
+                        continue
+                    scene = _load_room_scene_state(state_path)
+                    payload = write_room_stage_report(
+                        scene,
+                        state_path.parent,
+                        config=critic_config,
+                        stage=stage,
+                    )
+                    if payload is not None:
+                        room_reports += 1
+
+            for stage in critic_config.house_stage_hooks:
+                state_path = scene_dir / stage / "house_state.json"
+                if not state_path.exists():
+                    continue
+                house = _load_house_scene_state(state_path)
+                payload = write_house_stage_report(
+                    house,
+                    state_path.parent,
+                    config=critic_config,
+                    stage=stage,
+                    include_object_types=_house_stage_object_types(stage),
+                )
+                if payload is not None:
+                    house_reports += 1
+
+        console_logger.info(
+            "SceneBenchmark evaluate_scenes refreshed %d room report(s) and "
+            "%d house report(s)",
+            room_reports,
+            house_reports,
+        )

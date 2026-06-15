@@ -47,6 +47,8 @@ from scenesmith.agent_utils.scoring import (
 )
 from scenesmith.agent_utils.turn_trimming_session import TurnTrimmingSession
 from scenesmith.prompts import prompt_registry
+from scenesmith.scenebenchmark_critic import evaluate_room_scene, format_prompt_context
+from scenesmith.scenebenchmark_critic.config import critic_config_from_any
 from scenesmith.utils.logging import BaseLogger
 from scenesmith.utils.openai import create_openai_run_config, encode_image_to_base64
 
@@ -778,6 +780,13 @@ class BaseStatefulAgent(ABC):
             current_furniture_id=current_furniture_id,
             agent_type=self.agent_type,
         )
+        benchmark_context = self._build_scenebenchmark_critic_context()
+        if benchmark_context:
+            physics_context = (
+                f"{physics_context}\n\n"
+                f"Additional SceneBenchmark geometry critic context:\n"
+                f"{benchmark_context}"
+            )
 
         # Critic evaluates with physics context. It will call observe_scene to
         # render and get visual context (images persist in session via ToolOutputImage).
@@ -862,6 +871,25 @@ class BaseStatefulAgent(ABC):
 
         # Return natural language critique with score deltas for planner.
         return response.critique + score_change_msg
+
+    def _build_scenebenchmark_critic_context(self) -> str | None:
+        """Evaluate lightweight SceneBenchmark rules for critic prompt context."""
+        critic_config = critic_config_from_any(self.cfg)
+        if not critic_config.enabled or not critic_config.inject_into_llm_critic:
+            return None
+        if self.agent_type not in {AgentType.FURNITURE, AgentType.MANIPULAND}:
+            return None
+        scene = getattr(self, "scene", None)
+        if scene is None:
+            return None
+        payload = evaluate_room_scene(
+            scene,
+            config=critic_config,
+            stage=f"llm_critic_{self.agent_type.value}",
+        )
+        return format_prompt_context(
+            payload, max_issues=critic_config.max_issues_for_prompt
+        )
 
     @abstractmethod
     def _get_design_change_prompt_enum(self) -> Any:
