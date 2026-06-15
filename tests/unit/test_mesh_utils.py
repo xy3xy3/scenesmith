@@ -482,6 +482,32 @@ class TestRemoveMeshFloaters(unittest.TestCase):
         cleaned_mesh = trimesh.load(output_path, force="mesh")
         self.assertAlmostEqual(cleaned_mesh.volume, main_mesh.volume, delta=0.01)
 
+    def test_remove_floaters_avoids_per_component_submesh_peak_memory_path(self):
+        """Test floater removal no longer allocates one submesh per component."""
+        main_mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        floater = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
+        floater.apply_translation([2.0, 0, 0])
+
+        input_path = self.temp_path / "no_submesh_input.glb"
+        output_path = self.temp_path / "no_submesh_output.glb"
+        trimesh.util.concatenate([main_mesh, floater]).export(input_path)
+
+        with patch.object(
+            trimesh.Trimesh,
+            "submesh",
+            side_effect=AssertionError(
+                "remove_mesh_floaters should not call submesh per component"
+            ),
+        ):
+            remove_mesh_floaters(
+                mesh_path=input_path,
+                output_path=output_path,
+                distance_threshold=0.05,
+            )
+
+        cleaned_mesh = trimesh.load(output_path, force="mesh")
+        self.assertAlmostEqual(cleaned_mesh.volume, main_mesh.volume, delta=0.01)
+
 
 class TestChooseFallbackFrontAxis(unittest.TestCase):
     """Test fallback front axis selection when VLM predicts parallel axes."""

@@ -503,16 +503,115 @@ def _compute_bbox_min_distance(bounds1: np.ndarray, bounds2: np.ndarray) -> floa
         Minimum distance between the two bounding boxes. Returns 0 if boxes
         overlap or touch.
     """
-    # For each axis, compute the gap between the boxes.
-    # If boxes overlap on an axis, gap is 0.
-    gaps = np.zeros(3)
-    for i in range(3):
-        # Gap is the distance between the closest edges on this axis.
-        gap = max(0, max(bounds1[0, i] - bounds2[1, i], bounds2[0, i] - bounds1[1, i]))
-        gaps[i] = gap
+    lower_gap = np.maximum(bounds1[0] - bounds2[1], 0.0)
+    upper_gap = np.maximum(bounds2[0] - bounds1[1], 0.0)
+    return float(np.linalg.norm(lower_gap + upper_gap))
 
-    # Minimum distance is the Euclidean distance of the gaps.
-    return np.linalg.norm(gaps)
+
+def _compute_bbox_min_distance_many(
+    query_bounds: np.ndarray, candidate_mins: np.ndarray, candidate_maxs: np.ndarray
+) -> np.ndarray:
+    """Vectorized min distance from one AABB to many candidate AABBs."""
+    lower_gap = np.maximum(query_bounds[0] - candidate_maxs, 0.0)
+    upper_gap = np.maximum(candidate_mins - query_bounds[1], 0.0)
+    return np.linalg.norm(lower_gap + upper_gap, axis=1)
+
+
+def _compute_component_bounds_and_volumes(
+    mesh: trimesh.Trimesh, face_labels: np.ndarray, component_count: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Aggregate per-component bounds and volumes without submesh allocation."""
+    triangles = mesh.vertices[mesh.faces]
+    face_mins = triangles.min(axis=1)
+    face_maxs = triangles.max(axis=1)
+
+    component_bounds = np.empty((component_count, 2, 3), dtype=triangles.dtype)
+    component_bounds[:, 0, :] = np.inf
+    component_bounds[:, 1, :] = -np.inf
+    np.minimum.at(component_bounds[:, 0, :], face_labels, face_mins)
+    np.maximum.at(component_bounds[:, 1, :], face_labels, face_maxs)
+
+    signed_face_volumes = (
+        np.einsum(
+            "ij,ij->i", triangles[:, 0], np.cross(triangles[:, 1], triangles[:, 2])
+        )
+        / 6.0
+    )
+    component_volumes = np.abs(
+        np.bincount(
+            face_labels,
+            weights=signed_face_volumes,
+            minlength=component_count,
+        )
+    )
+
+    return component_bounds, component_volumes
+
+
+def _find_connected_components_within_distance(
+    component_bounds: np.ndarray,
+    component_volumes: np.ndarray,
+    distance_threshold: float,
+) -> np.ndarray:
+    """Find the transitive near-neighbor cluster seeded from the largest component."""
+    from scipy.spatial import cKDTree
+
+    component_mins = component_bounds[:, 0, :]
+    component_maxs = component_bounds[:, 1, :]
+    component_centers = 0.5 * (component_mins + component_maxs)
+    component_radii = np.linalg.norm(0.5 * (component_maxs - component_mins), axis=1)
+    max_radius = float(np.max(component_radii)) if component_radii.size > 0 else 0.0
+
+    largest_idx = int(np.argmax(component_volumes))
+    visited = np.zeros(len(component_bounds), dtype=bool)
+    visited[largest_idx] = True
+    frontier: list[int] = [largest_idx]
+    frontier_head = 0
+
+    tree = cKDTree(component_centers)
+    # Bound intermediate query_ball_point allocations on extremely fragmented
+    # meshes while still batching enough work for good throughput.
+    frontier_chunk_size = 64 if len(component_bounds) >= 50000 else 256
+
+    console_logger.info(
+        f"Starting spatial clustering from largest component "
+        f"(volume: {component_volumes[largest_idx]:.6f})"
+    )
+
+    while frontier_head < len(frontier):
+        frontier_chunk = np.asarray(
+            frontier[frontier_head : frontier_head + frontier_chunk_size],
+            dtype=np.int64,
+        )
+        frontier_head += len(frontier_chunk)
+
+        query_radii = distance_threshold + component_radii[frontier_chunk] + max_radius
+        candidate_lists = tree.query_ball_point(
+            component_centers[frontier_chunk], query_radii
+        )
+
+        for component_idx, candidate_list in zip(frontier_chunk, candidate_lists):
+            if not candidate_list:
+                continue
+
+            candidate_indices = np.asarray(candidate_list, dtype=np.int64)
+            candidate_indices = candidate_indices[~visited[candidate_indices]]
+            if candidate_indices.size == 0:
+                continue
+
+            candidate_distances = _compute_bbox_min_distance_many(
+                query_bounds=component_bounds[component_idx],
+                candidate_mins=component_mins[candidate_indices],
+                candidate_maxs=component_maxs[candidate_indices],
+            )
+            nearby = candidate_indices[candidate_distances <= distance_threshold]
+            if nearby.size == 0:
+                continue
+
+            visited[nearby] = True
+            frontier.extend(nearby.tolist())
+
+    return visited
 
 
 def remove_mesh_floaters(
@@ -564,97 +663,61 @@ def remove_mesh_floaters(
     if face_count == 0:
         raise ValueError(f"Mesh contains no faces: {mesh_path}")
 
-    # Find connected face components without splitting the full mesh into many
-    # independent Trimesh objects. This avoids large peak-memory spikes on big
-    # HSSD meshes where split() would duplicate vertex/face arrays for every
-    # connected component at once.
-    components = [
-        np.asarray(component, dtype=np.int64)
-        for component in trimesh.graph.connected_components(
-            mesh.face_adjacency,
-            min_len=1,
-            nodes=np.arange(face_count),
+    # Assign a component label to every face without constructing one Trimesh per
+    # component. This keeps peak memory much lower on fragmented HSSD assets.
+    if len(mesh.face_adjacency) == 0:
+        face_labels = np.arange(face_count, dtype=np.int64)
+    else:
+        face_labels = np.asarray(
+            trimesh.graph.connected_component_labels(
+                mesh.face_adjacency, node_count=face_count
+            ),
+            dtype=np.int64,
         )
-    ]
+    component_count = int(face_labels.max()) + 1
 
     console_logger.info(
-        f"Found {len(components)} connected component(s) "
+        f"Found {component_count} connected component(s) "
         f"across {face_count} faces and {len(mesh.vertices)} vertices"
     )
 
     # If only one component, no floaters to remove.
-    if len(components) <= 1:
+    if component_count <= 1:
         console_logger.info("Single component mesh, no floaters to remove")
         final_output_path = output_path if output_path is not None else mesh_path
         if output_path is not None:
             mesh.export(final_output_path)
         return final_output_path
 
-    # Calculate bounds and volumes one component at a time to keep memory usage
-    # close to a single full-mesh copy.
-    component_bounds = np.zeros((len(components), 2, 3), dtype=np.float64)
-    volumes = np.zeros(len(components), dtype=np.float64)
-    for idx, face_indices in enumerate(components):
-        component_mesh = mesh.submesh([face_indices], append=True, repair=False)
-        component_bounds[idx] = component_mesh.bounds
-        volumes[idx] = component_mesh.volume
-
-    largest_idx = np.argmax(volumes)
-
-    console_logger.info(
-        f"Starting spatial clustering from largest component "
-        f"(volume: {volumes[largest_idx]:.6f})"
+    component_bounds, component_volumes = _compute_component_bounds_and_volumes(
+        mesh=mesh, face_labels=face_labels, component_count=component_count
+    )
+    keep_component_mask = _find_connected_components_within_distance(
+        component_bounds=component_bounds,
+        component_volumes=component_volumes,
+        distance_threshold=distance_threshold,
     )
 
-    # Initialize main cluster with largest component.
-    main_cluster_indices = {largest_idx}
-    remaining_indices = set(range(len(components))) - main_cluster_indices
-
-    # Iteratively add components within distance threshold.
-    changed = True
-    while changed and remaining_indices:
-        changed = False
-        for idx in list(remaining_indices):
-            comp_bounds = component_bounds[idx]
-
-            # Check distance to any component in main cluster.
-            min_dist_to_cluster = float("inf")
-            for cluster_idx in main_cluster_indices:
-                cluster_bounds = component_bounds[cluster_idx]
-                dist = _compute_bbox_min_distance(comp_bounds, cluster_bounds)
-                min_dist_to_cluster = min(min_dist_to_cluster, dist)
-
-            # Add to cluster if within threshold.
-            if min_dist_to_cluster <= distance_threshold:
-                main_cluster_indices.add(idx)
-                remaining_indices.remove(idx)
-                changed = True
-                console_logger.debug(
-                    f"Added component {idx} to cluster "
-                    f"(distance: {min_dist_to_cluster:.3f}m, "
-                    f"volume: {volumes[idx]:.6f})"
-                )
-
-    removed_indices = remaining_indices
-    removed_count = len(removed_indices)
-    removed_volume = sum(volumes[i] for i in removed_indices)
+    removed_indices = np.flatnonzero(~keep_component_mask)
+    removed_count = int(removed_indices.size)
+    removed_volume = float(component_volumes[removed_indices].sum())
 
     console_logger.info(
-        f"Keeping {len(main_cluster_indices)} component(s), "
+        f"Keeping {int(keep_component_mask.sum())} component(s), "
         f"removing {removed_count} floater(s) "
         f"(total removed volume: {removed_volume:.6f})"
     )
 
     # Log details of removed floaters.
-    for idx in sorted(removed_indices):
-        console_logger.info(f"Removed floater {idx}: volume={volumes[idx]:.6f}")
+    for idx in removed_indices.tolist():
+        console_logger.info(
+            f"Removed floater {idx}: volume={component_volumes[idx]:.6f}"
+        )
 
     # Remove floaters in-place by keeping only faces that belong to the main
     # spatial cluster. This preserves mesh visuals/materials without allocating
     # another full concatenated mesh.
-    kept_face_mask = np.zeros(face_count, dtype=bool)
-    for idx in main_cluster_indices:
-        kept_face_mask[components[idx]] = True
+    kept_face_mask = keep_component_mask[face_labels]
 
     if not np.all(kept_face_mask):
         mesh.update_faces(kept_face_mask)

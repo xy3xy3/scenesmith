@@ -20,10 +20,7 @@ from scenesmith.furniture_agents.tools.response_dataclasses import (
     FurnitureErrorType,
     SnapToObjectResult,
 )
-from scenesmith.utils.geometry_utils import (
-    convert_mesh_yup_to_zup,
-    rigid_transform_to_matrix,
-)
+from scenesmith.utils.geometry_utils import rigid_transform_to_matrix
 from scenesmith.utils.mesh_loading import (
     get_collision_vertices_world,
     load_collision_meshes_from_sdf,
@@ -192,11 +189,15 @@ def snap_mesh_to_aabb(
 def compute_snap_direction_mesh_to_mesh(
     obj: SceneObject, target: SceneObject, cfg: DictConfig
 ) -> np.ndarray:
-    """Compute snap direction from obj to target using closest points on visual geometry.
+    """Compute snap direction from obj to target using closest points on mesh geometry.
+
+    Prefers collision geometry when available because it is dramatically lighter than
+    visual meshes while remaining consistent with the later collision-based snap step.
+    Falls back to visual geometry when no collision meshes are present.
 
     Args:
-        obj: Object to move (must have geometry_path).
-        target: Target object (must have geometry_path).
+        obj: Object to move.
+        target: Target object.
         cfg: Configuration with snap_to_object.max_sample_vertices setting.
 
     Returns:
@@ -207,42 +208,26 @@ def compute_snap_direction_mesh_to_mesh(
     """
     start_time = time.time()
 
-    # Load meshes.
-    obj_mesh = trimesh.load(obj.geometry_path, force="mesh")
-    target_mesh = trimesh.load(target.geometry_path, force="mesh")
+    def _load_proximity_mesh(scene_obj: SceneObject) -> trimesh.Trimesh:
+        proximity_meshes = load_object_collision_geometry(scene_obj)
+        if not proximity_meshes:
+            raise ValueError(f"Could not load mesh for {scene_obj.name}")
+        if len(proximity_meshes) == 1:
+            return proximity_meshes[0].copy()
+        return trimesh.util.concatenate([mesh.copy() for mesh in proximity_meshes])
 
-    # Handle Scene objects (multiple meshes) by combining.
-    if isinstance(obj_mesh, trimesh.Scene):
-        meshes = [
-            g for g in obj_mesh.geometry.values() if isinstance(g, trimesh.Trimesh)
-        ]
-        obj_mesh = trimesh.util.concatenate(meshes) if meshes else None
-    if isinstance(target_mesh, trimesh.Scene):
-        meshes = [
-            g for g in target_mesh.geometry.values() if isinstance(g, trimesh.Trimesh)
-        ]
-        target_mesh = trimesh.util.concatenate(meshes) if meshes else None
-
-    if not isinstance(obj_mesh, trimesh.Trimesh):
-        raise ValueError(f"Could not load mesh from {obj.geometry_path}")
-    if not isinstance(target_mesh, trimesh.Trimesh):
-        raise ValueError(f"Could not load mesh from {target.geometry_path}")
+    obj_mesh = _load_proximity_mesh(obj)
+    target_mesh = _load_proximity_mesh(target)
 
     # Log mesh complexity for performance monitoring.
     console_logger.info(
-        f"Computing snap direction: {obj.name} ({len(obj_mesh.vertices)} vertices) "
-        f"→ {target.name} ({len(target_mesh.vertices)} vertices)"
+        f"Computing snap direction: {obj.name} ({len(obj_mesh.vertices)} proximity "
+        f"vertices) → {target.name} ({len(target_mesh.vertices)} proximity vertices)"
     )
 
-    # Convert meshes from Y-up (GLTF) to Z-up (Drake) before applying transforms.
-    convert_mesh_yup_to_zup(obj_mesh)
-    convert_mesh_yup_to_zup(target_mesh)
-
     # Apply runtime scale_factor (set by rescale operations).
-    if obj.scale_factor != 1.0:
-        obj_mesh.vertices *= obj.scale_factor
-    if target.scale_factor != 1.0:
-        target_mesh.vertices *= target.scale_factor
+    # Collision geometry loading already applies scale_factor. Visual-geometry fallback
+    # also applies it in load_object_collision_geometry, so no extra scaling is needed.
 
     # Transform meshes to world coordinates.
     obj_matrix = rigid_transform_to_matrix(obj.transform)
@@ -380,8 +365,16 @@ def snap_with_iterative_collision_check(
     for i, piece in enumerate(target_collision_meshes):
         target_manager.add_object(f"target_{i}", piece, transform=target_matrix)
 
-    # Create reusable collision manager for obj (will update transform each iteration).
+    # Create reusable collision manager for obj and update transforms in-place.
+    # Re-registering mesh pieces every iteration creates new FCL BVHs repeatedly,
+    # which is both slower and can retain large native allocations.
     obj_manager = trimesh.collision.CollisionManager()
+    obj_piece_names = []
+    initial_matrix = rigid_transform_to_matrix(obj.transform)
+    for j, piece in enumerate(obj_collision_meshes):
+        piece_name = f"obj_{j}"
+        obj_manager.add_object(piece_name, piece, transform=initial_matrix)
+        obj_piece_names.append(piece_name)
 
     # Iteratively move obj toward target.
     step_size = cfg.snap_to_object.iterative_snap_step_m
@@ -466,11 +459,10 @@ def snap_with_iterative_collision_check(
         current_transform = RigidTransform(obj.transform.rotation(), current_position)
         current_matrix = rigid_transform_to_matrix(current_transform)
 
-        # Update collision manager with obj at current position.
-        # Clear previous iteration's objects and add with new transform.
-        obj_manager._objs.clear()  # Direct clear for performance.
-        for j, piece in enumerate(obj_collision_meshes):
-            obj_manager.add_object(f"obj_{j}", piece, transform=current_matrix)
+        # Update the registered collision pieces in-place to avoid rebuilding FCL
+        # geometry structures on every step.
+        for piece_name in obj_piece_names:
+            obj_manager.set_transform(piece_name, current_matrix)
 
         # Check collision using min_distance_other.
         # Returns negative if penetrating, positive if separated.

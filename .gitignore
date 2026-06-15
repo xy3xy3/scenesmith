@@ -3,6 +3,7 @@
 *.egg-info
 __pycache__
 outputs
+*.csv
 .serena
 debug_asset_gen
 debug_rendering
@@ -12,3 +13,5 @@ debug_furniture_agent
 .vscode/
 .mcp.json
 tmp/
+latest-run
+local/
