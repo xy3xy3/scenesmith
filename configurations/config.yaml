@@ -13,6 +13,13 @@ openai:
   # Compatibility toggle for providers that do not fully implement the Responses API.
   use_responses: ${oc.decode:${oc.env:OPENAI_USE_RESPONSES,true}}
 
+# Optional CLI shortcut for toggling the embedded SceneBenchmark critic.
+# Example:
+#   python main.py ... scenebenchmark_critic_enabled=true
+#   python main.py ... scenebenchmark_critic_enabled=false
+# When set, this overrides experiment.scenebenchmark_critic.enabled.
+scenebenchmark_critic_enabled: null
+
 defaults:
   - experiment: indoor_scene_generation # Experiment yaml file name in configurations/experiment folder
   - floor_plan_agent: stateful_floor_plan_agent # Floor plan agent config in configurations/floor_plan_agent folder

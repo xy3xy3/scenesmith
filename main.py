@@ -27,6 +27,25 @@ from scenesmith.utils.print_utils import cyan
 console_logger = logging.getLogger(__name__)
 
 
+def apply_scenebenchmark_critic_toggle(cfg: DictConfig) -> None:
+    """Apply the top-level critic toggle, if provided."""
+    critic_toggle = OmegaConf.select(cfg, "scenebenchmark_critic_enabled")
+    if critic_toggle is None:
+        return
+
+    if isinstance(critic_toggle, str):
+        critic_toggle = critic_toggle.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+
+    with open_dict(cfg):
+        cfg.experiment.scenebenchmark_critic.enabled = bool(critic_toggle)
+
+
 def run_local(cfg: DictConfig):
     # Delay some imports in case they are not needed in non-local envs for submission.
     from scenesmith.experiments import build_experiment
@@ -48,6 +67,11 @@ def run_local(cfg: DictConfig):
                 )
             cfg.experiment.csv_path = None
             cfg.experiment.prompts = [str(cfg.prompt)]
+
+    # Optional CLI shortcut for the embedded SceneBenchmark critic toggle.
+    # This keeps the existing nested Hydra override working while also allowing
+    # a shorter top-level flag for A/B scene generation comparisons.
+    apply_scenebenchmark_critic_toggle(cfg)
 
     # Get yaml names.
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
