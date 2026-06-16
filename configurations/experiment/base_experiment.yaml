@@ -60,6 +60,7 @@ objaverse_retrieval_server:
 
 # Materials retrieval server settings
 materials_retrieval_server:
+  enabled: true
   host: "127.0.0.1"
   port: 7008
   data_path: "data/materials"

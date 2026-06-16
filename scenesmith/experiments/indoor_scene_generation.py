@@ -1647,6 +1647,10 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
         # Get server configuration from experiment config.
         server_config = self.cfg.experiment.materials_retrieval_server
 
+        if not server_config.get("enabled", True):
+            console_logger.info("Skipping materials retrieval server: disabled by config")
+            return
+
         retrieval_device = _get_retrieval_gpu_device()
         console_logger.info(
             f"Starting materials retrieval server on "
