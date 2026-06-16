@@ -3069,6 +3069,79 @@ def test_rule_functional_dependency_indirect_support_via_tray() -> None:
     assert "indirectly via `tray_1`" in result["reason"]
 
 
+def test_rule_functional_dependency_indirect_support_rejects_unrelated_shelf_target() -> (
+    None
+):
+    shelf = _benchmark_obj(
+        "pantry_shelving_unit_1", "bookshelf", (3.30, 2.80, 0.0), (0.90, 1.90, 0.45)
+    )
+    shelf["functional_hints"].update(
+        {
+            "category_group": "storage",
+            "functional_categories": ["supportable"],
+            "category_keywords": ["pantry shelving unit", "shelf", "bookcase"],
+        }
+    )
+    tray = _benchmark_obj(
+        "serving_tray_1", "tray", (2.825, 1.905, 1.173), (0.46, 0.28, 0.08)
+    )
+    cup = _benchmark_obj(
+        "cup_1", "water_tumbler_cup", (2.749, 1.944, 1.276), (0.10, 0.10, 0.20)
+    )
+    check = {
+        "check_id": "fd_unrelated_shelf_tray",
+        "metric": "functional_dependency",
+        "subject_id": "cup_1",
+        "target_ids": ["pantry_shelving_unit_1"],
+        "relation_type": "object_on_support",
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([shelf, tray, cup], [check]),
+        metrics=["functional_dependency"],
+    )
+
+    result = next(
+        item for item in results if item["check_id"] == "fd_unrelated_shelf_tray"
+    )
+    assert result["label"] == "fail", result["reason"]
+    assert "indirectly via" not in result["reason"]
+
+
+def test_rule_functional_dependency_floating_cup_in_shelf_footprint_skips_fallback() -> (
+    None
+):
+    shelf = _benchmark_obj("shelf_1", "bookshelf", (2.0, 2.0, 0.0), (0.8, 1.4, 0.32))
+    shelf["functional_hints"].update(
+        {
+            "category_group": "storage",
+            "functional_categories": ["supportable"],
+            "category_keywords": ["bookshelf", "bookcase", "shelving unit"],
+        }
+    )
+    cup = _benchmark_obj(
+        "cup_1", "water_tumbler_cup", (2.0, 2.0, 1.10), (0.10, 0.10, 0.20)
+    )
+    check = {
+        "check_id": "fd_floating_cup_shelf",
+        "metric": "functional_dependency",
+        "subject_id": "cup_1",
+        "target_ids": ["shelf_1"],
+        "relation_type": "object_on_support",
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([shelf, cup], [check]),
+        metrics=["functional_dependency"],
+    )
+
+    result = next(
+        item for item in results if item["check_id"] == "fd_floating_cup_shelf"
+    )
+    assert result["label"] == "fail", result["reason"]
+    assert "multilevel shelf support" not in result["reason"]
+
+
 def test_rule_functional_dependency_cup_on_coaster_uses_indirect_support() -> None:
     nightstand = _benchmark_obj(
         "nightstand_1", "nightstand", (2.0, 2.0, 0.0), (0.5, 0.5, 0.4)
@@ -3256,6 +3329,59 @@ def test_rule_functional_dependency_manipuland_stack_chain_to_table() -> None:
         "book_lower",
         "table_1",
     ]
+
+
+def test_rule_functional_dependency_cup_tray_stack_uses_bottom_table_support() -> None:
+    table = _benchmark_obj(
+        "table_1",
+        "bar_height_table",
+        (2.2609, 2.6746, -0.0003),
+        (2.0232, 1.2181, 0.7039),
+    )
+    table["functional_hints"].update(
+        {
+            "functional_categories": ["supportable"],
+            "category_group": "work_surface",
+            "scene_object_type": "furniture",
+            "interaction_height_m": {"min": 1.0, "max": 1.2},
+        }
+    )
+    tray = _benchmark_obj(
+        "tray_1", "tray", (2.8255, 1.9050, 1.1726), (0.3612, 0.0644, 0.1828)
+    )
+    tray["functional_hints"].update(
+        {
+            "scene_object_type": "manipuland",
+            "category_keywords": ["tray"],
+            "interaction_surface_map": {"top": ["supportable", "graspable"]},
+        }
+    )
+    cup = _benchmark_obj(
+        "cup_1", "water_tumbler_cup", (2.7494, 1.9441, 1.1761), (0.0809, 0.0897, 0.0855)
+    )
+    cup["functional_hints"].update(
+        {"scene_object_type": "manipuland", "category_keywords": ["cup", "tumbler"]}
+    )
+    check = {
+        "check_id": "fd_cup_tray_bar_table_stack",
+        "metric": "functional_dependency",
+        "subject_id": "cup_1",
+        "target_ids": ["table_1"],
+        "relation_type": "object_on_support",
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([table, tray, cup], [check]),
+        metrics=["functional_dependency"],
+    )
+
+    result = next(
+        item for item in results if item["check_id"] == "fd_cup_tray_bar_table_stack"
+    )
+    assert result["label"] == "pass", result["reason"]
+    assert "manipuland stack chain" in result["reason"]
+    assert result["diagnostics"]["support_evaluation_path"] == "stack"
+    assert result["diagnostics"]["support_bottom_evaluation_path"] == "stack_bottom"
 
 
 def test_rule_functional_dependency_book_inside_low_coffee_table_lower_shelf() -> None:

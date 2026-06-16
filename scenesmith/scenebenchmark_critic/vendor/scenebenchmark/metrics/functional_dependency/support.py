@@ -772,6 +772,8 @@ def _truncated_multilevel_region_support_fallback(
 
     inflated_overlap = _footprint_overlap_ratio_xy(subject, target, inflate=0.12)
     effective_overlap = max(overlap_ratio, inflated_overlap)
+    if not _shelf_footprint_fallback_subject_allowed(subject, target):
+        return None
     if effective_overlap >= 0.70:
         return (
             "pass",
@@ -1048,6 +1050,8 @@ def _multilevel_shelf_support_fallback(
 
     inflated_overlap = _footprint_overlap_ratio_xy(subject, target, inflate=0.12)
     effective_overlap = max(overlap_ratio, inflated_overlap)
+    if not _shelf_footprint_fallback_subject_allowed(subject, target):
+        return None
     if effective_overlap >= 0.70:
         return (
             "pass",
@@ -1152,14 +1156,15 @@ def _eval_manipuland_stack_support_result(
     if chain is None or len(chain) < 2:
         return None
     bottom = chain[-1]
-    bottom_result = evaluate_support_relation(
-        bottom, target, "object_on_support", store=None
-    )
+    bottom_result = _eval_stack_bottom_support_result(bottom, target)
     if bottom_result.label not in {"pass", "degraded"}:
         return None
     chain_ids = [str(obj.get("id") or "unknown") for obj in chain]
     target_id = str(target.get("id") or "target")
     evidence = dict(bottom_result.evidence)
+    evidence["support_chain_adjacent_height_deltas_m"] = (
+        _stack_chain_adjacent_height_deltas(chain)
+    )
     evidence.update(
         {
             "support_chain_ids": chain_ids + [target_id],
@@ -1196,10 +1201,8 @@ def _find_manipuland_stack_chain(
     candidates.sort(key=lambda obj: _stack_candidate_rank(subject, obj))
     for candidate in candidates:
         candidate_id = str(candidate.get("id") or "")
-        label, _confidence, _reason = _eval_object_on_support(
-            candidate, target, "object_on_support", store=None
-        )
-        if label in {"pass", "degraded"}:
+        bottom_result = _eval_stack_bottom_support_result(candidate, target)
+        if bottom_result.label in {"pass", "degraded"}:
             return [subject, candidate]
         child_chain = _find_manipuland_stack_chain(
             candidate,
@@ -1234,11 +1237,15 @@ def _manipuland_directly_on(upper: dict[str, Any], lower: dict[str, Any]) -> boo
     upper_bbox = upper.get("bbox_world") or {}
     lower_bbox = lower.get("bbox_world") or {}
     upper_min = upper_bbox.get("min") or []
+    lower_min = lower_bbox.get("min") or []
     lower_max = lower_bbox.get("max") or []
-    if len(upper_min) < 3 or len(lower_max) < 3:
+    if len(upper_min) < 3 or len(lower_min) < 3 or len(lower_max) < 3:
+        return False
+    if float(lower_min[2]) > float(upper_min[2]) + 0.03:
         return False
     vertical_delta = float(upper_min[2]) - float(lower_max[2])
-    if vertical_delta < -0.08 or vertical_delta > 0.22:
+    min_vertical_delta = -0.16 if _is_surface_intermediary(lower) else -0.08
+    if vertical_delta < min_vertical_delta or vertical_delta > 0.22:
         return False
     overlap = _footprint_overlap_ratio_xy(upper, lower, inflate=0.04)
     gap = bbox_gap_xy(upper, lower)
@@ -1257,6 +1264,69 @@ def _stack_candidate_rank(
     )
     overlap = _footprint_overlap_ratio_xy(upper, lower, inflate=0.04)
     return vertical_delta, -overlap
+
+
+def _stack_chain_adjacent_height_deltas(chain: list[dict[str, Any]]) -> list[float]:
+    deltas: list[float] = []
+    for upper, lower in zip(chain, chain[1:]):
+        upper_min = (upper.get("bbox_world") or {}).get("min") or []
+        lower_max = (lower.get("bbox_world") or {}).get("max") or []
+        if len(upper_min) < 3 or len(lower_max) < 3:
+            continue
+        deltas.append(round(float(upper_min[2]) - float(lower_max[2]), 4))
+    return deltas
+
+
+def _eval_stack_bottom_support_result(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+) -> SupportRelationResult:
+    direct_result = _direct_support_relation_result(subject, target)
+    if direct_result is not None and direct_result.label in {"pass", "degraded"}:
+        return direct_result
+
+    assessment = assess_direct_support(subject, target)
+    if assessment is None or assessment.evidence is None:
+        return evaluate_support_relation(
+            subject, target, "object_on_support", store=None
+        )
+
+    evidence = support_assessment_diagnostics(assessment)
+    gap = bbox_gap_xy(subject, target)
+    if gap is not None:
+        evidence["support_gap_xy_m"] = round(gap, 4)
+    support_evidence = assessment.evidence
+    if (
+        _is_surface_intermediary(subject)
+        and support_evidence.surface_kind == "top_surface"
+        and gap is not None
+        and gap <= 0.16
+        and support_evidence.height_delta_m <= 0.12
+    ):
+        return _support_result(
+            "pass",
+            0.82,
+            "stack bottom support accepts a nearby overhanging secondary surface on the furniture top: "
+            f"gap {gap:.2f}m, height delta {support_evidence.height_delta_m:.2f}m.",
+            "stack_bottom",
+            evidence,
+        )
+    if (
+        _is_surface_intermediary(subject)
+        and support_evidence.surface_kind == "top_surface"
+        and gap is not None
+        and gap <= 0.20
+        and support_evidence.height_delta_m <= 0.18
+    ):
+        return _support_result(
+            "degraded",
+            0.72,
+            "stack bottom support finds a plausible nearby secondary surface aligned to the furniture top, "
+            f"but the overhang is approximate: gap {gap:.2f}m, height delta {support_evidence.height_delta_m:.2f}m.",
+            "stack_bottom",
+            evidence,
+        )
+    return evaluate_support_relation(subject, target, "object_on_support", store=None)
 
 
 def _is_valid_manipuland_stack_target(target: dict[str, Any]) -> bool:
@@ -1306,10 +1376,20 @@ def _eval_indirect_support_via_intermediary_result(
         )
         if mid_result.label not in {"pass", "degraded"}:
             continue
+        if not _indirect_intermediary_target_match(intermediary, target, mid_result):
+            continue
         mid_bbox = intermediary.get("bbox_world") or {}
         mid_min = mid_bbox.get("min") or []
         mid_max = mid_bbox.get("max") or []
+        mid_center = mid_bbox.get("center") or []
+        subject_center = subject_bbox.get("center") or []
         if len(mid_min) < 3 or len(mid_max) < 3:
+            continue
+        if (
+            len(mid_center) >= 3
+            and len(subject_center) >= 3
+            and float(mid_center[2]) > float(subject_center[2]) + 0.02
+        ):
             continue
         if float(mid_min[2]) > subject_bottom + 0.05:
             continue
@@ -1352,6 +1432,32 @@ def _eval_indirect_support_via_intermediary_result(
                 evidence,
             )
     return None
+
+
+def _indirect_intermediary_target_match(
+    intermediary: dict[str, Any],
+    target: dict[str, Any],
+    mid_result: SupportRelationResult,
+) -> bool:
+    overlap = _footprint_overlap_ratio_xy(intermediary, target, inflate=0.05)
+    gap = bbox_gap_xy(intermediary, target)
+    dz = _subject_to_bbox_top_delta(intermediary, target)
+    path = mid_result.evaluation_path
+    if path == "support_region":
+        evidence_overlap = _float_evidence(
+            mid_result.evidence, "support_overlap_ratio", 0.0
+        )
+        evidence_dz = _float_evidence(
+            mid_result.evidence, "support_height_delta_m", 999.0
+        )
+        return evidence_overlap >= 0.30 and evidence_dz <= 0.30
+    if path == "bbox_fallback":
+        return overlap >= 0.30 and dz <= 0.30
+    if path in {"thin_edge", "direct"}:
+        return (overlap >= 0.25 and dz <= 0.24) or (
+            gap is not None and gap <= 0.08 and dz <= 0.20
+        )
+    return False
 
 
 def _soft_sleeping_surface_support_fallback(
@@ -1401,6 +1507,18 @@ def _is_secondary_support_intermediary(
     if _is_surface_intermediary(obj):
         return True
     if _is_stackable_support_subject(subject) and _is_stackable_support_subject(obj):
+        return True
+    return False
+
+
+def _shelf_footprint_fallback_subject_allowed(
+    subject: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    if _token_text_has_any(subject, STACKABLE_SUPPORT_TEXT_HINTS):
+        return True
+    if object_category(subject) in {"plant", "vase"} or _token_text_has_any(
+        subject, ("plant", "potted_plant", "vase")
+    ):
         return True
     return False
 
