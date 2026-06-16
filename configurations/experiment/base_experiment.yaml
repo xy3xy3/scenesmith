@@ -76,12 +76,25 @@ scenebenchmark_critic:
   enabled: false
   metrics: ["spatial_accessibility", "functional_dependency"]
   room_stage_hooks: ["scene_after_furniture", "final_scene"]
-  house_stage_hooks: ["combined_house_after_furniture", "combined_house"]
+  # Single-room by default; override this to enable combined-house reports.
+  house_stage_hooks: []
   inject_into_llm_critic: true
   hard_gate: false
   max_issues_for_prompt: 8
   fail_gate_threshold: 1
   degraded_gate_threshold: 999999
+  # SceneBenchmark spatial_accessibility rule parameters.
+  accessibility_grid_resolution_m: 0.05
+  accessibility_agent_width_m: 0.50
+  accessibility_obstacle_height_threshold_m: 1.8
+  accessibility_access_zone_depth_m: 0.55
+  accessibility_pass_ratio: 0.60
+  accessibility_degraded_ratio: 0.25
+  accessibility_agent_profiles: null
+  # SceneBenchmark functional_dependency relation proposal parameters.
+  # "template" avoids VLM/network calls and mirrors SceneBenchmark's deterministic fallback.
+  fd_relation_proposer_mode: "template"
+  max_fd_relation_proposals: 8
 
 # Physical feasibility post-processing configuration.
 # Two-stage process: projection (IK-based) → simulation (physics settling).

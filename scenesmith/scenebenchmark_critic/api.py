@@ -34,7 +34,7 @@ def evaluate_room_scene(
     case_pack = room_scene_to_case_pack(
         scene, stage=stage, metrics=list(critic_config.metrics)
     )
-    results = run_case_pack_checks(case_pack)
+    results = run_case_pack_checks(case_pack, config=critic_config)
     return build_evaluation_payload(
         case_pack=case_pack,
         results=results,
@@ -58,7 +58,7 @@ def evaluate_house_scene(
         metrics=list(critic_config.metrics),
         include_object_types=include_object_types,
     )
-    results = run_case_pack_checks(case_pack)
+    results = run_case_pack_checks(case_pack, config=critic_config)
     return build_evaluation_payload(
         case_pack=case_pack,
         results=results,

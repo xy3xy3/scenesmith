@@ -4,7 +4,48 @@ from __future__ import annotations
 
 from typing import Any
 
-ACCESS_AFFORDANCES = {"sittable", "openable", "supportable", "sleepable"}
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
+    bbox_gap_xy,
+    distance_xy,
+    is_small_object,
+    object_affordances,
+    object_category,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import (
+    DINING_TABLES,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
+    _infer_relation_type,
+    _relation_target_is_valid,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.semantics import (
+    _is_nightstand_target,
+    _is_seating_subject,
+    _is_work_surface_target,
+)
+
+ACCESS_AFFORDANCES = {"sittable", "openable", "supportable", "sleepable", "graspable"}
+ACCESS_AFFORDANCE_PRIORITY = (
+    "openable",
+    "sittable",
+    "graspable",
+    "supportable",
+    "sleepable",
+)
+SMALL_SA_SUBJECT_HINTS = (
+    "book",
+    "notebook",
+    "pen",
+    "pencil",
+    "figurine",
+    "toy",
+    "vase",
+    "bottle",
+    "cup",
+    "mug",
+    "plate",
+    "bowl",
+)
 
 
 def build_checks(
@@ -18,28 +59,84 @@ def build_checks(
         if isinstance(obj, dict) and obj.get("id")
     }
     checks: list[dict[str, Any]] = []
+    seen_check_ids: set[str] = set()
 
     if "spatial_accessibility" in enabled:
         for obj in objects.values():
-            affordances = set(
-                ((obj.get("functional_hints") or {}).get("functional_categories") or [])
+            affordance = _spatial_access_affordance(obj)
+            if affordance is None:
+                continue
+            check_id = f"spatial_accessibility__{obj['id']}"
+            target_ids = _spatial_access_target_ids(obj, objects.values(), affordance)
+            checks.append(
+                {
+                    "check_id": check_id,
+                    "metric": "spatial_accessibility",
+                    "subject_id": obj["id"],
+                    "target_ids": target_ids,
+                    "affordance": affordance,
+                    "functional_categories": sorted(object_affordances(obj)),
+                    "priority_weight": _priority_weight(
+                        obj, "spatial_accessibility", 1.0
+                    ),
+                    "question": (
+                        f"Is {obj.get('name') or obj['id']} spatially accessible "
+                        f"for {affordance} use?"
+                    ),
+                    "evidence_refs": ["scene_geometry"],
+                    "scoring_tier": "core",
+                }
             )
-            for affordance in sorted(affordances & ACCESS_AFFORDANCES):
-                checks.append(
-                    {
-                        "check_id": f"sa_{obj['id']}_{affordance}",
-                        "metric": "spatial_accessibility",
-                        "subject_id": obj["id"],
-                        "affordance": affordance,
-                        "question": (
-                            f"Is {obj.get('name') or obj['id']} spatially accessible "
-                            f"for {affordance} use?"
-                        ),
-                        "scoring_tier": "core",
-                    }
-                )
+            seen_check_ids.add(check_id)
 
     if "functional_dependency" in enabled:
+        for relation in geometry.get("relations") or []:
+            if not isinstance(relation, dict):
+                continue
+            if relation.get("annotation_source") != "metadata":
+                continue
+            subject_id = str(
+                relation.get("subject_id") or relation.get("subject") or ""
+            )
+            target_ids = [
+                str(item)
+                for item in (relation.get("target_ids") or [])
+                if str(item) in objects
+            ]
+            if subject_id not in objects or not target_ids:
+                continue
+            relation_type = _metadata_relation_type(
+                relation, objects[subject_id], objects[target_ids[0]]
+            )
+            check_id = f"fd_{subject_id}_{'_'.join(target_ids)}_{relation_type}"
+            if check_id in seen_check_ids:
+                continue
+            checks.append(
+                {
+                    "check_id": check_id,
+                    "metric": "functional_dependency",
+                    "subject_id": subject_id,
+                    "target_ids": target_ids,
+                    "relation_type": relation_type,
+                    "expected_use": _expected_use(relation_type),
+                    "priority_weight": _priority_weight(
+                        objects[subject_id], "functional_dependency", 0.7
+                    ),
+                    "question": (
+                        f"Does metadata relation `{relation_type}` hold for "
+                        f"{objects[subject_id].get('name') or subject_id}?"
+                    ),
+                    "evidence": {
+                        "annotation_source": "metadata",
+                        "target_surface_id": relation.get("target_surface_id"),
+                        "reason": relation.get("reason"),
+                    },
+                    "evidence_refs": ["scene_geometry", "object_metadata"],
+                    "scoring_tier": str(relation.get("scoring_tier") or "core"),
+                }
+            )
+            seen_check_ids.add(check_id)
+
         surface_owner = _surface_owner_map(objects)
         for obj in objects.values():
             placement = obj.get("placement_info") or {}
@@ -48,22 +145,132 @@ def build_checks(
             if not surface_id or not target_id:
                 continue
             relation_type = _relation_type_for(obj, objects[target_id])
+            check_id = f"fd_{obj['id']}_{target_id}_{relation_type}"
+            if check_id in seen_check_ids:
+                continue
             checks.append(
                 {
-                    "check_id": f"fd_{obj['id']}_{target_id}_{relation_type}",
+                    "check_id": check_id,
                     "metric": "functional_dependency",
                     "subject_id": obj["id"],
                     "target_ids": [target_id],
                     "relation_type": relation_type,
+                    "expected_use": _expected_use(relation_type),
+                    "priority_weight": _priority_weight(
+                        obj, "functional_dependency", 0.7
+                    ),
                     "question": (
                         f"Is {obj.get('name') or obj['id']} functionally supported "
                         f"by {objects[target_id].get('name') or target_id}?"
                     ),
                     "evidence": {"parent_surface_id": surface_id},
+                    "evidence_refs": ["scene_geometry", "placement_info"],
                     "scoring_tier": "core",
                 }
             )
+            seen_check_ids.add(check_id)
+
+        checks.extend(_build_explicit_target_relation_checks(objects, seen_check_ids))
+        checks.extend(
+            _build_grouped_functional_dependency_checks(objects, seen_check_ids)
+        )
     return checks
+
+
+def _spatial_access_affordance(obj: dict[str, Any]) -> str | None:
+    if _should_drop_small_spatial_accessibility(obj):
+        return None
+    affordances = object_affordances(obj) & ACCESS_AFFORDANCES
+    if not affordances:
+        return None
+    for affordance in ACCESS_AFFORDANCE_PRIORITY:
+        if affordance in affordances:
+            return affordance
+    return sorted(affordances)[0]
+
+
+def _priority_weight(obj: dict[str, Any], metric: str, default: float) -> float:
+    hints = obj.get("functional_hints") or {}
+    metric_relevance = hints.get("metric_relevance") or {}
+    if isinstance(metric_relevance, dict):
+        try:
+            value = metric_relevance.get(metric)
+            if value:
+                return float(value)
+        except (TypeError, ValueError):
+            pass
+    return float(default)
+
+
+def _spatial_access_target_ids(
+    subject: dict[str, Any],
+    candidates: Any,
+    affordance: str,
+) -> list[str]:
+    limit = 4 if affordance == "sittable" else 2
+    targets = _nearby_targets(
+        subject,
+        candidates,
+        predicate=_is_spatial_access_target,
+        max_gap_m=1.6 if affordance == "sittable" else 1.0,
+        limit=limit,
+    )
+    return [str(target.get("id") or "") for target in targets if target.get("id")]
+
+
+def _is_spatial_access_target(candidate: dict[str, Any]) -> bool:
+    category = object_category(candidate)
+    if category in {"floor", "wall", "door", "window", "ceiling"}:
+        return False
+    if _should_drop_small_spatial_accessibility(candidate):
+        return False
+    affordances = object_affordances(candidate)
+    if affordances & {"sittable", "supportable", "openable", "sleepable"}:
+        return True
+    group = str((candidate.get("functional_hints") or {}).get("category_group") or "")
+    return group in {
+        "seating",
+        "sleeping",
+        "storage",
+        "storage_surface",
+        "work_surface",
+    }
+
+
+def _should_drop_small_spatial_accessibility(obj: dict[str, Any]) -> bool:
+    if is_small_object(obj):
+        return True
+    text = " ".join(
+        str(obj.get(key) or "").strip().lower()
+        for key in ("id", "category", "category_norm", "asset_id", "description")
+    )
+    if any(hint in text for hint in SMALL_SA_SUBJECT_HINTS):
+        return True
+    hints = obj.get("functional_hints") or {}
+    group = str(hints.get("category_group") or "")
+    affordances = object_affordances(obj)
+    if group == "small_object" or affordances == {"graspable"}:
+        return True
+    bbox = obj.get("bbox_world") or {}
+    size = bbox.get("size") or [0.0, 0.0, 0.0]
+    if len(size) >= 3:
+        area = max(float(size[0] or 0.0), 0.0) * max(float(size[1] or 0.0), 0.0)
+        height = float(size[2] or 0.0)
+        if area <= 0.12 and height <= 0.5:
+            return True
+    category = object_category(obj)
+    return category in {
+        "book",
+        "vase",
+        "mug",
+        "cup",
+        "bottle",
+        "remote",
+        "laptop",
+        "tray",
+        "plate",
+        "bowl",
+    }
 
 
 def _surface_owner_map(objects: dict[str, dict[str, Any]]) -> dict[str, str]:
@@ -86,3 +293,334 @@ def _relation_type_for(subject: dict[str, Any], target: dict[str, Any]) -> str:
     if "floor" in target_category:
         return "object_on_floor"
     return "object_on_support"
+
+
+def _metadata_relation_type(
+    relation: dict[str, Any], subject: dict[str, Any], target: dict[str, Any]
+) -> str:
+    relation_type = str(relation.get("relation_type") or "").strip()
+    if relation_type and relation_type not in {
+        "functional_dependency",
+        "placed_on_surface",
+    }:
+        return relation_type
+    return _relation_type_for(subject, target)
+
+
+def _build_explicit_target_relation_checks(
+    objects: dict[str, dict[str, Any]], seen_check_ids: set[str]
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for subject in objects.values():
+        target_relations = _explicit_target_relations(subject)
+        if not target_relations:
+            continue
+        targets = _targets_matching_relations(
+            subject, objects.values(), target_relations
+        )
+        if not targets:
+            continue
+        relation_type = _infer_relation_type(subject, targets[0]) or _relation_type_for(
+            subject, targets[0]
+        )
+        compatible_targets = [
+            target
+            for target in targets
+            if _relation_target_is_valid(subject, target, relation_type)
+        ]
+        if not compatible_targets:
+            compatible_targets = targets[:1]
+        target_ids = [
+            str(target.get("id") or "")
+            for target in compatible_targets
+            if target.get("id")
+        ]
+        check_id = f"fd_{subject['id']}_{'_'.join(target_ids)}_{relation_type}"
+        if check_id in seen_check_ids:
+            continue
+        checks.append(
+            {
+                "check_id": check_id,
+                "metric": "functional_dependency",
+                "subject_id": subject["id"],
+                "target_ids": target_ids,
+                "relation_type": relation_type,
+                "expected_use": _expected_use(relation_type),
+                "priority_weight": _priority_weight(
+                    subject, "functional_dependency", 0.7
+                ),
+                "question": (
+                    f"Does explicit target relation `{relation_type}` hold for "
+                    f"{subject.get('name') or subject['id']}?"
+                ),
+                "evidence": {"explicit_target_relation": target_relations},
+                "evidence_refs": ["scene_geometry", "object_metadata"],
+                "check_source": "asset_explicit_target_relation",
+                "scoring_tier": "core",
+            }
+        )
+        seen_check_ids.add(check_id)
+    return checks
+
+
+def _explicit_target_relations(obj: dict[str, Any]) -> list[str]:
+    hints = obj.get("functional_hints") or {}
+    raw = hints.get("explicit_target_relation")
+    values = raw if isinstance(raw, list) else [raw]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _targets_matching_relations(
+    subject: dict[str, Any],
+    candidates: Any,
+    target_relations: list[str],
+) -> list[dict[str, Any]]:
+    targets = _nearby_targets(
+        subject,
+        candidates,
+        predicate=lambda candidate: _matches_target_relation(
+            candidate, target_relations
+        )
+        and _is_useful_explicit_target(subject, candidate, target_relations),
+        max_gap_m=2.4,
+        limit=4,
+    )
+    return targets
+
+
+def _matches_target_relation(
+    candidate: dict[str, Any], target_relations: list[str]
+) -> bool:
+    category = object_category(candidate)
+    if not category:
+        return False
+    affordances = object_affordances(candidate)
+    normalized_category = _normalize_relation_token(category)
+    for target in target_relations:
+        normalized_target = _normalize_relation_token(target)
+        if not normalized_target:
+            continue
+        if normalized_target == "graspable_object" and "graspable" in affordances:
+            return True
+        if normalized_target == normalized_category:
+            return True
+        if (
+            normalized_target in {"table", "desk"}
+            and normalized_target in normalized_category
+        ):
+            return True
+        if normalized_category.startswith(normalized_target + "_"):
+            return True
+        if normalized_category.endswith("_" + normalized_target):
+            return True
+    return False
+
+
+def _normalize_relation_token(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _is_useful_explicit_target(
+    subject: dict[str, Any],
+    candidate: dict[str, Any],
+    target_relations: list[str],
+) -> bool:
+    if subject.get("id") == candidate.get("id"):
+        return False
+    if object_category(candidate) in {"wall", "door", "window"}:
+        return False
+    if _should_drop_small_spatial_accessibility(candidate):
+        subject_affordances = object_affordances(subject)
+        candidate_affordances = object_affordances(candidate)
+        wants_graspable_object = any(
+            _normalize_relation_token(relation) == "graspable_object"
+            for relation in target_relations
+        )
+        return "graspable" in subject_affordances or (
+            wants_graspable_object and "graspable" in candidate_affordances
+        )
+    return True
+
+
+def _build_grouped_functional_dependency_checks(
+    objects: dict[str, dict[str, Any]], seen_check_ids: set[str]
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for obj in objects.values():
+        category = object_category(obj)
+        if category in DINING_TABLES:
+            checks.extend(_grouped_dining_checks(obj, objects, seen_check_ids))
+        elif _is_workstation_surface(obj):
+            checks.extend(_grouped_workstation_checks(obj, objects, seen_check_ids))
+        elif category == "bed":
+            checks.extend(_grouped_bedside_checks(obj, objects, seen_check_ids))
+    return checks
+
+
+def _grouped_dining_checks(
+    table: dict[str, Any],
+    objects: dict[str, dict[str, Any]],
+    seen_check_ids: set[str],
+) -> list[dict[str, Any]]:
+    targets = _nearby_targets(
+        table,
+        objects.values(),
+        predicate=_is_seating_subject,
+        max_gap_m=1.8,
+        limit=6,
+    )
+    if not targets:
+        return []
+    check = _grouped_fd_check(
+        table,
+        targets,
+        relation_type="dining_set",
+        seen_check_ids=seen_check_ids,
+        expected_use="seating surrounds and faces a dining table",
+    )
+    if check is None:
+        return []
+    return [
+        check,
+    ]
+
+
+def _grouped_workstation_checks(
+    surface: dict[str, Any],
+    objects: dict[str, dict[str, Any]],
+    seen_check_ids: set[str],
+) -> list[dict[str, Any]]:
+    targets = _nearby_targets(
+        surface,
+        objects.values(),
+        predicate=_is_seating_subject,
+        max_gap_m=1.8,
+        limit=4,
+    )
+    if not targets:
+        return []
+    check = _grouped_fd_check(
+        surface,
+        targets,
+        relation_type="workstation",
+        seen_check_ids=seen_check_ids,
+        expected_use="seat and work surface form a usable workstation",
+    )
+    if check is None:
+        return []
+    return [
+        check,
+    ]
+
+
+def _is_workstation_surface(obj: dict[str, Any]) -> bool:
+    category = object_category(obj)
+    if category in {"desk", "office_desk", "computer_desk", "writing_desk"}:
+        return True
+    text = " ".join(
+        str(obj.get(key) or "").strip().lower()
+        for key in ("id", "name", "description", "category", "category_norm")
+    )
+    return "desk" in text and _is_work_surface_target(obj)
+
+
+def _grouped_bedside_checks(
+    bed: dict[str, Any],
+    objects: dict[str, dict[str, Any]],
+    seen_check_ids: set[str],
+) -> list[dict[str, Any]]:
+    targets = _nearby_targets(
+        bed,
+        objects.values(),
+        predicate=_is_nightstand_target,
+        max_gap_m=1.2,
+        limit=4,
+    )
+    if len(targets) < 2:
+        return []
+    check = _grouped_fd_check(
+        bed,
+        targets,
+        relation_type="bedside_pair",
+        seen_check_ids=seen_check_ids,
+        expected_use="bed has one or more reachable bedside surfaces",
+    )
+    if check is None:
+        return []
+    return [
+        check,
+    ]
+
+
+def _nearby_targets(
+    subject: dict[str, Any],
+    candidates: Any,
+    *,
+    predicate: Any,
+    max_gap_m: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    ranked: list[tuple[float, float, str, dict[str, Any]]] = []
+    subject_id = str(subject.get("id") or "")
+    for candidate in candidates:
+        target_id = str(candidate.get("id") or "")
+        if not target_id or target_id == subject_id:
+            continue
+        if not predicate(candidate):
+            continue
+        gap = bbox_gap_xy(subject, candidate)
+        if gap is None or gap > max_gap_m:
+            continue
+        distance = distance_xy(subject, candidate)
+        ranked.append(
+            (gap, distance if distance is not None else 999.0, target_id, candidate)
+        )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [candidate for *_rank, candidate in ranked[:limit]]
+
+
+def _grouped_fd_check(
+    subject: dict[str, Any],
+    targets: list[dict[str, Any]],
+    *,
+    relation_type: str,
+    seen_check_ids: set[str],
+    expected_use: str,
+) -> dict[str, Any] | None:
+    subject_id = str(subject.get("id") or "")
+    target_ids = [str(target.get("id") or "") for target in targets if target.get("id")]
+    check_id = f"fd_{subject_id}_{'_'.join(target_ids)}_{relation_type}"
+    if check_id in seen_check_ids:
+        return None
+    seen_check_ids.add(check_id)
+    return {
+        "check_id": check_id,
+        "metric": "functional_dependency",
+        "subject_id": subject_id,
+        "target_ids": target_ids,
+        "relation_type": relation_type,
+        "expected_use": expected_use,
+        "priority_weight": _priority_weight(subject, "functional_dependency", 0.7),
+        "question": (
+            f"Do {subject.get('name') or subject_id} and its nearby targets "
+            f"form a valid `{relation_type}` relation?"
+        ),
+        "evidence_refs": ["scene_geometry"],
+        "check_source": "scenesmith_grouped_relation",
+        "scoring_tier": "core",
+    }
+
+
+def _expected_use(relation_type: str) -> str:
+    return {
+        "seating_to_work_surface": "sit at and use the nearby work or table surface",
+        "seating_to_media": "sit and view the nearby media object",
+        "dining_set": "seating surrounds and faces a dining table",
+        "workstation": "seat, work surface, and work objects form a usable workstation",
+        "bed_to_nightstand": "bed has a reachable bedside surface",
+        "bedside_pair": "bed is paired with one or more usable bedside surfaces",
+        "object_on_support": "small object is supported by an appropriate surface",
+        "lamp_to_surface": "lamp serves a nearby support surface",
+        "floor_covering_on_floor": "floor covering rests on the floor",
+        "object_on_floor": "object rests on the floor",
+    }.get(relation_type, "nearby objects form a valid use relation")

@@ -13,10 +13,7 @@ class CriticConfig:
     enabled: bool = False
     metrics: tuple[str, ...] = DEFAULT_METRICS
     room_stage_hooks: tuple[str, ...] = ("scene_after_furniture", "final_scene")
-    house_stage_hooks: tuple[str, ...] = (
-        "combined_house_after_furniture",
-        "combined_house",
-    )
+    house_stage_hooks: tuple[str, ...] = ()
     inject_into_llm_critic: bool = True
     hard_gate: bool = False
     max_issues_for_prompt: int = 8
@@ -57,20 +54,15 @@ def critic_config_from_any(cfg: Any) -> CriticConfig:
     }
     extra = {key: value for key, value in data.items() if key not in known}
     return CriticConfig(
-        enabled=bool(data.get("enabled", False)),
-        metrics=tuple(data.get("metrics", DEFAULT_METRICS) or ()),
-        room_stage_hooks=tuple(
-            data.get("room_stage_hooks", ("scene_after_furniture", "final_scene")) or ()
+        enabled=_as_bool(data.get("enabled", False)),
+        metrics=_as_tuple(data.get("metrics", DEFAULT_METRICS), DEFAULT_METRICS),
+        room_stage_hooks=_as_tuple(
+            data.get("room_stage_hooks", ("scene_after_furniture", "final_scene")),
+            ("scene_after_furniture", "final_scene"),
         ),
-        house_stage_hooks=tuple(
-            data.get(
-                "house_stage_hooks",
-                ("combined_house_after_furniture", "combined_house"),
-            )
-            or ()
-        ),
-        inject_into_llm_critic=bool(data.get("inject_into_llm_critic", True)),
-        hard_gate=bool(data.get("hard_gate", False)),
+        house_stage_hooks=_as_tuple(data.get("house_stage_hooks", ()), ()),
+        inject_into_llm_critic=_as_bool(data.get("inject_into_llm_critic", True)),
+        hard_gate=_as_bool(data.get("hard_gate", False)),
         max_issues_for_prompt=int(data.get("max_issues_for_prompt", 8)),
         fail_gate_threshold=int(data.get("fail_gate_threshold", 1)),
         degraded_gate_threshold=int(data.get("degraded_gate_threshold", 999999)),
@@ -96,3 +88,21 @@ def _to_plain_dict(obj: Any) -> dict[str, Any]:
         for key in dir(obj)
         if not key.startswith("_") and not callable(getattr(obj, key))
     }
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _as_tuple(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    return tuple(value or ())

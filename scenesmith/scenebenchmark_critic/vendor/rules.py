@@ -1,383 +1,358 @@
-"""Compact geometry-only evaluators for v1 SceneBenchmark critic metrics."""
+"""Bridge to vendored SceneBenchmark FD/SA rule evaluators."""
 
 from __future__ import annotations
 
-import math
-
+from dataclasses import dataclass
 from typing import Any
+
+from scenesmith.scenebenchmark_critic.config import (
+    DEFAULT_METRICS,
+    CriticConfig,
+    critic_config_from_any,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
+    load_geometry,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.proposer import (
+    augment_functional_dependency_checks,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
+    evaluate_functional_dependency,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.spatial_accessibility.core import (
+    evaluate_spatial_accessibility,
+)
 
 LABEL_TO_SCORE = {"pass": 1.0, "degraded": 0.5, "fail": 0.0}
 
 
-def run_case_pack_checks(case_pack: dict[str, Any]) -> list[dict[str, Any]]:
-    geometry = case_pack.get("scene_geometry") or {}
-    objects = {
-        str(obj.get("id")): obj
-        for obj in geometry.get("objects") or []
-        if isinstance(obj, dict) and obj.get("id")
-    }
-    rooms = geometry.get("rooms") or []
+@dataclass(frozen=True)
+class _RuleConfig:
+    run: "_RuleRunConfig"
+
+
+@dataclass(frozen=True)
+class _RuleRunConfig:
+    metrics: list[str] | None = None
+    accessibility_grid_resolution_m: float = 0.05
+    accessibility_agent_width_m: float = 0.50
+    accessibility_obstacle_height_threshold_m: float = 1.8
+    accessibility_access_zone_depth_m: float = 0.55
+    accessibility_pass_ratio: float = 0.60
+    accessibility_degraded_ratio: float = 0.25
+    accessibility_agent_profiles: list[dict[str, Any]] | None = None
+    fd_relation_proposer_mode: str = "template"
+    max_fd_relation_proposals: int = 8
+
+
+def run_case_pack_checks(
+    case_pack: dict[str, Any], config: CriticConfig | Any | None = None
+) -> list[dict[str, Any]]:
+    """Run vendored SceneBenchmark rule checks over a SceneSmith case pack.
+
+    Functional-dependency checks are first augmented with SceneBenchmark's
+    relation proposer. The default configuration uses the deterministic template
+    proposer, while explicit VLM/hybrid modes flow through the vendored proposer
+    and fall back to templates if the optional VLM stack is unavailable.
+    """
+    critic_config = _coerce_config(config)
+    enabled_metrics = set(critic_config.metrics or DEFAULT_METRICS)
+    rule_config = _to_rule_config(critic_config)
+
+    if "functional_dependency" in enabled_metrics:
+        augment_functional_dependency_checks(
+            case_pack,
+            rule_config,
+            metric_filter=list(enabled_metrics),
+            progress=lambda _message: None,
+        )
+
+    store = load_geometry(case_pack)
+    if store is None:
+        return []
+
     results: list[dict[str, Any]] = []
     for check in case_pack.get("checks") or []:
-        metric = check.get("metric")
+        metric = str(check.get("metric") or "")
+        if metric not in enabled_metrics:
+            continue
         if metric == "spatial_accessibility":
-            results.append(_evaluate_spatial_accessibility(check, objects, rooms))
+            result = evaluate_spatial_accessibility(store, check, rule_config)
         elif metric == "functional_dependency":
-            results.append(_evaluate_functional_dependency(check, objects))
+            result = evaluate_functional_dependency(store, check)
+        else:
+            result = None
+        if result is not None:
+            results.append(_normalize_result(result, check))
     return results
 
 
-def aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_results(
+    results_or_case_pack: list[dict[str, Any]] | dict[str, Any],
+    results: list[dict[str, Any]] | None = None,
+    *,
+    case_pack: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if results is None:
+        results = (
+            list(results_or_case_pack) if isinstance(results_or_case_pack, list) else []
+        )
+    else:
+        case_pack = (
+            results_or_case_pack
+            if isinstance(results_or_case_pack, dict)
+            else case_pack
+        )
+    checks_by_id = _checks_by_id(case_pack)
+    object_acc: dict[str, dict[str, Any]] = {}
     by_metric: dict[str, dict[str, Any]] = {}
+    by_metric_diag: dict[str, dict[str, Any]] = {}
     scene = _new_bucket()
+    scene_diag = _new_bucket()
     for result in results:
-        metric = str(result.get("metric") or "unknown")
+        check_id = str(result.get("check_id") or "")
+        check = checks_by_id.get(check_id, {})
+        metric = str(result.get("metric") or check.get("metric") or "unknown")
+        subject_id = str(
+            result.get("primary_object") or check.get("subject_id") or "unknown"
+        )
         bucket = by_metric.setdefault(metric, _new_bucket())
+        diag_bucket = by_metric_diag.setdefault(metric, _new_bucket())
+        object_bucket = object_acc.setdefault(
+            subject_id,
+            {
+                "subject_id": subject_id,
+                "checks": [],
+                "metric_summary": {},
+                "metric_diagnostic_summary": {},
+            },
+        )
+        object_metric_bucket = object_bucket["metric_summary"].setdefault(
+            metric, _new_bucket()
+        )
+        object_metric_diag_bucket = object_bucket[
+            "metric_diagnostic_summary"
+        ].setdefault(metric, _new_bucket())
         label = str(result.get("label") or "unknown")
-        _accumulate(bucket, label)
-        _accumulate(scene, label)
+        scoring_tier = _normalize_scoring_tier(
+            result.get("scoring_tier") or check.get("scoring_tier")
+        )
+        counted = scoring_tier != "ignored"
+        row = _object_result_row(
+            result, check, subject_id, metric, label, scoring_tier, counted
+        )
+        object_bucket["checks"].append(row)
+
+        _accumulate(bucket, label, scoring_tier=scoring_tier, counted=counted)
+        _accumulate(
+            object_metric_bucket, label, scoring_tier=scoring_tier, counted=counted
+        )
+        _accumulate(scene, label, scoring_tier=scoring_tier, counted=counted)
+        _accumulate(diag_bucket, label, scoring_tier=scoring_tier, counted=True)
+        _accumulate(
+            object_metric_diag_bucket,
+            label,
+            scoring_tier=scoring_tier,
+            counted=True,
+        )
+        _accumulate(scene_diag, label, scoring_tier=scoring_tier, counted=True)
+    object_results: list[dict[str, Any]] = []
+    for subject_id, payload in sorted(object_acc.items()):
+        object_results.append(
+            {
+                "subject_id": subject_id,
+                "checks": payload["checks"],
+                "metric_summary": {
+                    metric: _finish_bucket(bucket)
+                    for metric, bucket in sorted(payload["metric_summary"].items())
+                },
+                "metric_diagnostic_summary": {
+                    metric: _finish_bucket(bucket)
+                    for metric, bucket in sorted(
+                        payload["metric_diagnostic_summary"].items()
+                    )
+                },
+            }
+        )
     return {
+        "object_results": object_results,
         "scene_summary": _finish_bucket(scene),
+        "scene_diagnostic_summary": _finish_bucket(scene_diag),
         "metric_summary": {
             metric: _finish_bucket(bucket)
             for metric, bucket in sorted(by_metric.items())
         },
+        "metric_diagnostic_summary": {
+            metric: _finish_bucket(bucket)
+            for metric, bucket in sorted(by_metric_diag.items())
+        },
     }
 
 
-def _evaluate_spatial_accessibility(
+def _object_result_row(
+    result: dict[str, Any],
     check: dict[str, Any],
-    objects: dict[str, dict[str, Any]],
-    rooms: list[dict[str, Any]],
-) -> dict[str, Any]:
-    subject_id = str(check.get("subject_id") or "")
-    subject = objects.get(subject_id)
-    if subject is None:
-        return _result(check, "unknown", "Subject object is missing.", confidence=0.0)
-
-    room = _room_for_subject(subject, rooms)
-    footprint = _bbox_xy(subject)
-    if footprint is None:
-        return _result(
-            check, "unknown", "Subject has no world bounding box.", confidence=0.0
-        )
-
-    sx0, sy0, sx1, sy1 = footprint
-    cx, cy = ((sx0 + sx1) / 2.0, (sy0 + sy1) / 2.0)
-    affordance = str(check.get("affordance") or "")
-    clearance = 0.55 if affordance in {"sittable", "openable"} else 0.45
-    yaw = math.radians(float(subject.get("yaw_deg") or 0.0))
-    front = (math.cos(yaw), math.sin(yaw))
-    side = (-front[1], front[0])
-    radius_x = max((sx1 - sx0) / 2.0, 0.2)
-    radius_y = max((sy1 - sy0) / 2.0, 0.2)
-    access_points = [
-        (
-            cx + front[0] * (radius_x + clearance),
-            cy + front[1] * (radius_y + clearance),
-        ),
-        (cx + side[0] * (radius_x + clearance), cy + side[1] * (radius_y + clearance)),
-        (cx - side[0] * (radius_x + clearance), cy - side[1] * (radius_y + clearance)),
-    ]
-
-    blockers: list[str] = []
-    open_points = 0
-    for point in access_points:
-        if room and not _point_in_polygon(point, room.get("floor_polygon") or []):
-            continue
-        blocked_by = _blocking_object_at(point, subject_id, objects)
-        if blocked_by is None:
-            open_points += 1
-        else:
-            blockers.append(blocked_by)
-
-    if open_points >= 2:
-        return _result(
-            check,
-            "pass",
-            "At least two approach zones are open.",
-            blocking_objects=sorted(set(blockers)),
-        )
-    if open_points == 1:
-        return _result(
-            check,
-            "degraded",
-            "Only one approach zone is open.",
-            blocking_objects=sorted(set(blockers)),
-        )
-    return _result(
-        check,
-        "fail",
-        "No sampled approach zone is open.",
-        blocking_objects=sorted(set(blockers)),
-    )
-
-
-def _evaluate_functional_dependency(
-    check: dict[str, Any], objects: dict[str, dict[str, Any]]
-) -> dict[str, Any]:
-    subject_id = str(check.get("subject_id") or "")
-    target_ids = [str(item) for item in check.get("target_ids") or []]
-    subject = objects.get(subject_id)
-    if subject is None:
-        return _result(check, "unknown", "Subject object is missing.", confidence=0.0)
-    targets = [objects[target_id] for target_id in target_ids if target_id in objects]
-    if not targets:
-        return _result(
-            check, "unknown", "No target object is available.", confidence=0.0
-        )
-
-    best: tuple[str, float, str, dict[str, Any]] | None = None
-    for target in targets:
-        label, score, reason, evidence = _support_score(subject, target, check)
-        if best is None or score > best[1]:
-            best = (label, score, reason, evidence)
-
-    assert best is not None
-    label, _score, reason, evidence = best
-    return _result(
-        check,
-        label,
-        reason,
-        confidence=0.85,
-        selected_related_objects=target_ids[:1],
-        evidence=evidence,
-    )
-
-
-def _support_score(
-    subject: dict[str, Any], target: dict[str, Any], check: dict[str, Any]
-) -> tuple[str, float, str, dict[str, Any]]:
-    sb = _bbox(subject) or {}
-    tb = _bbox(target) or {}
-    smin = sb.get("min") or [0.0, 0.0, 0.0]
-    smax = sb.get("max") or [0.0, 0.0, 0.0]
-    sx0, sy0, sx1, sy1 = _bbox_xy(subject) or (0.0, 0.0, 0.0, 0.0)
-    subject_area = max((sx1 - sx0) * (sy1 - sy0), 1e-6)
-
-    region_id = str((check.get("evidence") or {}).get("parent_surface_id") or "")
-    regions = target.get("support_regions") or []
-    if region_id:
-        regions = [
-            r for r in regions if str(r.get("region_id")) == region_id
-        ] or regions
-
-    best_overlap = 0.0
-    best_height_delta = float("inf")
-    best_region: dict[str, Any] | None = None
-    for region in regions:
-        polygon = region.get("polygon_world_xy") or []
-        rb = _polygon_bounds(polygon)
-        if rb is None:
-            continue
-        overlap = _rect_overlap_area((sx0, sy0, sx1, sy1), rb) / subject_area
-        height = region.get("height_world_z")
-        if height is None:
-            continue
-        height_delta = abs(float(smin[2]) - float(height))
-        if overlap > best_overlap or (
-            math.isclose(overlap, best_overlap) and height_delta < best_height_delta
-        ):
-            best_overlap = overlap
-            best_height_delta = height_delta
-            best_region = region
-
-    if best_region is None and tb:
-        tx0, ty0, tx1, ty1 = _bbox_xy(target) or (0.0, 0.0, 0.0, 0.0)
-        best_overlap = (
-            _rect_overlap_area((sx0, sy0, sx1, sy1), (tx0, ty0, tx1, ty1))
-            / subject_area
-        )
-        best_height_delta = abs(float(smin[2]) - float((tb.get("max") or [0, 0, 0])[2]))
-
-    evidence = {
-        "overlap_ratio": best_overlap,
-        "height_delta_m": (
-            None if best_height_delta == float("inf") else best_height_delta
-        ),
-        "support_surface_id": (best_region or {}).get("region_id"),
-    }
-    if best_overlap >= 0.55 and best_height_delta <= 0.18:
-        return (
-            "pass",
-            1.0,
-            "Subject footprint and height match the support evidence.",
-            evidence,
-        )
-    if best_overlap >= 0.25 and best_height_delta <= 0.30:
-        return (
-            "degraded",
-            0.5,
-            "Subject has partial or height-marginal support evidence.",
-            evidence,
-        )
-    return (
-        "fail",
-        0.0,
-        "Subject is not sufficiently aligned with target support evidence.",
-        evidence,
-    )
-
-
-def _result(
-    check: dict[str, Any],
+    subject_id: str,
+    metric: str,
     label: str,
-    reason: str,
-    *,
-    confidence: float = 0.8,
-    blocking_objects: list[str] | None = None,
-    selected_related_objects: list[str] | None = None,
-    evidence: dict[str, Any] | None = None,
+    scoring_tier: str,
+    counted: bool,
 ) -> dict[str, Any]:
+    score = LABEL_TO_SCORE.get(label)
     return {
-        "check_id": check.get("check_id"),
-        "metric": check.get("metric"),
+        "check_id": result.get("check_id") or check.get("check_id"),
+        "metric": metric,
         "label": label,
-        "reason": reason,
-        "confidence": confidence,
-        "blocking_objects": blocking_objects or [],
-        "primary_object": check.get("subject_id"),
-        "related_objects": check.get("target_ids") or [],
-        "selected_related_objects": selected_related_objects or [],
-        "evidence": evidence or {},
-        "evaluation_source": f"rule_{check.get('metric')}",
+        "confidence": result.get("confidence"),
+        "reason": result.get("reason"),
+        "blocking_objects": result.get("blocking_objects") or [],
+        "primary_object": result.get("primary_object") or subject_id,
+        "related_objects": result.get("related_objects")
+        or check.get("target_ids")
+        or [],
+        "selected_related_objects": result.get("selected_related_objects") or [],
+        "diagnostics": result.get("diagnostics") or {},
+        "evidence": result.get("evidence") or {},
+        "score": score,
+        "known": score is not None,
+        "scoring_tier": scoring_tier,
+        "counted_in_summary": counted,
     }
 
 
-def _room_for_subject(
-    subject: dict[str, Any], rooms: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    room_id = subject.get("room")
-    for room in rooms:
-        if room.get("id") == room_id:
-            return room
-    return rooms[0] if rooms else None
+def _checks_by_id(case_pack: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(case_pack, dict):
+        return {}
+    return {
+        str(check.get("check_id")): check
+        for check in case_pack.get("checks") or []
+        if isinstance(check, dict) and check.get("check_id")
+    }
 
 
-def _blocking_object_at(
-    point: tuple[float, float], subject_id: str, objects: dict[str, dict[str, Any]]
-) -> str | None:
-    px, py = point
-    for obj_id, obj in objects.items():
-        if obj_id == subject_id or _is_ignored_blocker(obj):
-            continue
-        bounds = _bbox_xy(obj)
-        if bounds is None:
-            continue
-        x0, y0, x1, y1 = bounds
-        if x0 <= px <= x1 and y0 <= py <= y1:
-            return obj_id
-    return None
+def _normalize_result(result: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result)
+    normalized.setdefault("primary_object", str(check.get("subject_id") or ""))
+    normalized.setdefault(
+        "related_objects",
+        [str(item) for item in (check.get("target_ids") or []) if str(item)],
+    )
+    normalized.setdefault("selected_related_objects", [])
+    normalized.setdefault("blocking_objects", [])
+    normalized.setdefault("confidence", 0.0)
+    normalized.setdefault("reason", "")
+    normalized.setdefault("check_id", check.get("check_id"))
+    normalized.setdefault("metric", check.get("metric"))
+    if "evidence" not in normalized and isinstance(normalized.get("diagnostics"), dict):
+        normalized["evidence"] = normalized["diagnostics"]
+    return normalized
 
 
-def _is_ignored_blocker(obj: dict[str, Any]) -> bool:
-    object_type = obj.get("object_type")
-    if object_type in {
-        "manipuland",
-        "thin_covering",
-        "wall_mounted",
-        "ceiling_mounted",
-    }:
-        return True
-    bbox = _bbox(obj)
-    if not bbox:
-        return True
-    size = bbox.get("size") or [0.0, 0.0, 0.0]
-    bmin = bbox.get("min") or [0.0, 0.0, 0.0]
-    if float(size[2]) < 0.35:
-        return True
-    if float(bmin[2]) > 0.35:
-        return True
-    return False
+def _to_rule_config(config: CriticConfig) -> _RuleConfig:
+    extra = config.extra or {}
 
+    def _get(name: str, default: Any) -> Any:
+        return extra.get(name, default)
 
-def _bbox(obj: dict[str, Any]) -> dict[str, Any] | None:
-    bbox = obj.get("bbox_world")
-    return bbox if isinstance(bbox, dict) else None
-
-
-def _bbox_xy(obj: dict[str, Any]) -> tuple[float, float, float, float] | None:
-    bbox = _bbox(obj)
-    bmin = (bbox or {}).get("min")
-    bmax = (bbox or {}).get("max")
-    if not (
-        isinstance(bmin, list)
-        and isinstance(bmax, list)
-        and len(bmin) >= 2
-        and len(bmax) >= 2
-    ):
-        return None
-    return float(bmin[0]), float(bmin[1]), float(bmax[0]), float(bmax[1])
-
-
-def _polygon_bounds(
-    polygon: list[list[float]],
-) -> tuple[float, float, float, float] | None:
-    points = [point for point in polygon if isinstance(point, list) and len(point) >= 2]
-    if not points:
-        return None
-    return (
-        min(float(point[0]) for point in points),
-        min(float(point[1]) for point in points),
-        max(float(point[0]) for point in points),
-        max(float(point[1]) for point in points),
+    return _RuleConfig(
+        run=_RuleRunConfig(
+            metrics=list(config.metrics),
+            accessibility_grid_resolution_m=float(
+                _get("accessibility_grid_resolution_m", 0.05)
+            ),
+            accessibility_agent_width_m=float(
+                _get("accessibility_agent_width_m", 0.50)
+            ),
+            accessibility_obstacle_height_threshold_m=float(
+                _get("accessibility_obstacle_height_threshold_m", 1.8)
+            ),
+            accessibility_access_zone_depth_m=float(
+                _get("accessibility_access_zone_depth_m", 0.55)
+            ),
+            accessibility_pass_ratio=float(_get("accessibility_pass_ratio", 0.60)),
+            accessibility_degraded_ratio=float(
+                _get("accessibility_degraded_ratio", 0.25)
+            ),
+            accessibility_agent_profiles=_get("accessibility_agent_profiles", None),
+            fd_relation_proposer_mode=str(
+                _get("fd_relation_proposer_mode", "template")
+            ),
+            max_fd_relation_proposals=int(_get("max_fd_relation_proposals", 8)),
+        )
     )
 
 
-def _rect_overlap_area(
-    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
-) -> float:
-    x0 = max(a[0], b[0])
-    y0 = max(a[1], b[1])
-    x1 = min(a[2], b[2])
-    y1 = min(a[3], b[3])
-    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
+def _coerce_config(config: CriticConfig | Any | None) -> CriticConfig:
+    if isinstance(config, CriticConfig):
+        return config
+    if config is None:
+        return CriticConfig(enabled=True)
+    return critic_config_from_any(config)
 
 
-def _point_in_polygon(point: tuple[float, float], polygon: list[list[float]]) -> bool:
-    if len(polygon) < 3:
-        return True
-    x, y = point
-    inside = False
-    j = len(polygon) - 1
-    for i, pi in enumerate(polygon):
-        pj = polygon[j]
-        xi, yi = float(pi[0]), float(pi[1])
-        xj, yj = float(pj[0]), float(pj[1])
-        if (yi > y) != (yj > y):
-            x_intersect = (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi
-            if x < x_intersect:
-                inside = not inside
-        j = i
-    return inside
-
-
-def _new_bucket() -> dict[str, Any]:
+def _new_bucket() -> dict[str, float]:
     return {
+        "all_checks": 0,
         "total_checks": 0,
         "pass": 0,
         "degraded": 0,
         "fail": 0,
         "unknown": 0,
         "score_sum": 0.0,
+        "effective_checks": 0,
+        "excluded_ignored": 0,
+        "excluded_auxiliary": 0,
     }
 
 
-def _accumulate(bucket: dict[str, Any], label: str) -> None:
+def _accumulate(
+    bucket: dict[str, float], label: str, *, scoring_tier: str, counted: bool
+) -> None:
+    bucket["all_checks"] += 1
+    if not counted:
+        if scoring_tier == "ignored":
+            bucket["excluded_ignored"] += 1
+        elif scoring_tier == "auxiliary":
+            bucket["excluded_auxiliary"] += 1
+        return
     bucket["total_checks"] += 1
-    if label not in {"pass", "degraded", "fail", "unknown"}:
+    if label in {"pass", "degraded", "fail", "unknown"}:
+        bucket[label] += 1
+    else:
+        bucket["unknown"] += 1
         label = "unknown"
-    bucket[label] += 1
-    score = LABEL_TO_SCORE.get(label)
-    if score is not None:
-        bucket["score_sum"] += score
+    if label in LABEL_TO_SCORE:
+        bucket["score_sum"] += LABEL_TO_SCORE[label]
+        bucket["effective_checks"] += 1
 
 
-def _finish_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
-    effective = bucket["pass"] + bucket["degraded"] + bucket["fail"]
+def _normalize_scoring_tier(value: Any) -> str:
+    tier = str(value or "core").strip().lower()
+    if tier in {"core", "auxiliary", "ignored"}:
+        return tier
+    return "core"
+
+
+def _finish_bucket(bucket: dict[str, float]) -> dict[str, Any]:
+    effective = int(bucket["effective_checks"])
+    total_pass = int(bucket["pass"])
+    total = int(bucket["total_checks"])
+    all_checks = int(bucket["all_checks"])
+    excluded_ignored = int(bucket["excluded_ignored"])
+    excluded_auxiliary = int(bucket["excluded_auxiliary"])
     return {
-        **bucket,
+        "all_checks": all_checks,
+        "total_checks": total,
+        "pass": total_pass,
+        "degraded": int(bucket["degraded"]),
+        "fail": int(bucket["fail"]),
+        "unknown": int(bucket["unknown"]),
+        "score_sum": bucket["score_sum"],
         "effective_checks": effective,
-        "effective_pass_rate": bucket["pass"] / effective if effective else None,
+        "excluded_auxiliary": excluded_auxiliary,
+        "excluded_ignored": excluded_ignored,
+        "excluded_checks": excluded_auxiliary + excluded_ignored,
+        "coverage": effective / total if total else 0.0,
+        "effective_pass_rate": total_pass / effective if effective else None,
         "score": bucket["score_sum"] / effective if effective else None,
     }
