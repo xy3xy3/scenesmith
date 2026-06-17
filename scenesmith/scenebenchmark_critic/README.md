@@ -1,68 +1,23 @@
-# SceneBenchmark Critic for SceneSmith
+# SceneSmith 内嵌 SceneBenchmark 评测器
 
-This package embeds the SceneBenchmark `spatial_accessibility` and
-`functional_dependency` rule critics directly inside SceneSmith. It is designed
-for SceneSmith developers who already have `RoomScene` objects and want
-geometry feedback without adding the full SceneBenchmark runtime or a VLM
-dependency. Combined-house helpers remain available for compatibility and
-explicit opt-in workflows, but the supported SceneSmith path is room-first.
+本包将 SceneBenchmark 的 `spatial_accessibility` 和 `functional_dependency` 规则评测器直接内嵌到 SceneSmith 中。专为已拥有 `RoomScene` 对象的 SceneSmith 开发者设计，无需引入完整的 SceneBenchmark 运行时或 VLM 依赖即可获得几何反馈。组合房屋辅助功能仍可使用，但推荐的 SceneSmith 路径以房间为优先。
 
-The default SceneSmith integration is single-room: it evaluates room
-checkpoints and leaves combined-house reports disabled unless
-`house_stage_hooks` is overridden explicitly.
+默认的 SceneSmith 集成是单房间模式：评估房间检查点，除非显式设置 `house_stage_hooks`，否则不生成组合房屋报告。
 
-## What It Checks
+## 检查内容
 
-- `spatial_accessibility`: SceneBenchmark's grid/reach based evaluator for
-  functional access zones, obstacle masks, connected stance area, and reach
-  distance.
-- `functional_dependency`: SceneBenchmark's template-proposed and rule-scored
-  dependency relations, including object-on-support, lamp-surface,
-  seating-work-surface, seating-media, bed-nightstand, dining/workstation, and
-  related near/facing relations.
+- `spatial_accessibility`：基于网格/可达性的功能访问区域、障碍物掩码、连通站立区域和可达距离评估。
+- `functional_dependency`：基于模板提议和规则评分的依赖关系，包括物体-支撑物、灯-表面、座椅-工作面、座椅-媒体、床-床头柜、餐桌/工作台，以及相关的靠近/朝向关系。
 
-The adapter derives categories, affordance hints, object function profiles,
-support regions, room polygons, and placement relations from SceneSmith object
-names, descriptions, metadata, support surfaces, and `placement_info`.
-Asset annotation fields such as `front_face`, `access_direction`,
-`operation_space`, `target_relation`, and `explicit_target_relation` are
-preserved; annotated front/access directions are also mapped into
-SceneBenchmark-style interaction faces so spatial accessibility checks use the
-annotated operating side. Asset annotations with `benchmark_relevance` set to a
-non-functional value suppress functional affordance checks, matching
-SceneBenchmark's converter behavior. `affordances`, `functional_categories`,
-and `candidate_affordances` are all accepted as affordance inputs, and metadata
-functional dependencies plus `support_regions`/`support_region` may live either
-at the object metadata root or inside `metadata.functional_hints`.
-When annotations are absent, the adapter mirrors the SceneBenchmark demo
-converter's lightweight defaults: it normalizes room-prefixed instance names
-such as `bedroom_nightstand_1_f0_c`, infers `category_keywords`,
-`front_hint`, `target_relation`, and `metric_relevance`, and writes
-`support_region_summary` for detected or SceneSmith-provided support regions.
-SceneSmith also materializes SceneBenchmark's grouped functional-dependency
-checks for dining sets, workstations, and multi-nightstand bedside pairs when
-the corresponding objects are present in a single room.
+适配器从 SceneSmith 对象名称、描述、元数据、支撑表面和 `placement_info` 中推导类别、功能提示、对象功能画像、支撑区域、房间多边形和放置关系。资产标注字段（如 `front_face`、`access_direction`、`operation_space`、`target_relation` 和 `explicit_target_relation`）会被保留；标注的正面/访问方向也会映射为 SceneBenchmark 风格的交互面，使空间可达性检查使用标注的操作侧。`benchmark_relevance` 设为非功能值的资产标注会抑制功能可供性检查，与 SceneBenchmark 转换器行为一致。`affordances`、`functional_categories` 和 `candidate_affordances` 均可作为可供性输入，元数据中的功能依赖以及 `support_regions`/`support_region` 可位于对象元数据根目录或 `metadata.functional_hints` 内。当标注缺失时，适配器镜像 SceneBenchmark 演示转换器的轻量级默认值：归一化带房间前缀的实例名（如 `bedroom_nightstand_1_f0_c`），推断 `category_keywords`、`front_hint`、`target_relation` 和 `metric_relevance`，并为检测到的或 SceneSmith 提供的支撑区域写入 `support_region_summary`。SceneSmith 还会在单个房间中存在相应对象时，实例化 SceneBenchmark 的分组功能依赖检查（如餐桌组、工作台、多床头柜床边对等）。
 
-The vendored rule code is copied from `~/proj/SceneBenchmark/src` under
-`vendor/scenebenchmark/`. SceneSmith uses SceneBenchmark's deterministic
-template FD proposer by default. If `fd_relation_proposer_mode` is explicitly
-set to `vlm`, `hybrid`, or `auto`, the vendored FD proposer entrypoint is used;
-when the optional SceneBenchmark VLM stack is unavailable it falls back to the
-template proposer. The full SceneBenchmark rendering/request pipeline is not
-used by the default SceneSmith integration. See `vendor/README.md` for the
-source manifest and intentional vendoring differences.
+vendored 规则代码从 `~/proj/SceneBenchmark/src` 复制到 `vendor/scenebenchmark/`。SceneSmith 默认使用 SceneBenchmark 的确定性模板 FD 提议器。若将 `fd_relation_proposer_mode` 显式设为 `vlm`、`hybrid` 或 `auto`，则使用 vendored FD 提议器入口；当可选的 SceneBenchmark VLM 栈不可用时，回退到模板提议器。默认的 SceneSmith 集成不使用完整的 SceneBenchmark 渲染/请求流水线。详见 `vendor/README.md` 了解源码清单和有意的 vendoring 差异。
 
-## Asset VLM Annotation
+## 资产 VLM 标注
 
-SceneSmith can optionally run a SceneBenchmark-style asset semantic annotator
-before each room critic report. The annotator writes effective asset hints into
-`SceneObject.metadata.functional_hints`, so the existing adapter and vendored
-rule checks consume the annotations without a separate converter step. It also
-stores per-object YAML/request artifacts under the stage directory when
-`write_files` is enabled.
+SceneSmith 可选地在每个房间评测报告前运行 SceneBenchmark 风格的资产语义标注器。标注器将有效的资产提示写入 `SceneObject.metadata.functional_hints`，使现有适配器和 vendored 规则检查无需额外的转换步骤即可消费标注。当 `write_files` 启用时，还会在 stage 目录下存储每个对象的 YAML/请求产物。
 
-By default the annotator is disabled. For deterministic local testing or a
-converter-style dry run:
+默认标注器禁用。用于确定性本地测试或转换器风格的 dry run：
 
 ```bash
 uv run python main.py \
@@ -74,7 +29,7 @@ uv run python main.py \
   hydra.run.dir=/path/to/existing/output_dir
 ```
 
-To call the configured OpenAI-compatible VLM, switch the backend:
+调用配置的 OpenAI 兼容 VLM 时，切换 backend：
 
 ```bash
 uv run python main.py \
@@ -86,15 +41,11 @@ uv run python main.py \
   hydra.run.dir=/path/to/existing/output_dir
 ```
 
-When a `BlenderServer` is supplied to `annotate_room_scene`, mesh multiview
-renders are used as visual evidence. In the standard report path, the annotator
-falls back to each object's saved `image_path` when available, and otherwise
-uses the object metadata and heuristic prior.
+当向 `annotate_room_scene` 提供 `BlenderServer` 时，使用网格多视角渲染作为视觉证据。在标准报告路径中，标注器优先使用每个对象保存的 `image_path`（若可用），否则使用对象元数据和启发式先验。
 
-## Enable During Generation
+## 生成时启用
 
-The critic is disabled by default. Enable it with Hydra overrides. By default
-this refreshes room reports only:
+评测器默认禁用。通过 Hydra 覆盖启用。默认仅刷新房间报告：
 
 ```bash
 uv run python main.py \
@@ -104,19 +55,36 @@ uv run python main.py \
   "experiment.prompts=['A bedroom with a nightstand and a mug.','A classroom with desks and chairs.','A living room with a sofa, rug, plants, and a mug.']"
 ```
 
-Online generation requires the same LLM/API credentials as the rest of
-SceneSmith. Reports are written next to the generated SceneSmith checkpoints:
+在线生成需要与 SceneSmith 其余部分相同的 LLM/API 凭证。报告写入生成的 SceneSmith 检查点旁边：
 
 - `room_*/scene_states/scene_after_furniture/scenebenchmark_critic.json|md`
 - `room_*/scene_states/final_scene/scenebenchmark_critic.json|md`
 
-Combined-house reports are opt-in:
+## VLM API 配置
+
+critic 默认使用环境变量配置 VLM（当 `asset_annotation.backend=vlm` 时）：
+
+| 参数 | 环境变量 | hydra 配置 | 优先级 |
+|------|----------|------------|--------|
+| API Key | `OPENAI_API_KEY` | - | OpenAI SDK 自动读取 |
+| Base URL | `OPENAI_BASE_URL` | `openai.base_url` | hydra 优先 |
+| Use Responses | `OPENAI_USE_RESPONSES` | `openai.use_responses` | hydra 优先 |
+
+推荐方式：设置环境变量或在 `config.yml` 中配置：
+
+```yaml
+# config.yml
+openai_api_key: "sk-xxx"
+openai_base_url: "https://your-api.com/v1"
+openai_use_responses: false  # 可选，默认 false
+```
+
+组合房屋报告需显式启用：
 
 - `combined_house_after_furniture/scenebenchmark_critic.json|md`
 - `combined_house/scenebenchmark_critic.json|md`
 
-For a memory-safe single-room smoke test, keep generation serial, keep the
-template FD proposer, and stop after furniture placement:
+内存安全的单房间 smoke test：保持串行生成，使用模板 FD 提议器，家具放置后停止：
 
 ```bash
 uv run python main.py \
@@ -133,8 +101,26 @@ uv run python main.py \
   "experiment.prompts=['A small bedroom with a bed and a nightstand beside it.']"
 ```
 
-If credentials are stored in a local `config.yml` with `openai_api_key` and
-`openai_base_url`, use a small wrapper so secrets stay out of the shell history:
+完整单房间测试（含全流程生成 + 评测）：
+
+```bash
+uv run python main.py \
+  +name=single_room_full_critic \
+  "experiment.tasks=[generate_scenes,evaluate_scenes]" \
+  experiment.scenebenchmark_critic.enabled=true \
+  experiment.num_workers=1 \
+  experiment.pipeline.parallel_rooms=false \
+  experiment.pipeline.max_parallel_rooms=1 \
+  experiment.materials_retrieval_server.enabled=false \
+  floor_plan_agent.materials.use_retrieval_server=false \
+  furniture_agent.asset_manager.general_asset_source=hssd \
+  manipuland_agent.asset_manager.general_asset_source=hssd \
+  wall_agent.asset_manager.general_asset_source=hssd \
+  ceiling_agent.asset_manager.general_asset_source=hssd \
+  "experiment.prompts=['A cozy bedroom with a bed, two nightstands, a wardrobe, a desk with 4 chairs, and a mug on the desk.']"
+```
+
+若凭证存储在本地 `config.yml` 中（包含 `openai_api_key` 和 `openai_base_url`），使用 wrapper 脚本避免凭证泄露到 shell 历史：
 
 ```bash
 uv run python - <<'PY'
@@ -148,7 +134,7 @@ import yaml
 config = yaml.safe_load(Path("config.yml").read_text(encoding="utf-8")) or {}
 os.environ["OPENAI_API_KEY"] = str(config["openai_api_key"])
 os.environ["OPENAI_BASE_URL"] = str(config["openai_base_url"])
-os.environ["OPENAI_USE_RESPONSES"] = "false"
+os.environ["OPENAI_USE_RESPONSES"] = str(config.get("openai_use_responses", False)).lower()
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
 os.environ.setdefault("MALLOC_ARENA_MAX", "2")
@@ -172,10 +158,9 @@ runpy.run_path("main.py", run_name="__main__")
 PY
 ```
 
-To refresh the smoke-test report without regenerating the scene, rerun the same
-output directory with `experiment.tasks=[evaluate_scenes]`.
+仅刷新 smoke test 报告而不重新生成场景，使用 `experiment.tasks=[evaluate_scenes]` 重新运行同一输出目录。
 
-After the smoke test, verify that at least the room-stage reports exist:
+Smoke test 后，验证至少存在房间级报告：
 
 ```bash
 find /path/to/output_dir \
@@ -183,7 +168,7 @@ find /path/to/output_dir \
   -o -path '*/scene_states/scene_after_furniture/scenebenchmark_critic.md'
 ```
 
-Then summarize the JSON reports without requiring `jq`:
+无需 `jq` 即可汇总 JSON 报告：
 
 ```bash
 uv run python - <<'PY'
@@ -207,12 +192,11 @@ for report_path in sorted(root.glob("scene_*/room_*/scene_states/*/scenebenchmar
 PY
 ```
 
-For the single-room smoke configuration above, those reports are the primary
-manual acceptance artifacts.
+上述单房间 smoke 配置的报告是主要的手动验收产物。
 
-## Re-evaluate Existing Outputs
+## 重新评估已有输出
 
-To refresh reports for an existing output directory:
+刷新已有输出目录的报告：
 
 ```bash
 uv run python main.py \
@@ -222,7 +206,7 @@ uv run python main.py \
   hydra.run.dir=/path/to/existing/output_dir
 ```
 
-With credentials in `config.yml`, use the same wrapper pattern:
+若凭证在 `config.yml` 中，使用相同的 wrapper 模式：
 
 ```bash
 uv run python - <<'PY'
@@ -236,7 +220,7 @@ import yaml
 config = yaml.safe_load(Path("config.yml").read_text(encoding="utf-8")) or {}
 os.environ["OPENAI_API_KEY"] = str(config["openai_api_key"])
 os.environ["OPENAI_BASE_URL"] = str(config["openai_base_url"])
-os.environ["OPENAI_USE_RESPONSES"] = "false"
+os.environ["OPENAI_USE_RESPONSES"] = str(config.get("openai_use_responses", False)).lower()
 
 sys.argv = [
     "main.py",
@@ -250,11 +234,9 @@ runpy.run_path("main.py", run_name="__main__")
 PY
 ```
 
-`evaluate_scenes` scans saved room `scene_state.json` files and overwrites the
-room critic reports in place. Combined-house `house_state.json` reports are
-refreshed only when `house_stage_hooks` is set to a non-empty list.
+`evaluate_scenes` 扫描已保存的房间 `scene_state.json` 文件并就地覆盖房间评测报告。仅当 `house_stage_hooks` 设为非空列表时，才会刷新组合房屋的 `house_state.json` 报告。
 
-## Direct Python API
+## Python API
 
 ```python
 from scenesmith.scenebenchmark_critic import (
@@ -276,24 +258,14 @@ context = format_prompt_context(payload, max_issues=8)
 write_room_stage_report(room_scene, stage_dir, config=config, stage="final_scene")
 ```
 
-`evaluate_room_scene()` runs immediately for ad hoc or scripted checks. The
-`write_*_stage_report()` helpers are the stage-hook entrypoints and honor
-`enabled` plus the configured stage hook lists.
+`evaluate_room_scene()` 立即运行，用于临时或脚本化检查。`write_*_stage_report()` 辅助函数是 stage hook 入口点，遵守 `enabled` 和配置的 stage hook 列表。
 
-`room_scene_to_case_pack()` exposes the adapted SceneBenchmark-style geometry
-for debugging or downstream automation. The evaluation payload includes that
-`case_pack`, rule `results`, stage metadata, and summary counts. The Markdown
-report is intended for quick human inspection; the JSON report is stable enough
-for downstream automation.
+`room_scene_to_case_pack()` 暴露适配后的 SceneBenchmark 风格几何数据，用于调试或下游自动化。评估载荷包含该 `case_pack`、规则 `results`、stage 元数据和汇总计数。Markdown 报告用于快速人工检查；JSON 报告足够稳定，可供下游自动化使用。
 
-## Integration Notes
+## 集成说明
 
-- The critic is report-only by default. `hard_gate` metadata is recorded, but v1
-  does not roll back or rewrite SceneSmith scenes.
-- LLM critic prompt injection only runs for furniture and manipuland agents.
-- Combined house reports are still available through `write_house_stage_report`
-  or non-empty `house_stage_hooks`, but the default integration is room-only.
-- Combined house furniture-stage reports filter out manipulands so stage-level
-  checks match the objects that have actually been placed at that point.
-- `vendor/rules.py` is a bridge into the vendored SceneBenchmark modules; it
-  intentionally avoids importing the external SceneBenchmark repo at runtime.
+- 评测器默认仅生成报告。`hard_gate` 元数据会被记录，但 v1 不会回滚或重写 SceneSmith 场景。
+- LLM 评测器提示注入仅对家具和 manipuland 代理运行。
+- 组合房屋报告仍可通过 `write_house_stage_report` 或非空 `house_stage_hooks` 使用，但默认集成仅限房间。
+- 组合房屋家具 stage 报告会过滤掉 manipuland，使 stage 级检查仅包含实际已放置的对象。
+- `vendor/rules.py` 是 vendored SceneBenchmark 模块的桥接，有意避免在运行时导入外部 SceneBenchmark 仓库。
