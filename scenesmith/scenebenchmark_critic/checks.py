@@ -13,6 +13,7 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry impo
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import (
     DINING_TABLES,
+    LAMP_SUBJECT_REJECT_HINTS,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
     _infer_relation_type,
@@ -180,6 +181,8 @@ def build_checks(
 def _spatial_access_affordance(obj: dict[str, Any]) -> str | None:
     if _should_drop_small_spatial_accessibility(obj):
         return None
+    if _should_exclude_from_spatial_access_subjects(obj):
+        return None
     affordances = object_affordances(obj) & ACCESS_AFFORDANCES
     if not affordances:
         return None
@@ -187,6 +190,50 @@ def _spatial_access_affordance(obj: dict[str, Any]) -> str | None:
         if affordance in affordances:
             return affordance
     return sorted(affordances)[0]
+
+
+def _should_exclude_from_spatial_access_subjects(obj: dict[str, Any]) -> bool:
+    """Skip mounted ceiling objects as spatial-accessibility subjects."""
+    if _scene_object_type(obj) == "ceiling_mounted":
+        return True
+    hints = obj.get("functional_hints") or {}
+    group = _normalize_token(hints.get("category_group"))
+    if group in {"ceiling", "ceiling_mounted"}:
+        return True
+    category = object_category(obj)
+    if "ceiling" in category:
+        return True
+    if "lamp" in category or "light" in category:
+        return _text_has_any(obj, LAMP_SUBJECT_REJECT_HINTS)
+    return False
+
+
+def _scene_object_type(obj: dict[str, Any]) -> str:
+    hints = obj.get("functional_hints") or {}
+    value = _normalize_token(hints.get("scene_object_type"))
+    if value in {"wall_mounted", "manipuland", "ceiling_mounted", "furniture"}:
+        return value
+    return "unknown"
+
+
+def _normalize_token(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _text_has_any(obj: dict[str, Any], hints: tuple[str, ...]) -> bool:
+    text = " ".join(
+        str(obj.get(key) or "").strip().lower()
+        for key in (
+            "id",
+            "name",
+            "category",
+            "category_norm",
+            "asset_id",
+            "description",
+        )
+    )
+    text = text.replace("-", "_").replace(" ", "_")
+    return any(hint in text for hint in hints)
 
 
 def _priority_weight(obj: dict[str, Any], metric: str, default: float) -> float:

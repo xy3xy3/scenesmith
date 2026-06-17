@@ -957,6 +957,35 @@ def test_spatial_accessibility_checks_keep_nearby_blocker_targets() -> None:
     assert sofa_check["target_ids"] == ["coffee_table_1"]
 
 
+def test_spatial_accessibility_skips_ceiling_mounted_lamps() -> None:
+    table = _benchmark_obj("table_1", "table", (2.0, 2.0, 0.4), (1.0, 0.8, 0.8))
+    table["functional_hints"]["functional_categories"] = ["supportable"]
+    ceiling_lamp = _benchmark_obj(
+        "ceiling_lamp_1", "ceiling_light", (2.0, 2.0, 2.4), (0.35, 0.35, 0.3)
+    )
+    ceiling_lamp["functional_hints"].update(
+        {
+            "functional_categories": ["supportable"],
+            "category_group": "lighting",
+            "scene_object_type": "ceiling_mounted",
+        }
+    )
+    high_cabinet = _benchmark_obj(
+        "high_cabinet_1", "cabinet", (3.2, 2.0, 1.4), (0.8, 0.5, 2.2)
+    )
+    high_cabinet["functional_hints"].update(
+        {"functional_categories": ["openable"], "category_group": "storage"}
+    )
+    case_pack = _benchmark_case_pack([table, ceiling_lamp, high_cabinet])
+
+    checks = build_checks(case_pack, metrics=["spatial_accessibility"])
+    checked_subjects = {check["subject_id"] for check in checks}
+
+    assert "ceiling_lamp_1" not in checked_subjects
+    assert "table_1" in checked_subjects
+    assert "high_cabinet_1" in checked_subjects
+
+
 def test_room_scene_adapter_preserves_metadata_support_regions_and_profile(
     tmp_path: Path,
 ) -> None:
@@ -4391,6 +4420,12 @@ class _DummyAgent(BaseStatefulAgent):
         raise NotImplementedError
 
 
+class _DummyCeilingAgent(_DummyAgent):
+    @property
+    def agent_type(self) -> AgentType:
+        return AgentType.CEILING_MOUNTED
+
+
 def test_agent_context_helper_is_disabled_by_default(tmp_path: Path) -> None:
     agent = object.__new__(_DummyAgent)
     agent.cfg = {"scenebenchmark_critic": {"enabled": False}}
@@ -4414,6 +4449,22 @@ def test_agent_context_helper_returns_context_when_enabled(tmp_path: Path) -> No
 
     assert context is not None
     assert "SceneBenchmark geometry critic" in context
+
+
+def test_agent_context_helper_does_not_inject_for_ceiling_agent(
+    tmp_path: Path,
+) -> None:
+    agent = object.__new__(_DummyCeilingAgent)
+    agent.cfg = {
+        "scenebenchmark_critic": {
+            "enabled": True,
+            "inject_into_llm_critic": True,
+            "metrics": ["functional_dependency"],
+        }
+    }
+    agent.scene = _scene(tmp_path)
+
+    assert agent._build_scenebenchmark_critic_context() is None
 
 
 @pytest.mark.asyncio

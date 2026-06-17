@@ -101,7 +101,7 @@ scenebenchmark_critic:
   # Set backend="vlm" to call the configured OpenAI-compatible vision model.
   asset_annotation:
     enabled: false
-    backend: "mock"
+    backend: "vlm"
     write_back: true
     write_files: true
     write_scene_state: true
