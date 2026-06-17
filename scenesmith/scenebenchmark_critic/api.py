@@ -13,6 +13,7 @@ from scenesmith.scenebenchmark_critic.adapter import (
     house_scene_to_case_pack,
     room_scene_to_case_pack,
 )
+from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
 from scenesmith.scenebenchmark_critic.config import CriticConfig, critic_config_from_any
 from scenesmith.scenebenchmark_critic.reports import (
     build_evaluation_payload,
@@ -29,8 +30,18 @@ def evaluate_room_scene(
     *,
     config: CriticConfig | Any | None = None,
     stage: str = "adhoc",
+    raw_config: Any | None = None,
+    annotate_assets: bool = True,
 ) -> dict[str, Any]:
     critic_config = _coerce_config(config)
+    if annotate_assets:
+        annotate_room_scene(
+            scene,
+            output_dir=scene.scene_dir,
+            config=critic_config,
+            raw_config=raw_config or config,
+            stage=stage,
+        )
     case_pack = room_scene_to_case_pack(
         scene, stage=stage, metrics=list(critic_config.metrics)
     )
@@ -74,11 +85,25 @@ def write_room_stage_report(
     *,
     config: CriticConfig | Any | None = None,
     stage: str,
+    raw_config: Any | None = None,
 ) -> dict[str, Any] | None:
     critic_config = _coerce_config(config)
     if not critic_config.enabled or not critic_config.room_stage_enabled(stage):
         return None
-    payload = evaluate_room_scene(scene, config=critic_config, stage=stage)
+    annotate_room_scene(
+        scene,
+        output_dir=output_dir,
+        config=critic_config,
+        raw_config=raw_config or config,
+        stage=stage,
+    )
+    payload = evaluate_room_scene(
+        scene,
+        config=critic_config,
+        raw_config=raw_config or config,
+        stage=stage,
+        annotate_assets=False,
+    )
     write_report(output_dir, payload)
     console_logger.info("SceneBenchmark critic report saved to %s", output_dir)
     return payload

@@ -52,6 +52,45 @@ template proposer. The full SceneBenchmark rendering/request pipeline is not
 used by the default SceneSmith integration. See `vendor/README.md` for the
 source manifest and intentional vendoring differences.
 
+## Asset VLM Annotation
+
+SceneSmith can optionally run a SceneBenchmark-style asset semantic annotator
+before each room critic report. The annotator writes effective asset hints into
+`SceneObject.metadata.functional_hints`, so the existing adapter and vendored
+rule checks consume the annotations without a separate converter step. It also
+stores per-object YAML/request artifacts under the stage directory when
+`write_files` is enabled.
+
+By default the annotator is disabled. For deterministic local testing or a
+converter-style dry run:
+
+```bash
+uv run python main.py \
+  +name=critic_asset_annotation_mock \
+  "experiment.tasks=[evaluate_scenes]" \
+  experiment.scenebenchmark_critic.enabled=true \
+  experiment.scenebenchmark_critic.asset_annotation.enabled=true \
+  experiment.scenebenchmark_critic.asset_annotation.backend=mock \
+  hydra.run.dir=/path/to/existing/output_dir
+```
+
+To call the configured OpenAI-compatible VLM, switch the backend:
+
+```bash
+uv run python main.py \
+  +name=critic_asset_annotation_vlm \
+  "experiment.tasks=[evaluate_scenes]" \
+  experiment.scenebenchmark_critic.enabled=true \
+  experiment.scenebenchmark_critic.asset_annotation.enabled=true \
+  experiment.scenebenchmark_critic.asset_annotation.backend=vlm \
+  hydra.run.dir=/path/to/existing/output_dir
+```
+
+When a `BlenderServer` is supplied to `annotate_room_scene`, mesh multiview
+renders are used as visual evidence. In the standard report path, the annotator
+falls back to each object's saved `image_path` when available, and otherwise
+uses the object metadata and heuristic prior.
+
 ## Enable During Generation
 
 The critic is disabled by default. Enable it with Hydra overrides. By default

@@ -11,6 +11,7 @@ from scenesmith.scenebenchmark_critic.api import (
     write_house_stage_report,
     write_room_stage_report,
 )
+from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
 from scenesmith.scenebenchmark_critic.config import CriticConfig
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "evaluate_house_scene",
     "evaluate_room_scene",
     "format_prompt_context",
+    "annotate_room_scene",
     "house_scene_to_case_pack",
     "room_scene_to_case_pack",
     "write_house_stage_report",

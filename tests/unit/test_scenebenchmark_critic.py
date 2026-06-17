@@ -11,6 +11,7 @@ from typing import Any
 import lxml.etree as ET
 import numpy as np
 import pytest
+import yaml
 
 from omegaconf import OmegaConf
 from pydrake.math import RigidTransform, RollPitchYaw
@@ -41,6 +42,7 @@ from scenesmith.experiments.indoor_scene_generation import (
 )
 from scenesmith.scenebenchmark_critic import (
     CriticConfig,
+    annotate_room_scene,
     evaluate_room_scene,
     format_prompt_context,
     write_house_stage_report,
@@ -1008,6 +1010,141 @@ def test_room_scene_adapter_preserves_metadata_support_regions_and_profile(
     assert cabinet_record["object_function_profile"]["is_work_surface"] is False
 
 
+def test_asset_annotation_mock_writes_effective_hints_and_files(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    stage_dir = tmp_path / "scene_states" / "final_scene"
+    stage_dir.mkdir(parents=True)
+    (stage_dir / "scene_state.json").write_text(
+        json.dumps(scene.to_state_dict(), indent=2), encoding="utf-8"
+    )
+    config = CriticConfig(
+        enabled=True,
+        asset_annotation={
+            "enabled": True,
+            "backend": "mock",
+            "write_files": True,
+            "write_back": True,
+        },
+    )
+
+    summary = annotate_room_scene(
+        scene,
+        output_dir=stage_dir,
+        config=config,
+        stage="final_scene",
+    )
+
+    assert summary is not None
+    assert summary["object_count"] == 2
+    assert (stage_dir / "asset_annotations" / "table_0.yaml").exists()
+    table_hints = scene.objects[UniqueID("table_0")].metadata["functional_hints"]
+    assert table_hints["classification_source"] == "asset_annotation"
+    assert table_hints["asset_annotation_source"] == ("scenesmith_vlm_asset_annotator")
+    assert "supportable" in table_hints["functional_categories"]
+    table_annotation = yaml.safe_load(
+        (stage_dir / "asset_annotations" / "table_0.yaml").read_text(encoding="utf-8")
+    )
+    assert table_annotation["object_function_profile"]["can_support_top"] is True
+    saved_state = json.loads((stage_dir / "scene_state.json").read_text())
+    saved_hints = saved_state["objects"]["table_0"]["metadata"]["functional_hints"]
+    assert saved_hints["classification_source"] == "asset_annotation"
+
+
+def test_asset_annotation_reuses_saved_object_function_profile(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    stage_dir = tmp_path / "scene_states" / "final_scene"
+    annotation_dir = stage_dir / "asset_annotations"
+    annotation_dir.mkdir(parents=True)
+    config = CriticConfig(
+        enabled=True,
+        asset_annotation={
+            "enabled": True,
+            "backend": "mock",
+            "write_files": False,
+            "write_back": True,
+            "skip_existing": True,
+        },
+    )
+    annotation = {
+        "object_id": "table_0",
+        "effective_annotation": {
+            "category_norm": "table",
+            "scene_object_type": "furniture",
+            "benchmark_relevance": "functional",
+            "affordances": ["supportable"],
+            "source": "unit_test",
+            "confidence": 0.95,
+        },
+        "object_function_profile": {
+            "can_support_top": False,
+            "has_internal_shelf": True,
+            "is_small_placeable": False,
+            "is_seating": False,
+            "is_work_surface": False,
+            "is_media_target": False,
+            "is_bedside_surface": False,
+            "is_sleeping_surface": False,
+        },
+    }
+    (annotation_dir / "table_0.yaml").write_text(
+        yaml.safe_dump(annotation, sort_keys=False), encoding="utf-8"
+    )
+
+    summary = annotate_room_scene(
+        scene,
+        output_dir=stage_dir,
+        config=config,
+        stage="final_scene",
+    )
+
+    assert summary is not None
+    table_profile = scene.objects[UniqueID("table_0")].metadata[
+        "object_function_profile"
+    ]
+    assert table_profile["can_support_top"] is False
+    assert table_profile["has_internal_shelf"] is True
+
+
+def test_write_room_stage_report_runs_asset_annotation_before_case_pack(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    stage_dir = tmp_path / "scene_states" / "scene_after_furniture"
+    stage_dir.mkdir(parents=True)
+    config = CriticConfig(
+        enabled=True,
+        room_stage_hooks=("scene_after_furniture",),
+        asset_annotation={
+            "enabled": True,
+            "backend": "mock",
+            "write_files": False,
+            "write_scene_state": False,
+        },
+    )
+
+    payload = write_room_stage_report(
+        scene,
+        stage_dir,
+        config=config,
+        stage="scene_after_furniture",
+    )
+
+    assert payload is not None
+    objects = {
+        obj["id"]: obj for obj in payload["case_pack"]["scene_geometry"]["objects"]
+    }
+    assert objects["table_0"]["functional_hints"]["classification_source"] == (
+        "asset_annotation"
+    )
+    assert objects["table_0"]["functional_hints"]["asset_annotation_source"] == (
+        "scenesmith_vlm_asset_annotator"
+    )
+
+
 def test_room_scene_adapter_reads_nested_support_region_hints(
     tmp_path: Path,
 ) -> None:
@@ -1362,6 +1499,7 @@ def test_public_package_exports_embedding_api() -> None:
 
     expected = {
         "CriticConfig",
+        "annotate_room_scene",
         "evaluate_house_scene",
         "evaluate_room_scene",
         "format_prompt_context",

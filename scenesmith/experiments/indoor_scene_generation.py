@@ -1648,7 +1648,9 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
         server_config = self.cfg.experiment.materials_retrieval_server
 
         if not server_config.get("enabled", True):
-            console_logger.info("Skipping materials retrieval server: disabled by config")
+            console_logger.info(
+                "Skipping materials retrieval server: disabled by config"
+            )
             return
 
         retrieval_device = _get_retrieval_gpu_device()
@@ -2170,7 +2172,7 @@ class IndoorSceneGenerationExperiment(BaseExperiment):
                     payload = write_room_stage_report(
                         scene,
                         state_path.parent,
-                        config=critic_config,
+                        config=self.cfg,
                         stage=stage,
                     )
                     if payload is not None:

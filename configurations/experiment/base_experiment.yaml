@@ -96,6 +96,40 @@ scenebenchmark_critic:
   # "template" avoids VLM/network calls and mirrors SceneBenchmark's deterministic fallback.
   fd_relation_proposer_mode: "template"
   max_fd_relation_proposals: 8
+  # Optional asset-level semantic annotation before running the rule critic.
+  # backend="mock" mirrors SceneBenchmark's deterministic dry-run annotation path.
+  # Set backend="vlm" to call the configured OpenAI-compatible vision model.
+  asset_annotation:
+    enabled: false
+    backend: "mock"
+    write_back: true
+    write_files: true
+    write_scene_state: true
+    skip_existing: true
+    refresh: false
+    output_dir_name: "asset_annotations"
+    request_dir_name: "asset_annotation_requests"
+    render_dir_name: "asset_annotation_renders"
+    object_types: ["furniture", "wall_mounted", "ceiling_mounted", "manipuland"]
+    max_objects: null
+    model: null
+    reasoning_effort: "low"
+    verbosity: "low"
+    vision_detail: null
+    render:
+      enabled: true
+      num_side_views: 4
+      include_vertical_views: true
+      elevation_degrees: 20.0
+      width: 512
+      height: 512
+      timeout: 120.0
+      show_coordinate_frame: false
+    merge:
+      category_override_threshold: 0.75
+      affordance_add_threshold: 0.70
+      front_face_threshold: 0.70
+      scene_object_type_threshold: 0.70
 
 # Physical feasibility post-processing configuration.
 # Two-stage process: projection (IK-based) → simulation (physics settling).

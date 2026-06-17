@@ -884,7 +884,7 @@ class BaseStatefulAgent(ABC):
             return None
         payload = evaluate_room_scene(
             scene,
-            config=critic_config,
+            config=self.cfg,
             stage=f"llm_critic_{self.agent_type.value}",
         )
         return format_prompt_context(

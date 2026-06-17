@@ -19,6 +19,7 @@ class CriticConfig:
     max_issues_for_prompt: int = 8
     fail_gate_threshold: int = 1
     degraded_gate_threshold: int = 999999
+    asset_annotation: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def metric_enabled(self, metric: str) -> bool:
@@ -51,6 +52,7 @@ def critic_config_from_any(cfg: Any) -> CriticConfig:
         "max_issues_for_prompt",
         "fail_gate_threshold",
         "degraded_gate_threshold",
+        "asset_annotation",
     }
     extra = {key: value for key, value in data.items() if key not in known}
     return CriticConfig(
@@ -66,6 +68,7 @@ def critic_config_from_any(cfg: Any) -> CriticConfig:
         max_issues_for_prompt=int(data.get("max_issues_for_prompt", 8)),
         fail_gate_threshold=int(data.get("fail_gate_threshold", 1)),
         degraded_gate_threshold=int(data.get("degraded_gate_threshold", 999999)),
+        asset_annotation=_as_dict(data.get("asset_annotation")),
         extra=extra,
     )
 
@@ -106,3 +109,13 @@ def _as_tuple(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(value, str):
         return tuple(item.strip() for item in value.split(",") if item.strip())
     return tuple(value or ())
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "items"):
+        return {key: item for key, item in value.items()}
+    return {}
