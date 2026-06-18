@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 
 from scenesmith.agent_utils.room import RoomScene
 from scenesmith.agent_utils.scene_analyzer import SceneAnalyzer
+from scenesmith.utils.llm_json import parse_llm_json
 
 
 class TestSceneAnalyzer(unittest.TestCase):
@@ -70,6 +71,44 @@ class TestSceneAnalyzer(unittest.TestCase):
             self.scene_analyzer.cfg["openai"]["reasoning_effort"]["scene_critique"],
             self.TEST_REASONING_EFFORT,
         )
+
+    def test_parse_llm_json_strips_markdown_fences(self):
+        """Fenced JSON from local/open models should still parse successfully."""
+        payload = """```json
+        {
+          "furniture_selections": [
+            {
+              "furniture_id": "desk_0",
+              "suggested_items": "REQUIRED: mug",
+              "prompt_constraints": "Prompt mentions mug on desk",
+              "style_notes": "minimal"
+            }
+          ]
+        }
+        ```"""
+
+        parsed = parse_llm_json(payload)
+
+        self.assertEqual(parsed["furniture_selections"][0]["furniture_id"], "desk_0")
+
+    def test_parse_llm_json_repairs_minor_invalid_json(self):
+        """json_repair should recover lightly malformed LLM JSON."""
+        payload = """
+        {
+          "furniture_selections": [
+            {
+              "furniture_id": "desk_0",
+              "suggested_items": "Optional: books",
+              "prompt_constraints": "No specific requirements",
+              "style_notes": "cozy",
+            }
+          ]
+        }
+        """
+
+        parsed = parse_llm_json(payload)
+
+        self.assertEqual(parsed["furniture_selections"][0]["style_notes"], "cozy")
 
 
 if __name__ == "__main__":

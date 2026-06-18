@@ -1,0 +1,50 @@
+"""Helpers for parsing LLM-produced JSON with compatibility fallbacks."""
+
+import json
+
+from typing import Any
+
+import json_repair
+
+
+def extract_json_text(text: str) -> str:
+    """Strip common Markdown fencing and isolate the outer JSON payload."""
+    stripped = str(text or "").strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+
+    object_start = stripped.find("{")
+    object_end = stripped.rfind("}")
+    if object_start >= 0 and object_end >= object_start:
+        return stripped[object_start : object_end + 1]
+
+    array_start = stripped.find("[")
+    array_end = stripped.rfind("]")
+    if array_start >= 0 and array_end >= array_start:
+        return stripped[array_start : array_end + 1]
+
+    return stripped
+
+
+def parse_llm_json(text: str) -> Any:
+    """Parse LLM JSON output with repair fallback for small-model formatting drift."""
+    cleaned = extract_json_text(text)
+    # 2026-06-17 hardening: local/open models sometimes wrap JSON in Markdown or
+    # emit lightly malformed JSON. json_repair gives us a deterministic fallback.
+    return json_repair.loads(cleaned)
+
+
+def preview_llm_json(text: str, limit: int = 200) -> str:
+    """Return a short preview for diagnostics after applying common cleanup."""
+    cleaned = extract_json_text(text)
+    return repr(cleaned[:limit]) if cleaned else "empty"
+
+
+def dumps_llm_json(value: Any) -> str:
+    """Serialize helper kept local to this module for future consistency."""
+    return json.dumps(value)

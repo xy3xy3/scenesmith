@@ -21,6 +21,7 @@ from omegaconf import DictConfig
 
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.prompts import MeshPhysicsPrompts, prompt_manager
+from scenesmith.utils.llm_json import parse_llm_json, preview_llm_json
 from scenesmith.utils.openai import encode_image_to_base64
 
 if TYPE_CHECKING:
@@ -283,9 +284,11 @@ def analyze_mesh_orientation_and_material(
         )
 
         try:
-            response_json = json.loads(response_text)
-        except json.JSONDecodeError as e:
-            preview = repr(response_text[:500]) if response_text else "None"
+            # 2026-06-18 hardening: local/open models sometimes return fenced JSON
+            # or lightly malformed payloads even when JSON output is requested.
+            response_json = parse_llm_json(response_text)
+        except (json.JSONDecodeError, ValueError) as e:
+            preview = preview_llm_json(response_text, limit=500)
             raise RuntimeError(
                 f"VLM returned invalid JSON for {mesh_path.stem}. "
                 f"Parse error: {e}. Response preview: {preview}"

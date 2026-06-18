@@ -2,6 +2,7 @@
 
 import unittest
 
+from omegaconf import OmegaConf
 from unittest.mock import MagicMock
 
 from scenesmith.agent_utils.asset_router import AssetRouter
@@ -288,6 +289,62 @@ class TestAnalysisResponseParsing(unittest.TestCase):
         result = router._parse_analysis_response(response)
         assert len(result.items) == 1
         assert result.items[0].object_type == ObjectType.FURNITURE
+
+
+class TestAssetRouterJsonFallback(unittest.TestCase):
+    """Test JSON fallback behavior for local/open model outputs."""
+
+    def _make_router(self) -> AssetRouter:
+        cfg = OmegaConf.create(
+            {
+                "openai": {
+                    "model": "test-model",
+                    "reasoning_effort": {
+                        "asset_analysis": "low",
+                        "asset_validation": "low",
+                    },
+                    "verbosity": {
+                        "asset_analysis": "low",
+                        "asset_validation": "low",
+                    },
+                    "vision_detail": "low",
+                },
+                "asset_manager": {
+                    "side_view_elevation_degrees": 15.0,
+                    "validation_taa_samples": 8,
+                    "router": {"analysis_max_retries": 1},
+                },
+            }
+        )
+        return AssetRouter(
+            agent_type=AgentType.FURNITURE,
+            vlm_service=MagicMock(),
+            cfg=cfg,
+        )
+
+    def test_analyze_description_accepts_fenced_json(self) -> None:
+        """Router analysis should accept fenced JSON from local models."""
+        router = self._make_router()
+        router.vlm_service.create_completion.return_value = """```json
+        {
+          "items": [
+            {
+              "description": "desk",
+              "short_name": "desk",
+              "dimensions": [1.2, 0.6, 0.75],
+              "object_type": "FURNITURE",
+              "strategies": ["generated"]
+            }
+          ],
+          "original_description": null,
+          "discarded_manipulands": null
+        }
+        ```"""
+
+        result = router.analyze_request("desk", [1.2, 0.6, 0.75])
+
+        assert len(result.items) == 1
+        assert result.items[0].description == "desk"
 
 
 if __name__ == "__main__":

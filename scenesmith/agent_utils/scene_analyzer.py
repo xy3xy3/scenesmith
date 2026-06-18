@@ -13,6 +13,7 @@ from scenesmith.agent_utils.room import ObjectType, RoomScene, UniqueID
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.prompts import prompt_manager
 from scenesmith.prompts.registry import ManipulandAgentPrompts
+from scenesmith.utils.llm_json import parse_llm_json, preview_llm_json
 from scenesmith.utils.omegaconf import OmegaConf
 from scenesmith.utils.openai import encode_image_to_base64
 
@@ -347,11 +348,12 @@ class SceneAnalyzer:
                     ),
                 )
 
-                # Parse response.
-                analysis = json.loads(response_str)
+                # 2026-06-17 hardening: small/local models may wrap JSON in fenced
+                # Markdown or emit minor JSON defects. Repair before failing.
+                analysis = parse_llm_json(response_str)
                 break  # Success.
-            except json.JSONDecodeError as e:
-                preview = repr(response_str[:200]) if response_str else "empty"
+            except (json.JSONDecodeError, ValueError) as e:
+                preview = preview_llm_json(response_str)
                 if attempt < max_retries - 1:
                     console_logger.warning(
                         f"VLM returned invalid JSON (attempt {attempt + 1}/{max_retries}). "
@@ -475,10 +477,10 @@ class SceneAnalyzer:
                     furniture_with_candidates=furniture_with_candidates,
                     images=images,
                 )
-                result = json.loads(response_str)
+                result = parse_llm_json(response_str)
                 break
-            except json.JSONDecodeError as e:
-                preview = repr(response_str[:200]) if response_str else "empty"
+            except (json.JSONDecodeError, ValueError) as e:
+                preview = preview_llm_json(response_str)
                 if attempt < max_retries - 1:
                     console_logger.warning(
                         f"Context selection VLM returned invalid JSON "

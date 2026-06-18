@@ -376,12 +376,38 @@ class StatefulFloorPlanAgent(BaseStatefulAgent, BaseFloorPlanAgent):
         # Always track the final render directory (separate from checkpoint logic).
         # This is needed because final critique uses update_checkpoint=False, but we
         # still need to know the actual last render dir for copying to final output.
+        # 2026-06-17 hardening: some local/smaller models or compatible servers do
+        # not reliably honor forced tool calls, so final critique may finish without
+        # issuing observe_scene. Reuse a prior render or synthesize one instead of
+        # crashing on render_dir=None during scores.yaml persistence.
+        if render_dir is None:
+            fallback_render_dir = self.final_render_dir or self.checkpoint_render_dir
+            if fallback_render_dir is not None and fallback_render_dir.exists():
+                console_logger.warning(
+                    "Critic completed without a fresh floor-plan render; "
+                    f"reusing existing render directory: {fallback_render_dir}"
+                )
+                render_dir = fallback_render_dir
+            else:
+                console_logger.warning(
+                    "Critic completed without any available floor-plan render; "
+                    "forcing observe_scene once so scores can be persisted."
+                )
+                vision_tools._observe_scene_impl()
+                render_dir = vision_tools.last_render_dir
+
         self.final_render_dir = render_dir
 
-        scores_path = render_dir / "scores.yaml"
-        with open(scores_path, "w") as f:
-            yaml.dump(scores_dict, f, default_flow_style=False, sort_keys=False)
-        console_logger.info(f"Scores saved to: {scores_path}")
+        if render_dir is not None:
+            scores_path = render_dir / "scores.yaml"
+            with open(scores_path, "w") as f:
+                yaml.dump(scores_dict, f, default_flow_style=False, sort_keys=False)
+            console_logger.info(f"Scores saved to: {scores_path}")
+        else:
+            console_logger.error(
+                "No floor-plan render directory available after fallback; "
+                "scores could not be persisted."
+            )
 
         # Shift checkpoints only during iteration critiques, not final critique.
         # This preserves N-1 checkpoint for reset check in _finalize_scene_and_scores.

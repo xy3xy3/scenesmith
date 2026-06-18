@@ -18,6 +18,7 @@ from pydrake.math import RollPitchYaw
 from scenesmith.agent_utils.room import ObjectType, RoomScene, SceneObject
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.scenebenchmark_critic import adapter
+from scenesmith.utils.llm_json import parse_llm_json
 from scenesmith.utils.openai import encode_image_to_base64
 
 if TYPE_CHECKING:
@@ -474,7 +475,9 @@ def run_prediction(
             or _cfg_get(raw_config, "openai.vision_detail", "auto")
         ),
     )
-    payload = json.loads(_extract_json_text(response_text))
+    # 2026-06-18 hardening: asset-annotation VLM output now uses the shared JSON
+    # repair path so fenced or lightly malformed local-model responses survive.
+    payload = parse_llm_json(response_text)
     return AssetVlmPrediction.model_validate(payload)
 
 
@@ -1058,22 +1061,6 @@ def _model_name(config: dict[str, Any], raw_config: Any | None) -> str:
     if configured:
         return configured
     return str(_cfg_get(raw_config, "openai.model", "gpt-5.2"))
-
-
-def _extract_json_text(text: str) -> str:
-    stripped = str(text or "").strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start >= 0 and end >= start:
-        return stripped[start : end + 1]
-    return stripped
 
 
 def _load_annotation(path: Path) -> AssetAnnotation | None:
