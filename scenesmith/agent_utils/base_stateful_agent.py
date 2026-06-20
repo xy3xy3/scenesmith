@@ -39,6 +39,7 @@ from scenesmith.agent_utils.placement_noise import PlacementNoiseMode
 from scenesmith.agent_utils.room import AgentType
 from scenesmith.agent_utils.scoring import (
     CritiqueWithScores,
+    align_scores_for_comparison,
     compute_total_score,
     format_score_deltas_for_planner,
     log_agent_response,
@@ -412,11 +413,11 @@ class BaseStatefulAgent(ABC):
         if previous_scores is None:
             return False, ""
 
-        # Check single category drops.
-        current_scores_list = current_scores.get_scores()
-        previous_scores_list = previous_scores.get_scores()
-        for current_score, previous_score in zip(
-            current_scores_list, previous_scores_list
+        # Check single category drops using normalized score names rather than
+        # list position, since model-authored nested score labels can drift.
+        for current_score, previous_score in align_scores_for_comparison(
+            current=current_scores,
+            previous=previous_scores,
         ):
             drop = previous_score.grade - current_score.grade
 

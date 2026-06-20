@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+console_logger = logging.getLogger(__name__)
+
 
 @dataclass
 class CategoryScore:
@@ -46,6 +48,25 @@ class CritiqueWithScores(ABC):
             List of CategoryScore objects for all categories.
         """
 
+    def _canonicalize_scores(
+        self, named_scores: list[tuple[str, CategoryScore]]
+    ) -> list[CategoryScore]:
+        """Normalize model-authored score names to stable category labels."""
+        canonicalized_scores = []
+
+        for canonical_name, score in named_scores:
+            if score.name != canonical_name:
+                console_logger.warning(
+                    "Normalizing %s score category name from %r to %r.",
+                    type(self).__name__,
+                    score.name,
+                    canonical_name,
+                )
+                score.name = canonical_name
+            canonicalized_scores.append(score)
+
+        return canonicalized_scores
+
 
 @dataclass
 class FloorPlanCritiqueWithScores(CritiqueWithScores):
@@ -67,13 +88,15 @@ class FloorPlanCritiqueWithScores(CritiqueWithScores):
 
     def get_scores(self) -> list[CategoryScore]:
         """Return all floor plan critique category scores."""
-        return [
-            self.room_proportions,
-            self.spatial_flow,
-            self.natural_lighting,
-            self.material_consistency,
-            self.prompt_following,
-        ]
+        return self._canonicalize_scores(
+            [
+                ("Room Proportions", self.room_proportions),
+                ("Spatial Flow", self.spatial_flow),
+                ("Natural Lighting", self.natural_lighting),
+                ("Material Consistency", self.material_consistency),
+                ("Prompt Following", self.prompt_following),
+            ]
+        )
 
 
 @dataclass
@@ -98,14 +121,16 @@ class FurnitureCritiqueWithScores(CritiqueWithScores):
 
     def get_scores(self) -> list[CategoryScore]:
         """Return all furniture critique category scores."""
-        return [
-            self.realism,
-            self.functionality,
-            self.layout,
-            self.holistic_completeness,
-            self.prompt_following,
-            self.reachability,
-        ]
+        return self._canonicalize_scores(
+            [
+                ("Realism", self.realism),
+                ("Functionality", self.functionality),
+                ("Layout", self.layout),
+                ("Holistic Completeness", self.holistic_completeness),
+                ("Prompt Following", self.prompt_following),
+                ("Reachability", self.reachability),
+            ]
+        )
 
 
 @dataclass
@@ -128,13 +153,15 @@ class ManipulandCritiqueWithScores(CritiqueWithScores):
 
     def get_scores(self) -> list[CategoryScore]:
         """Return all manipuland critique category scores."""
-        return [
-            self.realism,
-            self.functionality,
-            self.layout,
-            self.holistic_completeness,
-            self.prompt_following,
-        ]
+        return self._canonicalize_scores(
+            [
+                ("Realism", self.realism),
+                ("Functionality", self.functionality),
+                ("Layout", self.layout),
+                ("Holistic Completeness", self.holistic_completeness),
+                ("Prompt Following", self.prompt_following),
+            ]
+        )
 
 
 @dataclass
@@ -157,13 +184,15 @@ class WallCritiqueWithScores(CritiqueWithScores):
 
     def get_scores(self) -> list[CategoryScore]:
         """Return all wall critique category scores."""
-        return [
-            self.realism,
-            self.functionality,
-            self.layout,
-            self.holistic_completeness,
-            self.prompt_following,
-        ]
+        return self._canonicalize_scores(
+            [
+                ("Realism", self.realism),
+                ("Functionality", self.functionality),
+                ("Layout", self.layout),
+                ("Holistic Completeness", self.holistic_completeness),
+                ("Prompt Following", self.prompt_following),
+            ]
+        )
 
 
 @dataclass
@@ -187,12 +216,59 @@ class CeilingCritiqueWithScores(CritiqueWithScores):
 
     def get_scores(self) -> list[CategoryScore]:
         """Return all ceiling critique category scores."""
-        return [
-            self.realism,
-            self.functionality,
-            self.layout,
-            self.prompt_following,
-        ]
+        return self._canonicalize_scores(
+            [
+                ("Realism", self.realism),
+                ("Functionality", self.functionality),
+                ("Layout", self.layout),
+                ("Prompt Following", self.prompt_following),
+            ]
+        )
+
+
+def _normalize_score_key(name: str) -> str:
+    """Create a stable comparison key for score category names."""
+    return " ".join(name.replace("_", " ").split()).casefold()
+
+
+def align_scores_for_comparison(
+    current: CritiqueWithScores, previous: CritiqueWithScores
+) -> list[tuple[CategoryScore, CategoryScore]]:
+    """Align score categories by normalized name for safe comparisons."""
+    current_by_key = {
+        _normalize_score_key(score.name): score for score in current.get_scores()
+    }
+    previous_by_key = {
+        _normalize_score_key(score.name): score for score in previous.get_scores()
+    }
+
+    missing_from_previous = [
+        score.name
+        for key, score in current_by_key.items()
+        if key not in previous_by_key
+    ]
+    missing_from_current = [
+        score.name
+        for key, score in previous_by_key.items()
+        if key not in current_by_key
+    ]
+
+    if missing_from_previous or missing_from_current:
+        console_logger.warning(
+            "Score categories did not fully align for comparison. "
+            "Missing from previous: %s. Missing from current: %s.",
+            missing_from_previous or "none",
+            missing_from_current or "none",
+        )
+
+    aligned_pairs: list[tuple[CategoryScore, CategoryScore]] = []
+    for score in current.get_scores():
+        key = _normalize_score_key(score.name)
+        previous_score = previous_by_key.get(key)
+        if previous_score is not None:
+            aligned_pairs.append((score, previous_score))
+
+    return aligned_pairs
 
 
 def compute_total_score(scores: CritiqueWithScores) -> int:
@@ -219,11 +295,12 @@ def compute_score_deltas(
     Returns:
         Dictionary mapping category names to score changes (can be negative).
     """
-    current_scores = {s.name: s.grade for s in current.get_scores()}
-    previous_scores = {s.name: s.grade for s in previous.get_scores()}
-
     return {
-        name: current_scores[name] - previous_scores[name] for name in current_scores
+        current_score.name: current_score.grade - previous_score.grade
+        for current_score, previous_score in align_scores_for_comparison(
+            current=current,
+            previous=previous,
+        )
     }
 
 
@@ -261,7 +338,9 @@ def log_critique_scores(
     console_logger.info(title)
     console_logger.info("=" * 60)
     for score in scores.get_scores():
-        console_logger.info(f"{score.name.replace('_', ' ').title()}: {score.grade}/10")
+        console_logger.info(
+            f"{score.name.replace('_', ' ').title()}: {score.grade}/10"
+        )
         console_logger.info(f"  {score.comment}")
     console_logger.info("=" * 60)
 
@@ -273,11 +352,16 @@ def log_score_deltas(deltas: dict[str, int]) -> None:
         deltas: Dictionary mapping category names to score changes.
     """
     console_logger = logging.getLogger(__name__)
+    if not deltas:
+        console_logger.info("Score changes unavailable: no comparable categories.")
+        return
+
     sum_delta = sum(deltas.values())
     max_drop = abs(min(min(deltas.values(), default=0), 0))
 
     parts = [
-        f"{name.replace('_', ' ').title()} {delta:+d}" for name, delta in deltas.items()
+        f"{name.replace('_', ' ').title()} {delta:+d}"
+        for name, delta in deltas.items()
     ]
     console_logger.info(
         f"Score changes: {', '.join(parts)}. "
@@ -301,21 +385,30 @@ def format_score_deltas_for_planner(
     Returns:
         Formatted string showing score changes.
     """
-    deltas = compute_score_deltas(current_scores, previous_scores)
-    sum_delta = sum(deltas.values())
+    aligned_scores = align_scores_for_comparison(
+        current=current_scores,
+        previous=previous_scores,
+    )
+    deltas = {
+        current_score.name: current_score.grade - previous_score.grade
+        for current_score, previous_score in aligned_scores
+    }
 
-    current_by_name = {s.name: s for s in current_scores.get_scores()}
-    previous_by_name = {s.name: s for s in previous_scores.get_scores()}
+    if not aligned_scores:
+        return "\n\n**Score Changes:** unavailable (no comparable score categories)."
+
+    sum_delta = sum(deltas.values())
 
     if format_style == "detailed":
         max_drop = abs(min(min(deltas.values(), default=0), 0))
         lines = ["\n\n**Score Changes:**"]
-        for name in deltas:
-            display_name = name.replace("_", " ").title()
-            prev_grade = previous_by_name[name].grade
-            curr_grade = current_by_name[name].grade
+        for current_score, previous_score in aligned_scores:
+            display_name = current_score.name.replace("_", " ").title()
+            prev_grade = previous_score.grade
+            curr_grade = current_score.grade
             lines.append(
-                f"{display_name}: {prev_grade}→{curr_grade} ({deltas[name]:+d})"
+                f"{display_name}: {prev_grade}→{curr_grade} "
+                f"({curr_grade - prev_grade:+d})"
             )
         lines.append(f"**Total: {sum_delta:+d}** (Max drop: {max_drop})")
         return "\n".join(lines)
