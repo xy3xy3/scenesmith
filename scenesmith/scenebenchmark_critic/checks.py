@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from scenesmith.scenebenchmark_critic import clearance_source
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
     bbox_gap_xy,
     distance_xy,
@@ -175,6 +176,13 @@ def build_checks(
         checks.extend(
             _build_grouped_functional_dependency_checks(objects, seen_check_ids)
         )
+
+    if "clearance" in enabled:
+        for check in clearance_source.build_clearance_checks(objects):
+            if check["check_id"] in seen_check_ids:
+                continue
+            checks.append(check)
+            seen_check_ids.add(check["check_id"])
     return checks
 
 

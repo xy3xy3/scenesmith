@@ -17,7 +17,7 @@ from pydrake.math import RollPitchYaw
 
 from scenesmith.agent_utils.room import ObjectType, RoomScene, SceneObject
 from scenesmith.agent_utils.vlm_service import VLMService
-from scenesmith.scenebenchmark_critic import adapter
+from scenesmith.scenebenchmark_critic import adapter, clearance_source
 from scenesmith.utils.llm_json import parse_llm_json
 from scenesmith.utils.openai import encode_image_to_base64
 
@@ -210,6 +210,7 @@ class AssetAnnotation(BaseModel):
     object_function_profile: ObjectFunctionProfile = Field(
         default_factory=ObjectFunctionProfile
     )
+    clearance: dict[str, Any] | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
     failure_reason: str | None = None
 
@@ -353,6 +354,11 @@ def annotate_scene_object(
     object_function_profile = _object_function_profile_from_effective_annotation(
         obj, effective
     )
+    clearance = clearance_source.get_clearance(obj.metadata.get("asset_id"))
+    if clearance is not None:
+        # Mirror into metadata so the adapter carries it into the case_pack
+        # geometry without re-querying the provider.
+        obj.metadata["clearance"] = clearance
     evidence = {
         "mesh_path": str(obj.geometry_path) if obj.geometry_path else None,
         "image_paths": [str(path) for path in render_paths],
@@ -372,6 +378,7 @@ def annotate_scene_object(
         vlm_prediction=prediction,
         effective_annotation=effective,
         object_function_profile=object_function_profile,
+        clearance=clearance,
         provenance={
             "annotator": "scenesmith_scenebenchmark_asset_annotator",
             "backend": str(config.get("backend") or "mock"),
