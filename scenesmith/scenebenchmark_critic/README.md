@@ -8,6 +8,7 @@
 
 - `spatial_accessibility`：基于网格/可达性的功能访问区域、障碍物掩码、连通站立区域和可达距离评估。
 - `functional_dependency`：基于模板提议和规则评分的依赖关系，包括物体-支撑物、灯-表面、座椅-工作面、座椅-媒体、床-床头柜、餐桌/工作台，以及相关的靠近/朝向关系。
+- `clearance`（默认关闭，需在 `metrics` 中显式启用）：功能净空。基于预计算的人体锚定净空标注（非铰链 6092 件）与铰链扫掠体开合包络（2120 件），按 HSSD `asset_id` 查表，将物体局部系的 keep-clear 区按位姿投影到世界系，检测其它物体是否侵入。零 VLM、纯几何确定性评分；详见下文「功能净空（clearance）」。
 
 适配器从 SceneSmith 对象名称、描述、元数据、支撑表面和 `placement_info` 中推导类别、功能提示、对象功能画像、支撑区域、房间多边形和放置关系。资产标注字段（如 `front_face`、`access_direction`、`operation_space`、`target_relation` 和 `explicit_target_relation`）会被保留；标注的正面/访问方向也会映射为 SceneBenchmark 风格的交互面，使空间可达性检查使用标注的操作侧。`benchmark_relevance` 设为非功能值的资产标注会抑制功能可供性检查，与 SceneBenchmark 转换器行为一致。`affordances`、`functional_categories` 和 `candidate_affordances` 均可作为可供性输入，元数据中的功能依赖以及 `support_regions`/`support_region` 可位于对象元数据根目录或 `metadata.functional_hints` 内。当标注缺失时，适配器镜像 SceneBenchmark 演示转换器的轻量级默认值：归一化带房间前缀的实例名（如 `bedroom_nightstand_1_f0_c`），推断 `category_keywords`、`front_hint`、`target_relation` 和 `metric_relevance`，并为检测到的或 SceneSmith 提供的支撑区域写入 `support_region_summary`。SceneSmith 还会在单个房间中存在相应对象时，实例化 SceneBenchmark 的分组功能依赖检查（如餐桌组、工作台、多床头柜床边对等）。
 
@@ -261,6 +262,33 @@ write_room_stage_report(room_scene, stage_dir, config=config, stage="final_scene
 `evaluate_room_scene()` 立即运行，用于临时或脚本化检查。`write_*_stage_report()` 辅助函数是 stage hook 入口点，遵守 `enabled` 和配置的 stage hook 列表。
 
 `room_scene_to_case_pack()` 暴露适配后的 SceneBenchmark 风格几何数据，用于调试或下游自动化。评估载荷包含该 `case_pack`、规则 `results`、stage 元数据和汇总计数。Markdown 报告用于快速人工检查；JSON 报告足够稳定，可供下游自动化使用。
+
+## 功能净空（clearance）
+
+净空评测把我们（yz）预计算的净空标注接进评测器，作为第三个 metric。
+
+**数据**（vendored 进 `clearance_data/`，按 40 位 HSSD `asset_id` 索引）：
+
+- `nonartic_clearance_index.json`：6092 个非铰链物体的人体锚定净空（落座/接近/操作/上方站立/通行 5 型；depth/height 锚人体测量学常数，width 取物体面）。
+- `artic_clearance_index.json`：2120 个铰链物体的扫掠体开合包络（`expand` = swept/static 逐轴外扩比）。
+
+**核心模块** `clearance_source.py`（纯 Python，无 Drake/Blender 依赖，可独立单测）：
+
+- `get_clearance(asset_id)` → 统一净空记录（这是「净空服务」内核，可再包一层 HTTP 当在线服务）。
+- `project_keep_clear(record, bbox_world, yaw_deg)` → 物体局部净空按位姿投影到**世界系 keep-clear AABB**（前向=局部 -Y 经 yaw 旋转后吸附到最近世界轴；「四周」对称件生成环形四面；「上方站立」生成头顶垂直净空；继承门控小件返回空，不占独立盒）。
+- `build_clearance_checks` / `evaluate_clearance` → 逐物体把 keep-clear 区与其它物体 `bbox_world` 做 AABB 侵入检测，`pass`/`fail` + 侵入物清单 + 置信度（high/med/low→0.9/0.6/0.3）。
+
+**接入点**：`asset_annotation.py` 给 `AssetAnnotation` 加可选 `clearance` 字段并镜像进 `metadata.clearance`；`checks.py::build_checks` 在 `clearance ∈ metrics` 时生成净空检查；`vendor/rules.py` 按 `metric=="clearance"` 分派评分。
+
+**启用**（默认关闭，向后兼容）：
+
+```yaml
+scenebenchmark_critic:
+  enabled: true
+  metrics: [spatial_accessibility, functional_dependency, clearance]
+```
+
+世界系约定与适配器 `bbox_world` 一致：X/Y=地面、Z=向上。`asset_id` 缺失或不在索引中的物体自动跳过。
 
 ## 集成说明
 
