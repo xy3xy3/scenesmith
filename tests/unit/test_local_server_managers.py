@@ -1,11 +1,16 @@
 """Unit tests for local server manager shutdown and readiness behavior."""
 
+import tempfile
 import unittest
 
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from scenesmith.agent_utils.articulated_retrieval_server.server_manager import (
     ArticulatedRetrievalServer,
+)
+from scenesmith.agent_utils.convex_decomposition_server.server_manager import (
+    ConvexDecompositionServer,
 )
 from scenesmith.agent_utils.geometry_generation_server.server_manager import (
     GeometryGenerationServer,
@@ -90,6 +95,44 @@ class TestLocalServerManagers(unittest.TestCase):
         server._wait_until_ready(timeout=0.1)
 
         mock_get.assert_called_once()
+
+    @patch(
+        "scenesmith.agent_utils.convex_decomposition_server.server_manager.requests.get"
+    )
+    def test_convex_server_wait_until_ready_uses_requests(self, mock_get) -> None:
+        """Convex server readiness probing should use requests cleanly."""
+        response = Mock(status_code=200)
+        mock_get.return_value = response
+
+        server = ConvexDecompositionServer(port=7100)
+        server._running = True
+        server._actual_port = 7100
+        server._server_process = Mock()
+        server._server_process.poll.return_value = None
+
+        server.wait_until_ready(timeout=0.1, poll_interval=0.01)
+
+        mock_get.assert_called_once()
+
+    def test_convex_server_wait_until_ready_reports_early_process_exit(self) -> None:
+        """Convex server readiness failure should include exit status and log tail."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "convex.log"
+            log_file.write_text("startup failed\ntraceback line\n")
+
+            server = ConvexDecompositionServer(port=7100, log_file=log_file)
+            server._running = True
+            server._actual_port = 7100
+            server._server_process = Mock()
+            server._server_process.poll.return_value = 1
+
+            with self.assertRaises(RuntimeError) as context:
+                server.wait_until_ready(timeout=1.0, poll_interval=0.01)
+
+            message = str(context.exception)
+            self.assertIn("exited before becoming ready", message)
+            self.assertIn("Exited with code 1", message)
+            self.assertIn("startup failed", message)
 
 
 if __name__ == "__main__":

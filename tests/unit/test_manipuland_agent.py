@@ -133,6 +133,43 @@ class TestBaseManipulandAgent(unittest.TestCase):
         with self.assertRaises(TypeError):
             BaseManipulandAgent(cfg=self.config, logger=self.mock_logger)
 
+    @patch("scenesmith.manipuland_agents.base_manipuland_agent.AssetManager")
+    @patch("scenesmith.manipuland_agents.base_manipuland_agent.VLMService")
+    @patch("scenesmith.manipuland_agents.base_manipuland_agent.RenderingManager")
+    @patch(
+        "scenesmith.manipuland_agents.base_manipuland_agent.ConvexDecompositionServer"
+    )
+    @patch("scenesmith.manipuland_agents.base_manipuland_agent.BlenderServer")
+    @patch("scenesmith.manipuland_agents.base_manipuland_agent.os.cpu_count")
+    def test_collision_server_startup_uses_configured_limits(
+        self,
+        mock_cpu_count,
+        mock_blender_server_class,
+        mock_convex_decomposition_server_class,
+        mock_rendering_manager_class,
+        mock_vlm_service_class,
+        mock_asset_manager_class,
+    ):
+        """Auto-selected OMP threads and readiness timeout should come from config."""
+        mock_cpu_count.return_value = 192
+        mock_blender_server_class.return_value.is_running.return_value = True
+        self.config.collision_geometry.startup.max_omp_threads = 8
+        self.config.collision_geometry.startup.ready_timeout_s = 45.0
+        self.config.collision_geometry.startup.poll_interval_s = 0.25
+
+        agent = ConcreteManipulandAgent(cfg=self.config, logger=self.mock_logger)
+
+        mock_convex_decomposition_server_class.assert_called_once_with(
+            port_range=tuple(self.config.collision_geometry.server_port_range),
+            omp_threads=8,
+            log_file=self.mock_logger.output_dir / "room.log",
+        )
+        mock_convex_decomposition_server_class.return_value.wait_until_ready.assert_called_once_with(
+            timeout=45.0,
+            poll_interval=0.25,
+        )
+        self.assertIsNotNone(agent)
+
 
 if __name__ == "__main__":
     unittest.main()
