@@ -23,7 +23,7 @@ from scenesmith.agent_utils.urdf_to_sdf import extract_link_meshes
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.prompts import prompt_manager
 from scenesmith.prompts.registry import MeshPhysicsPrompts
-from scenesmith.utils.llm_json import parse_llm_json
+from scenesmith.utils.llm_json import parse_llm_json_object
 from scenesmith.utils.openai import encode_image_to_base64
 
 console_logger = logging.getLogger(__name__)
@@ -333,7 +333,7 @@ def analyze_articulated_physics(
 
         # 2026-06-18 hardening: keep articulated VLM parsing aligned with the
         # shared local/open-model JSON repair path.
-        response_json = parse_llm_json(response_text)
+        response_json = parse_llm_json_object(response_text)
         console_logger.info(
             f"Articulated analysis response ({urdf_path.parent.name}): {response_json}"
         )
