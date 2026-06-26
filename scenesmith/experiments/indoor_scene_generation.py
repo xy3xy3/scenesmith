@@ -505,6 +505,38 @@ def _copy_checkpoint_for_stage(
     )
 
 
+def _coerce_bool(value: object) -> bool:
+    """Interpret Hydra / env style booleans consistently."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _save_room_stage_checkpoint(
+    scene: RoomScene,
+    logger: ConsoleLogger,
+    scene_dir: Path,
+    cfg_dict: dict,
+    stage_name: str,
+    checkpoint_label: str,
+) -> None:
+    """Persist a stage snapshot in the standard location for resume/eval."""
+    logger.log_scene(scene=scene, name=stage_name)
+    _export_scene_blend_file(
+        scene=scene,
+        scene_dir=scene_dir,
+        cfg_dict=cfg_dict,
+        name=stage_name,
+    )
+    console_logger.info(f"Saved {checkpoint_label} checkpoint ({stage_name})")
+    maybe_log_memory(scene_dir, tag=f"after_{checkpoint_label}_checkpoint")
+    maybe_dump_tracemalloc(scene_dir, tag=f"after_{checkpoint_label}_checkpoint")
+
+
 def _generate_room(
     room_id: str,
     room_prompt: str,
@@ -583,6 +615,11 @@ def _generate_room(
 
     # Load projection config (needed for furniture and final post-processing).
     projection_cfg = cfg_dict["experiment"]["projection"]
+    pipeline_cfg = cfg_dict["experiment"]["pipeline"]
+    skip_wall_mounted = _coerce_bool(pipeline_cfg.get("skip_wall_mounted", False))
+    skip_ceiling_mounted = _coerce_bool(
+        pipeline_cfg.get("skip_ceiling_mounted", False)
+    )
 
     # Furniture stage.
     if start_idx <= 0:  # Run furniture if starting from furniture or earlier.
@@ -712,55 +749,59 @@ def _generate_room(
 
     # Wall objects stage.
     if start_idx <= 1:  # Run wall_objects if starting from wall_objects or earlier.
-        with custom_span("wall_object_placement"):
-            console_logger.info("Adding wall-mounted objects to scene")
-            start_time = time.time()
-
-            # Load house_layout from parent directory (saved during floor plan stage).
-            house_layout_path = room_dir.parent / "house_layout.json"
-            if not house_layout_path.exists():
-                raise FileNotFoundError(
-                    f"Cannot run wall_objects stage: house_layout.json not found at "
-                    f"{house_layout_path}. This should have been saved during floor "
-                    f"plan generation."
-                )
-            with open(house_layout_path) as f:
-                house_layout_dict = json.load(f)
-            house_layout = HouseLayout.from_dict(
-                house_layout_dict, house_dir=room_dir.parent
-            )
-
-            wall_agent = BaseExperiment.build_wall_agent(
-                cfg_dict=cfg_dict,
-                compatible_agents=IndoorSceneGenerationExperiment.compatible_wall_agents,
-                logger=logger,
-                house_layout=house_layout,
-                ceiling_height=room_geometry.wall_height,
-                wall_thickness=room_geometry.wall_thickness,
-                render_gpu_id=render_gpu_id,
-            )
-            try:
-                asyncio.run(wall_agent.add_wall_objects(scene=scene))
-            finally:
-                # Always cleanup server subprocesses.
-                wall_agent.cleanup()
-            end_time = time.time()
+        if skip_wall_mounted:
             console_logger.info(
-                f"Wall objects added to room {room_id} in "
-                f"{timedelta(seconds=end_time - start_time)}"
+                "Skipping wall_mounted stage as configured; creating pass-through "
+                "checkpoint from current scene"
             )
+        else:
+            with custom_span("wall_object_placement"):
+                console_logger.info("Adding wall-mounted objects to scene")
+                start_time = time.time()
+
+                # Load house_layout from parent directory (saved during floor plan stage).
+                house_layout_path = room_dir.parent / "house_layout.json"
+                if not house_layout_path.exists():
+                    raise FileNotFoundError(
+                        f"Cannot run wall_objects stage: house_layout.json not found at "
+                        f"{house_layout_path}. This should have been saved during floor "
+                        f"plan generation."
+                    )
+                with open(house_layout_path) as f:
+                    house_layout_dict = json.load(f)
+                house_layout = HouseLayout.from_dict(
+                    house_layout_dict, house_dir=room_dir.parent
+                )
+
+                wall_agent = BaseExperiment.build_wall_agent(
+                    cfg_dict=cfg_dict,
+                    compatible_agents=IndoorSceneGenerationExperiment.compatible_wall_agents,
+                    logger=logger,
+                    house_layout=house_layout,
+                    ceiling_height=room_geometry.wall_height,
+                    wall_thickness=room_geometry.wall_thickness,
+                    render_gpu_id=render_gpu_id,
+                )
+                try:
+                    asyncio.run(wall_agent.add_wall_objects(scene=scene))
+                finally:
+                    # Always cleanup server subprocesses.
+                    wall_agent.cleanup()
+                end_time = time.time()
+                console_logger.info(
+                    f"Wall objects added to room {room_id} in "
+                    f"{timedelta(seconds=end_time - start_time)}"
+                )
 
         # Always save state after wall_objects stage (unconditional for resumability).
-        logger.log_scene(scene=scene, name="scene_after_wall_objects")
-        _export_scene_blend_file(
+        _save_room_stage_checkpoint(
             scene=scene,
+            logger=logger,
             scene_dir=room_dir,
             cfg_dict=cfg_dict,
-            name="scene_after_wall_objects",
+            stage_name="scene_after_wall_objects",
+            checkpoint_label="wall_objects",
         )
-        console_logger.info("Saved wall_objects checkpoint (scene_after_wall_objects)")
-        maybe_log_memory(room_dir, tag="after_wall_objects_checkpoint")
-        maybe_dump_tracemalloc(room_dir, tag="after_wall_objects_checkpoint")
     elif start_idx == 2:
         # Starting from ceiling_mounted - load scene from saved wall_objects state.
         console_logger.info("Loading scene from saved wall_objects state for ceiling")
@@ -787,43 +828,45 @@ def _generate_room(
 
     # Ceiling objects stage.
     if start_idx <= 2:  # Run ceiling if starting from ceiling or earlier.
-        with custom_span("ceiling_object_placement"):
-            console_logger.info("Adding ceiling-mounted objects to scene")
-            start_time = time.time()
-
-            ceiling_agent = BaseExperiment.build_ceiling_agent(
-                cfg_dict=cfg_dict,
-                compatible_agents=(
-                    IndoorSceneGenerationExperiment.compatible_ceiling_agents
-                ),
-                logger=logger,
-                ceiling_height=room_geometry.wall_height,
-                render_gpu_id=render_gpu_id,
-            )
-            try:
-                asyncio.run(ceiling_agent.add_ceiling_objects(scene=scene))
-            finally:
-                # Always cleanup server subprocesses.
-                ceiling_agent.cleanup()
-            end_time = time.time()
+        if skip_ceiling_mounted:
             console_logger.info(
-                f"Ceiling objects added to room {room_id} in "
-                f"{timedelta(seconds=end_time - start_time)}"
+                "Skipping ceiling_mounted stage as configured; creating pass-through "
+                "checkpoint from current scene"
             )
+        else:
+            with custom_span("ceiling_object_placement"):
+                console_logger.info("Adding ceiling-mounted objects to scene")
+                start_time = time.time()
+
+                ceiling_agent = BaseExperiment.build_ceiling_agent(
+                    cfg_dict=cfg_dict,
+                    compatible_agents=(
+                        IndoorSceneGenerationExperiment.compatible_ceiling_agents
+                    ),
+                    logger=logger,
+                    ceiling_height=room_geometry.wall_height,
+                    render_gpu_id=render_gpu_id,
+                )
+                try:
+                    asyncio.run(ceiling_agent.add_ceiling_objects(scene=scene))
+                finally:
+                    # Always cleanup server subprocesses.
+                    ceiling_agent.cleanup()
+                end_time = time.time()
+                console_logger.info(
+                    f"Ceiling objects added to room {room_id} in "
+                    f"{timedelta(seconds=end_time - start_time)}"
+                )
 
         # Always save state after ceiling stage (unconditional for resumability).
-        logger.log_scene(scene=scene, name="scene_after_ceiling_objects")
-        _export_scene_blend_file(
+        _save_room_stage_checkpoint(
             scene=scene,
+            logger=logger,
             scene_dir=room_dir,
             cfg_dict=cfg_dict,
-            name="scene_after_ceiling_objects",
+            stage_name="scene_after_ceiling_objects",
+            checkpoint_label="ceiling_objects",
         )
-        console_logger.info(
-            "Saved ceiling_objects checkpoint (scene_after_ceiling_objects)"
-        )
-        maybe_log_memory(room_dir, tag="after_ceiling_objects_checkpoint")
-        maybe_dump_tracemalloc(room_dir, tag="after_ceiling_objects_checkpoint")
     else:
         # Starting from manipulands - load scene from saved ceiling_objects state.
         console_logger.info("Loading scene from saved ceiling_objects state")

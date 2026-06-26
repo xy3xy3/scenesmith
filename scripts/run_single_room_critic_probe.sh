@@ -3,7 +3,9 @@
 # 设计目标：
 # 1. 复用当前项目里常用的单房间、串行、HSSD、禁用 articulated 资源的配置。
 # 2. 内置一组更容易触发 spatial_accessibility / functional_dependency 提示的英文 prompt。
-# 3. 默认分别跑 critic=off 与 critic=on，方便直接对照生成结果和评测报告。
+# 3. 支持 shared_base -> critic_off -> critic_on 分叉，减少前缀随机性。
+# 4. 支持按阶段停止，或跳过 wall / ceiling 后继续测试 manipulands。
+# 5. 默认分别跑 critic=off 与 critic=on，方便直接对照生成结果和评测报告。
 
 set -euo pipefail
 
@@ -25,6 +27,7 @@ case "$MODE" in
         echo "  $0"
         echo "  $0 off"
         echo "  MAX_CASES=2 $0 on"
+        echo "  PIPELINE_STOP_STAGE=wall_mounted $0 both"
         exit 1
         ;;
 esac
@@ -40,12 +43,54 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
-MODEL_NAME="${MODEL_NAME:-Qwen3.6-27B-Q4_K_M}"
+MODEL_NAME="${MODEL_NAME:-Qwen3.6-27B-Q8_0}"
 EXPERIMENT_NAME_PREFIX="${EXPERIMENT_NAME_PREFIX:-single_room_critic_probe}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/critic_probe/$RUN_ID}"
 MAX_CASES="${MAX_CASES:-0}"
 SCENE_BATCH_SIZE="${SCENE_BATCH_SIZE:-1}"
+PIPELINE_STOP_STAGE="${PIPELINE_STOP_STAGE:-furniture}"
+SKIP_WALL_MOUNTED="${SKIP_WALL_MOUNTED:-false}"
+SKIP_CEILING_MOUNTED="${SKIP_CEILING_MOUNTED:-false}"
+BRANCH_FROM_SHARED_BASE="${BRANCH_FROM_SHARED_BASE:-false}"
+SHARED_BASE_STOP_STAGE="${SHARED_BASE_STOP_STAGE:-floor_plan}"
+CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
+CRITIC_REPORT_STAGE_LABEL=""
+BRANCH_START_STAGE=""
+
+normalize_bool() {
+    case "${1,,}" in
+        1|true|yes|y|on)
+            printf 'true'
+            ;;
+        0|false|no|n|off|'')
+            printf 'false'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+next_stage_after() {
+    case "$1" in
+        floor_plan)
+            printf 'furniture'
+            ;;
+        furniture)
+            printf 'wall_mounted'
+            ;;
+        wall_mounted)
+            printf 'ceiling_mounted'
+            ;;
+        ceiling_mounted)
+            printf 'manipuland'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 mkdir -p "$OUTPUT_ROOT"
 
@@ -59,6 +104,60 @@ esac
 if [ "$SCENE_BATCH_SIZE" -lt 1 ]; then
     echo "错误：SCENE_BATCH_SIZE 至少为 1"
     exit 1
+fi
+
+if ! SKIP_WALL_MOUNTED="$(normalize_bool "$SKIP_WALL_MOUNTED")"; then
+    echo "错误：SKIP_WALL_MOUNTED 必须是 true/false"
+    exit 1
+fi
+
+if ! SKIP_CEILING_MOUNTED="$(normalize_bool "$SKIP_CEILING_MOUNTED")"; then
+    echo "错误：SKIP_CEILING_MOUNTED 必须是 true/false"
+    exit 1
+fi
+
+if ! BRANCH_FROM_SHARED_BASE="$(normalize_bool "$BRANCH_FROM_SHARED_BASE")"; then
+    echo "错误：BRANCH_FROM_SHARED_BASE 必须是 true/false"
+    exit 1
+fi
+
+case "$PIPELINE_STOP_STAGE" in
+    furniture)
+        CRITIC_REPORT_STAGE_LABEL="scene_after_furniture"
+        ;;
+    wall_mounted)
+        CRITIC_REPORT_STAGE_LABEL="scene_after_wall_objects"
+        ;;
+    ceiling_mounted)
+        CRITIC_REPORT_STAGE_LABEL="scene_after_ceiling_objects"
+        ;;
+    manipuland)
+        CRITIC_REPORT_STAGE_LABEL="final_scene"
+        ;;
+    *)
+        echo "错误：PIPELINE_STOP_STAGE 必须是 furniture / wall_mounted / ceiling_mounted / manipuland"
+        exit 1
+        ;;
+esac
+
+if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
+    case "$SHARED_BASE_STOP_STAGE" in
+        floor_plan|furniture|wall_mounted|ceiling_mounted)
+            ;;
+        *)
+            echo "错误：SHARED_BASE_STOP_STAGE 必须是 floor_plan / furniture / wall_mounted / ceiling_mounted"
+            exit 1
+            ;;
+    esac
+
+    if ! BRANCH_START_STAGE="$(next_stage_after "$SHARED_BASE_STOP_STAGE")"; then
+        echo "错误：无法从 SHARED_BASE_STOP_STAGE=$SHARED_BASE_STOP_STAGE 推导分叉起点"
+        exit 1
+    fi
+fi
+
+if [ -z "$CRITIC_ROOM_STAGE_HOOKS" ]; then
+    CRITIC_ROOM_STAGE_HOOKS="[$CRITIC_REPORT_STAGE_LABEL]"
 fi
 
 if [ ! -d "$PROJECT_ROOT/.venv" ]; then
@@ -77,6 +176,13 @@ echo "运行模式: $MODE"
 echo "模型名: $MODEL_NAME"
 echo "MAX_CASES: $MAX_CASES (0 表示不限制)"
 echo "SCENE_BATCH_SIZE: $SCENE_BATCH_SIZE"
+echo "PIPELINE_STOP_STAGE: $PIPELINE_STOP_STAGE"
+echo "SKIP_WALL_MOUNTED: $SKIP_WALL_MOUNTED"
+echo "SKIP_CEILING_MOUNTED: $SKIP_CEILING_MOUNTED"
+echo "BRANCH_FROM_SHARED_BASE: $BRANCH_FROM_SHARED_BASE"
+echo "SHARED_BASE_STOP_STAGE: $SHARED_BASE_STOP_STAGE"
+echo "BRANCH_START_STAGE: ${BRANCH_START_STAGE:-<none>}"
+echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
 echo
@@ -89,20 +195,22 @@ echo
 # 每一项格式：
 #   case_id|主要想刺激的 critic 类型|英文 prompt
 CASES=(
-    "tight_bedroom_bedside|床-床头柜关系 + 过度拥挤可达性|A very small bedroom with a bed squeezed into a corner, only one nightstand, a large wardrobe crowding the bed, a narrow desk with 4 chairs, and a mug on the desk."
-    "cramped_dining_room|餐桌-座椅关系 + 餐区可达性|A tiny dining room with a small dining table, 6 dining chairs packed tightly around it, a sideboard, a table lamp on the sideboard, and a bowl on the table."
-    "living_room_bad_media_view|座位-电视关系 + 客厅拥挤|A cramped living room with a sofa turned away from the television, an armchair, a coffee table, a side table, a table lamp, a remote, and a mug, with the seating packed very tightly around the coffee table."
-    "narrow_home_office|座椅-工作台关系 + 工作区通行|A narrow home office with a desk, an office chair, 3 extra chairs, a bookshelf, a table lamp, a laptop, a monitor, a keyboard, a mug, and a stack of books, with almost no free walking space between the furniture."
-    "studio_with_floor_objects|小物体支撑关系 + 混合功能拥挤|A cramped studio room with a bed, a desk, a chair, a sofa, a television, a coffee table, a mug on the floor, a book on the floor, and a remote on the floor."
-    "packed_bedroom_many_objects|床边可达性 + 多个小物体支撑关系|A tiny bedroom with a bed, two nightstands, a dresser, a desk with 3 chairs, a desk lamp, 2 mugs, 2 books, and 2 plants, with the furniture packed tightly together and barely any walking clearance around the bed."
+    "tiny_bedroom_wardrobe|床侧通行 + 衣柜可达性|A tiny bedroom with a bed, two nightstands, a large wardrobe, and a narrow desk with 2 chairs, with the wardrobe and desk packed tightly around the bed and very little walking clearance."
+    "small_dining_six_chairs|餐桌-餐椅关系 + 餐区可达性|A very small dining room with a compact dining table, 6 dining chairs packed tightly around it, and a sideboard, leaving almost no clearance between chairs and the table."
+    "narrow_home_office|办公椅-书桌关系 + 书桌接近通道|A narrow home office with one desk, one office chair, 2 guest chairs, and a bookshelf, with the chairs crowded together and barely any free space to approach the desk."
+    "packed_bedroom_desk_block|床侧可达性 + 卧室多功能拥挤|A cramped bedroom with a bed, two nightstands, a dresser, and a desk with 3 chairs, with the desk pushed too close to one side of the bed and very limited bedside clearance."
+    "compact_studio_two_zones|混合功能分区 + 基本通行空间|A compact studio room with a bed, a desk, a chair, a sofa, and a coffee table, arranged so tightly that the sleeping area and seating area leave only narrow walking paths."
 )
 
-BASE_ARGS=(
-    "experiment.tasks=[generate_scenes,evaluate_scenes]"
+COMMON_ARGS=(
     "experiment.num_workers=${SCENE_BATCH_SIZE}"
     "experiment.pipeline.parallel_rooms=false"
     "experiment.pipeline.max_parallel_rooms=1"
+    "experiment.pipeline.skip_wall_mounted=${SKIP_WALL_MOUNTED}"
+    "experiment.pipeline.skip_ceiling_mounted=${SKIP_CEILING_MOUNTED}"
     "experiment.materials_retrieval_server.enabled=false"
+    "experiment.scenebenchmark_critic.room_stage_hooks=${CRITIC_ROOM_STAGE_HOOKS}"
+    "experiment.scenebenchmark_critic.house_stage_hooks=[]"
     "floor_plan_agent.materials.use_retrieval_server=false"
     "furniture_agent.asset_manager.general_asset_source=hssd"
     "furniture_agent.asset_manager.router.strategies.articulated.enabled=false"
@@ -128,20 +236,43 @@ csv_quote() {
 }
 
 run_batch() {
-    local critic_mode="$1"
+    local run_kind="$1"
     local batch_index="$2"
     shift 2
     local batch_entries=("$@")
 
     local critic_enabled="false"
-    if [ "$critic_mode" = "critic_on" ]; then
-        critic_enabled="true"
+    local tasks_override="[generate_scenes,evaluate_scenes]"
+    local stop_stage_override="$PIPELINE_STOP_STAGE"
+    local start_stage_override=""
+    local resume_from_path=""
+
+    case "$run_kind" in
+        shared_base)
+            tasks_override="[generate_scenes]"
+            stop_stage_override="$SHARED_BASE_STOP_STAGE"
+            ;;
+        critic_off)
+            critic_enabled="false"
+            ;;
+        critic_on)
+            critic_enabled="true"
+            ;;
+        *)
+            echo "错误：未知 run_kind=$run_kind"
+            exit 1
+            ;;
+    esac
+
+    if [ "$run_kind" != "shared_base" ] && [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
+        start_stage_override="$BRANCH_START_STAGE"
+        resume_from_path="$OUTPUT_ROOT/shared_base/$(printf "batch_%03d" "$batch_index")"
     fi
 
     local batch_label
     batch_label=$(printf "batch_%03d" "$batch_index")
-    local hydra_dir="$OUTPUT_ROOT/$critic_mode/$batch_label"
-    local exp_name="${EXPERIMENT_NAME_PREFIX}_${critic_mode}_${batch_label}"
+    local hydra_dir="$OUTPUT_ROOT/$run_kind/$batch_label"
+    local exp_name="${EXPERIMENT_NAME_PREFIX}_${run_kind}_${batch_label}"
     local batch_csv="$hydra_dir/batch_cases.csv"
     local case_summary=()
 
@@ -161,27 +292,46 @@ run_batch() {
     done
 
     echo "------------------------------------------"
-    echo "开始运行批次: $critic_mode / $batch_label"
+    echo "开始运行批次: $run_kind / $batch_label"
     echo "批次场景数: ${#batch_entries[@]}"
     echo "批次映射: ${case_summary[*]}"
     echo "输出目录: $hydra_dir"
     echo "批次清单: $batch_csv"
     echo "critic 开关: $critic_enabled"
+    echo "tasks: $tasks_override"
+    echo "stop_stage: $stop_stage_override"
+    if [ -n "$start_stage_override" ]; then
+        echo "start_stage: $start_stage_override"
+        echo "resume_from_path: $resume_from_path"
+    fi
     echo "------------------------------------------"
 
-    python main.py \
-        "+name=${exp_name}" \
-        "${BASE_ARGS[@]}" \
-        "experiment.scenebenchmark_critic.enabled=${critic_enabled}" \
-        "hydra.run.dir=${hydra_dir}" \
+    local cmd=(
+        python main.py
+        "+name=${exp_name}"
+        "${COMMON_ARGS[@]}"
+        "experiment.tasks=${tasks_override}"
+        "experiment.pipeline.stop_stage=${stop_stage_override}"
+        "experiment.scenebenchmark_critic.enabled=${critic_enabled}"
+        "hydra.run.dir=${hydra_dir}"
         "experiment.csv_path=${batch_csv}"
+    )
 
-    echo "批次运行完成: $critic_mode / $batch_label"
+    if [ -n "$start_stage_override" ]; then
+        cmd+=(
+            "experiment.pipeline.start_stage=${start_stage_override}"
+            "experiment.pipeline.resume_from_path=${resume_from_path}"
+        )
+    fi
+
+    "${cmd[@]}"
+
+    echo "批次运行完成: $run_kind / $batch_label"
     echo
 }
 
 run_mode() {
-    local critic_mode="$1"
+    local run_kind="$1"
     local count=0
     local batch_index=0
     local batch_entries=()
@@ -200,14 +350,14 @@ run_mode() {
 
         if [ "${#batch_entries[@]}" -ge "$SCENE_BATCH_SIZE" ]; then
             batch_index=$((batch_index + 1))
-            run_batch "$critic_mode" "$batch_index" "${batch_entries[@]}"
+            run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
             batch_entries=()
         fi
     done
 
     if [ "${#batch_entries[@]}" -gt 0 ]; then
         batch_index=$((batch_index + 1))
-        run_batch "$critic_mode" "$batch_index" "${batch_entries[@]}"
+        run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
     fi
 }
 
@@ -219,6 +369,12 @@ for case_entry in "${CASES[@]}"; do
     echo "  Prompt: $prompt"
 done
 echo
+
+if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
+    echo "========== 第零部分：生成 shared_base =========="
+    echo
+    run_mode "shared_base"
+fi
 
 if [ "$MODE" = "both" ] || [ "$MODE" = "off" ]; then
     echo "========== 第一部分：关闭 critic =========="
@@ -237,10 +393,11 @@ echo "全部批跑完成。"
 echo "输出根目录: $OUTPUT_ROOT"
 echo
 echo "建议重点对比："
-echo "1. critic_off 与 critic_on 下，同一 case 的最终场景差异。"
+echo "1. critic_off 与 critic_on 下，同一 case 的 ${CRITIC_REPORT_STAGE_LABEL} 场景差异。"
 echo "2. 先看各批次目录里的 batch_cases.csv，确认 scene_XXX 对应哪个 case_id。"
-echo "3. critic_on 下各房间的 scene_after_furniture / final_scene 报告。"
-echo "4. 重点查看 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
+echo "3. 如果启用了 shared_base，先确认 shared_base / critic_off / critic_on 的 batch_XXX 一一对应。"
+echo "4. critic_on 下各房间的 ${CRITIC_REPORT_STAGE_LABEL} 报告。"
+echo "5. 重点查看 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
 echo
 echo "可用命令示例："
 echo "find \"$OUTPUT_ROOT\" -name 'scenebenchmark_critic.md' | sort"
