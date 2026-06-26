@@ -45,8 +45,21 @@ EXPERIMENT_NAME_PREFIX="${EXPERIMENT_NAME_PREFIX:-single_room_critic_probe}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/critic_probe/$RUN_ID}"
 MAX_CASES="${MAX_CASES:-0}"
+SCENE_BATCH_SIZE="${SCENE_BATCH_SIZE:-1}"
 
 mkdir -p "$OUTPUT_ROOT"
+
+case "$SCENE_BATCH_SIZE" in
+    ''|*[!0-9]*)
+        echo "错误：SCENE_BATCH_SIZE 必须是正整数，当前为 '$SCENE_BATCH_SIZE'"
+        exit 1
+        ;;
+esac
+
+if [ "$SCENE_BATCH_SIZE" -lt 1 ]; then
+    echo "错误：SCENE_BATCH_SIZE 至少为 1"
+    exit 1
+fi
 
 if [ ! -d "$PROJECT_ROOT/.venv" ]; then
     echo "错误：未找到虚拟环境 $PROJECT_ROOT/.venv"
@@ -63,6 +76,7 @@ echo "输出根目录: $OUTPUT_ROOT"
 echo "运行模式: $MODE"
 echo "模型名: $MODEL_NAME"
 echo "MAX_CASES: $MAX_CASES (0 表示不限制)"
+echo "SCENE_BATCH_SIZE: $SCENE_BATCH_SIZE"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
 echo
@@ -85,7 +99,7 @@ CASES=(
 
 BASE_ARGS=(
     "experiment.tasks=[generate_scenes,evaluate_scenes]"
-    "experiment.num_workers=1"
+    "experiment.num_workers=${SCENE_BATCH_SIZE}"
     "experiment.pipeline.parallel_rooms=false"
     "experiment.pipeline.max_parallel_rooms=1"
     "experiment.materials_retrieval_server.enabled=false"
@@ -107,29 +121,51 @@ BASE_ARGS=(
     "experiment.scenebenchmark_critic.fd_relation_proposer_mode=template"
 )
 
-run_case() {
+csv_quote() {
+    local value="$1"
+    value=${value//\"/\"\"}
+    printf '"%s"' "$value"
+}
+
+run_batch() {
     local critic_mode="$1"
-    local case_id="$2"
-    local critic_goal="$3"
-    local prompt="$4"
+    local batch_index="$2"
+    shift 2
+    local batch_entries=("$@")
 
     local critic_enabled="false"
     if [ "$critic_mode" = "critic_on" ]; then
         critic_enabled="true"
     fi
 
-    local hydra_dir="$OUTPUT_ROOT/$critic_mode/$case_id"
-    local exp_name="${EXPERIMENT_NAME_PREFIX}_${critic_mode}_${case_id}"
-    local prompt_override
-    prompt_override=$(printf "experiment.prompts=['%s']" "$prompt")
+    local batch_label
+    batch_label=$(printf "batch_%03d" "$batch_index")
+    local hydra_dir="$OUTPUT_ROOT/$critic_mode/$batch_label"
+    local exp_name="${EXPERIMENT_NAME_PREFIX}_${critic_mode}_${batch_label}"
+    local batch_csv="$hydra_dir/batch_cases.csv"
+    local case_summary=()
 
     mkdir -p "$hydra_dir"
 
+    printf 'scene_index,prompt,case_id,critic_goal\n' > "$batch_csv"
+
+    local entry
+    for entry in "${batch_entries[@]}"; do
+        IFS='|' read -r scene_index case_id critic_goal prompt <<< "$entry"
+        printf '%s,%s,%s,%s\n' \
+            "$scene_index" \
+            "$(csv_quote "$prompt")" \
+            "$(csv_quote "$case_id")" \
+            "$(csv_quote "$critic_goal")" >> "$batch_csv"
+        case_summary+=("scene_${scene_index}:$case_id")
+    done
+
     echo "------------------------------------------"
-    echo "开始运行: $critic_mode / $case_id"
-    echo "目标观察点: $critic_goal"
-    echo "Prompt: $prompt"
+    echo "开始运行批次: $critic_mode / $batch_label"
+    echo "批次场景数: ${#batch_entries[@]}"
+    echo "批次映射: ${case_summary[*]}"
     echo "输出目录: $hydra_dir"
+    echo "批次清单: $batch_csv"
     echo "critic 开关: $critic_enabled"
     echo "------------------------------------------"
 
@@ -138,15 +174,17 @@ run_case() {
         "${BASE_ARGS[@]}" \
         "experiment.scenebenchmark_critic.enabled=${critic_enabled}" \
         "hydra.run.dir=${hydra_dir}" \
-        "$prompt_override"
+        "experiment.csv_path=${batch_csv}"
 
-    echo "运行完成: $critic_mode / $case_id"
+    echo "批次运行完成: $critic_mode / $batch_label"
     echo
 }
 
 run_mode() {
     local critic_mode="$1"
     local count=0
+    local batch_index=0
+    local batch_entries=()
 
     for case_entry in "${CASES[@]}"; do
         IFS="|" read -r case_id critic_goal prompt <<< "$case_entry"
@@ -158,8 +196,19 @@ run_mode() {
             break
         fi
 
-        run_case "$critic_mode" "$case_id" "$critic_goal" "$prompt"
+        batch_entries+=("${count}|${case_id}|${critic_goal}|${prompt}")
+
+        if [ "${#batch_entries[@]}" -ge "$SCENE_BATCH_SIZE" ]; then
+            batch_index=$((batch_index + 1))
+            run_batch "$critic_mode" "$batch_index" "${batch_entries[@]}"
+            batch_entries=()
+        fi
     done
+
+    if [ "${#batch_entries[@]}" -gt 0 ]; then
+        batch_index=$((batch_index + 1))
+        run_batch "$critic_mode" "$batch_index" "${batch_entries[@]}"
+    fi
 }
 
 echo "本次内置场景列表："
@@ -189,10 +238,12 @@ echo "输出根目录: $OUTPUT_ROOT"
 echo
 echo "建议重点对比："
 echo "1. critic_off 与 critic_on 下，同一 case 的最终场景差异。"
-echo "2. critic_on 下各房间的 scene_after_furniture / final_scene 报告。"
-echo "3. 重点查看 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
+echo "2. 先看各批次目录里的 batch_cases.csv，确认 scene_XXX 对应哪个 case_id。"
+echo "3. critic_on 下各房间的 scene_after_furniture / final_scene 报告。"
+echo "4. 重点查看 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
 echo
 echo "可用命令示例："
 echo "find \"$OUTPUT_ROOT\" -name 'scenebenchmark_critic.md' | sort"
 echo "find \"$OUTPUT_ROOT\" -name 'scenebenchmark_critic.json' | sort"
+echo "find \"$OUTPUT_ROOT\" -name 'batch_cases.csv' | sort"
 echo "=========================================="
