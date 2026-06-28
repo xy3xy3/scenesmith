@@ -124,6 +124,30 @@ def get_clearance(asset_id: str | None) -> dict[str, Any] | None:
     return record
 
 
+# SceneSmith scene objects carry the 40-char HSSD asset hash under
+# ``hssd_mesh_id`` (asset_source == "hssd"); some code paths instead use
+# ``asset_id``/``object_id``. Resolve against the real keys in that order so the
+# clearance lookup actually fires on generated scenes (verified against the
+# critic_probe outputs: hssd_mesh_id hits, asset_id never does).
+_ASSET_ID_KEYS = ("hssd_mesh_id", "asset_id", "object_id")
+
+
+def asset_id_from_metadata(metadata: Any) -> str | None:
+    """Extract the HSSD asset id a clearance record is keyed by, if present."""
+    if not isinstance(metadata, dict):
+        return None
+    for key in _ASSET_ID_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def get_clearance_for_metadata(metadata: Any) -> dict[str, Any] | None:
+    """Look up the clearance record for a scene object's ``metadata`` dict."""
+    return get_clearance(asset_id_from_metadata(metadata))
+
+
 def _front_world_axis(yaw_deg: float) -> tuple[int, int]:
     """Map object-local front (-Y) through yaw, snap to nearest world axis.
 
