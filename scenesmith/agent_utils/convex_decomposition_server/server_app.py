@@ -1,14 +1,18 @@
 """Flask application for convex decomposition collision geometry generation server."""
 
+from __future__ import annotations
+
 import logging
 import time
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import coacd
 import flask
-import numpy as np
-import trimesh
+
+if TYPE_CHECKING:
+    import trimesh
 
 console_logger = logging.getLogger(__name__)
 
@@ -123,7 +127,9 @@ class ConvexDecompositionServerApp(flask.Flask):
 
             console_logger.info(f"Processing mesh: {mesh_path.name} (method={method})")
 
-            # Load mesh.
+            # Load mesh lazily so /health can come up before heavy geometry imports.
+            import trimesh
+
             mesh = trimesh.load(mesh_path, force="mesh")
             if isinstance(mesh, trimesh.Scene):
                 mesh = trimesh.util.concatenate(mesh.dump())
@@ -168,7 +174,7 @@ class ConvexDecompositionServerApp(flask.Flask):
             )
 
     def _run_coacd(
-        self, mesh: trimesh.Trimesh, data: dict
+        self, mesh: "trimesh.Trimesh", data: dict
     ) -> list[dict[str, list[list[float]]]]:
         """Run CoACD convex decomposition.
 
@@ -200,6 +206,8 @@ class ConvexDecompositionServerApp(flask.Flask):
         console_logger.debug(f"CoACD params: threshold={threshold}")
 
         # Run CoACD convex decomposition.
+        import numpy as np
+
         coacd_mesh = coacd.Mesh(mesh.vertices, mesh.faces)
         coacd_result = coacd.run_coacd(
             coacd_mesh,
@@ -233,7 +241,7 @@ class ConvexDecompositionServerApp(flask.Flask):
         return pieces
 
     def _run_vhacd(
-        self, mesh: trimesh.Trimesh, data: dict
+        self, mesh: "trimesh.Trimesh", data: dict
     ) -> list[dict[str, list[list[float]]]]:
         """Run V-HACD convex decomposition.
 

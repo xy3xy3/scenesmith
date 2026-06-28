@@ -7,6 +7,7 @@ subclass-defined tools.
 """
 
 import copy
+import json
 import logging
 import shutil
 
@@ -26,6 +27,7 @@ from agents import (
     SQLiteSession,
     function_tool,
 )
+from agents.items import ToolCallItem
 from agents.memory.session import Session
 from omegaconf import DictConfig
 from openai import Timeout
@@ -36,7 +38,7 @@ from scenesmith.agent_utils.checkpoint_state import initialize_checkpoint_attrib
 from scenesmith.agent_utils.intra_turn_image_filter import IntraTurnImageFilter
 from scenesmith.agent_utils.physics_tools import check_physics_violations
 from scenesmith.agent_utils.placement_noise import PlacementNoiseMode
-from scenesmith.agent_utils.room import AgentType
+from scenesmith.agent_utils.room import AgentType, ObjectType
 from scenesmith.agent_utils.scoring import (
     CritiqueWithScores,
     align_scores_for_comparison,
@@ -384,14 +386,27 @@ class BaseStatefulAgent(ABC):
         Returns:
             RunConfig with call_model_input_filter set if enabled, empty otherwise.
         """
+        run_config_kwargs: dict[str, Any] = {
+            # Preserve the SDK's default "append new input to history" behavior while
+            # also allowing multimodal/list inputs when session memory is enabled.
+            "session_input_callback": self._merge_session_history_with_new_input,
+        }
         intra_cfg = self.cfg.session_memory.intra_turn_observation_stripping
         if intra_cfg.enabled:
             return create_openai_run_config(
                 self.cfg,
                 call_model_input_filter=IntraTurnImageFilter(cfg=self.cfg),
+                **run_config_kwargs,
             )
 
-        return create_openai_run_config(self.cfg)
+        return create_openai_run_config(self.cfg, **run_config_kwargs)
+
+    @staticmethod
+    def _merge_session_history_with_new_input(
+        history: list[Any], new_input_list: list[Any]
+    ) -> list[Any]:
+        """Append new input to session history, matching the SDK default behavior."""
+        return history + new_input_list
 
     def _should_reset_to_checkpoint(
         self,
@@ -583,7 +598,11 @@ class BaseStatefulAgent(ABC):
                 return (
                     "ERROR: No previous checkpoint available to reset to. "
                     "You must call request_critique() at least twice to create "
-                    "enough checkpoints for reset functionality."
+                    "enough checkpoints for reset functionality. Do NOT call "
+                    "reset_scene_to_checkpoint() again right now. Instead, either "
+                    "call request_design_change() to improve the current scene or "
+                    "finish if the critique failure was caused by missing evaluation "
+                    "context."
                 )
 
             self._perform_checkpoint_reset(
@@ -755,6 +774,188 @@ class BaseStatefulAgent(ABC):
         """
         return {}
 
+    def _critic_response_needs_inline_retry(
+        self, response: CritiqueWithScores
+    ) -> bool:
+        """Detect fallback critiques caused by skipped read-only tool calls."""
+        critique_text = (response.critique or "").lower()
+        if not critique_text:
+            return False
+
+        all_zero_scores = all(score.grade == 0 for score in response.get_scores())
+        if not all_zero_scores:
+            return False
+
+        missing_context_markers = (
+            "required scene observation tools were not executed",
+            "cannot evaluate without scene data",
+            "cannot provide meaningful feedback",
+            "unable to provide",
+            "once i have access to the",
+            "would need to",
+        )
+        return any(marker in critique_text for marker in missing_context_markers)
+
+    def _extract_tool_call_name(self, item: ToolCallItem) -> str | None:
+        """Extract a function tool name from an SDK ToolCallItem."""
+        raw_item = item.raw_item
+        name = getattr(raw_item, "name", None)
+        if isinstance(name, str) and name:
+            return name
+
+        function = getattr(raw_item, "function", None)
+        function_name = getattr(function, "name", None)
+        if isinstance(function_name, str) and function_name:
+            return function_name
+
+        if isinstance(raw_item, dict):
+            dict_name = raw_item.get("name")
+            if isinstance(dict_name, str) and dict_name:
+                return dict_name
+
+            function_dict = raw_item.get("function")
+            if isinstance(function_dict, dict):
+                function_name = function_dict.get("name")
+                if isinstance(function_name, str) and function_name:
+                    return function_name
+
+        return None
+
+    def _critic_called_required_read_only_tools(
+        self, result: RunResult
+    ) -> tuple[bool, set[str]]:
+        """Return whether critic called the required observation/state tools."""
+        called_tools: set[str] = set()
+        for item in result.new_items:
+            if not isinstance(item, ToolCallItem):
+                continue
+
+            tool_name = self._extract_tool_call_name(item)
+            if tool_name:
+                called_tools.add(tool_name)
+
+        required_tools = {"observe_scene", "get_current_scene_state"}
+        return required_tools.issubset(called_tools), called_tools
+
+    def _collect_inline_critic_images(self) -> list[dict[str, str]]:
+        """Collect recent render images for critic fallback retries."""
+        render_dir = getattr(self.rendering_manager, "last_render_dir", None)
+        if render_dir is None or not render_dir.exists():
+            return []
+
+        image_parts: list[dict[str, str]] = []
+        for img_path in sorted(render_dir.glob("*.png"))[:6]:
+            image_parts.append(
+                {
+                    "type": "input_image",
+                    "image_url": (
+                        f"data:image/png;base64,{encode_image_to_base64(img_path)}"
+                    ),
+                }
+            )
+        return image_parts
+
+    def _build_inline_critic_scene_summary(self) -> str | None:
+        """Build compact scene state text for critic fallback retries."""
+        scene = getattr(self, "scene", None)
+        if scene is None or not hasattr(scene, "get_objects_by_type"):
+            return None
+
+        context: dict[str, Any] = {}
+
+        room_id = getattr(scene, "room_id", None)
+        if room_id is not None:
+            context["room_id"] = room_id
+
+        room_bounds = getattr(self, "room_bounds", None)
+        if room_bounds is not None:
+            context["room_bounds"] = [float(v) for v in room_bounds]
+
+        ceiling_height = getattr(self, "ceiling_height", None)
+        if ceiling_height is not None:
+            context["ceiling_height"] = float(ceiling_height)
+
+        object_counts: dict[str, int] = {}
+        for object_type in (
+            ObjectType.FURNITURE,
+            ObjectType.WALL_MOUNTED,
+            ObjectType.CEILING_MOUNTED,
+            ObjectType.MANIPULAND,
+        ):
+            try:
+                object_counts[object_type.value] = len(
+                    scene.get_objects_by_type(object_type)
+                )
+            except Exception:
+                continue
+        if object_counts:
+            context["object_counts"] = object_counts
+
+        relevant_objects: list[dict[str, Any]] = []
+        relevant_object_type = self.agent_type.to_object_type()
+        if relevant_object_type is not None:
+            try:
+                scene_objects = scene.get_objects_by_type(relevant_object_type)
+            except Exception:
+                scene_objects = []
+
+            for obj in scene_objects:
+                obj_summary: dict[str, Any] = {
+                    "object_id": str(obj.object_id),
+                    "name": obj.name,
+                    "description": obj.description,
+                    "position_xyz": [
+                        round(float(value), 4)
+                        for value in obj.transform.translation().tolist()
+                    ],
+                    "scale_factor": round(float(obj.scale_factor), 4),
+                }
+                if obj.bbox_min is not None and obj.bbox_max is not None:
+                    obj_summary["dimensions"] = {
+                        "width": round(float(obj.bbox_max[0] - obj.bbox_min[0]), 4),
+                        "depth": round(float(obj.bbox_max[1] - obj.bbox_min[1]), 4),
+                        "height": round(float(obj.bbox_max[2] - obj.bbox_min[2]), 4),
+                    }
+                world_bounds = obj.compute_world_bounds()
+                if world_bounds is not None:
+                    bbox_min, bbox_max = world_bounds
+                    obj_summary["world_bounds"] = {
+                        "min": [round(float(v), 4) for v in bbox_min.tolist()],
+                        "max": [round(float(v), 4) for v in bbox_max.tolist()],
+                    }
+                relevant_objects.append(obj_summary)
+        context["relevant_objects"] = relevant_objects
+
+        return json.dumps(context, ensure_ascii=True, indent=2)
+
+    def _build_inline_critic_retry_input(
+        self, critique_instruction: str
+    ) -> str | list[dict[str, Any]]:
+        """Build retry input with inline observation/state for local models."""
+        scene_summary = self._build_inline_critic_scene_summary()
+        image_parts = self._collect_inline_critic_images()
+        if scene_summary is None and not image_parts:
+            return critique_instruction
+
+        fallback_text = (
+            f"{critique_instruction}\n\n"
+            "IMPORTANT FALLBACK CONTEXT:\n"
+            "The previous critique attempt skipped the required read-only tools and "
+            "refused to evaluate. Treat the inline images below as the equivalent of "
+            "observe_scene(), and treat the inline scene summary below as the "
+            "equivalent of get_current_scene_state(). Do not refuse evaluation due to "
+            "missing tool calls on this retry.\n\n"
+            "Inline scene summary:\n"
+            f"{scene_summary or '{}'}"
+        )
+        return [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": fallback_text}]
+                + image_parts,
+            }
+        ]
+
     async def _request_critique_impl(self, update_checkpoint: bool = True) -> str:
         """Implementation for critique request.
 
@@ -813,6 +1014,51 @@ class BaseStatefulAgent(ABC):
 
         # Parse structured output.
         response = result.final_output_as(CritiqueWithScores)
+        critic_used_required_tools, called_tools = (
+            self._critic_called_required_read_only_tools(result)
+        )
+        needs_inline_retry = (
+            not critic_used_required_tools
+            or self._critic_response_needs_inline_retry(response)
+        )
+
+        if needs_inline_retry:
+            retry_input = self._build_inline_critic_retry_input(critique_instruction)
+            if retry_input != critique_instruction:
+                if not critic_used_required_tools:
+                    missing_tools = sorted(
+                        {"observe_scene", "get_current_scene_state"} - called_tools
+                    )
+                    console_logger.warning(
+                        "Critic skipped required read-only tools "
+                        f"{missing_tools}; retrying with inline render and "
+                        "scene-state context."
+                    )
+                else:
+                    console_logger.warning(
+                        "Critic returned a fallback critique after using tools; "
+                        "retrying with inline render and scene-state context."
+                    )
+                result = await Runner.run(
+                    starting_agent=self.critic,
+                    input=retry_input,
+                    session=self.critic_session,
+                    max_turns=self.cfg.agents.critic_agent.max_turns,
+                    run_config=self._create_run_config(),
+                )
+                log_agent_usage(result=result, agent_name="CRITIC (INLINE RETRY)")
+                response = result.final_output_as(CritiqueWithScores)
+            else:
+                if not critic_used_required_tools:
+                    console_logger.warning(
+                        "Critic skipped required read-only tools, but no inline "
+                        "retry context was available."
+                    )
+                else:
+                    console_logger.warning(
+                        "Critic produced a fallback critique, but no inline retry "
+                        "context was available."
+                    )
 
         # Log critique text and scores to console.
         log_agent_response(response=response.critique, agent_name="CRITIC")

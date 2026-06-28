@@ -248,11 +248,28 @@ class ConvexDecompositionServer:
         else:
             return f"Exited with code {poll_result}"
 
-    def wait_until_ready(self, timeout: float = 10.0) -> None:
+    def _tail_log_file(self, max_chars: int = 1200) -> str | None:
+        """Return the tail of the server log file for diagnostics."""
+        if self._log_file is None or not self._log_file.exists():
+            return None
+
+        try:
+            text = self._log_file.read_text(errors="replace")
+        except OSError:
+            return None
+
+        if len(text) <= max_chars:
+            return text
+        return text[-max_chars:]
+
+    def wait_until_ready(
+        self, timeout: float = 30.0, poll_interval: float = 0.5
+    ) -> None:
         """Wait until the server is ready to accept HTTP requests.
 
         Args:
             timeout: Maximum time to wait in seconds.
+            poll_interval: Delay between readiness probes in seconds.
 
         Raises:
             RuntimeError: If server is not running or doesn't become ready within
@@ -266,8 +283,23 @@ class ConvexDecompositionServer:
         )
 
         start_time = time.time()
-        max_retries = int(timeout * 2)  # Check twice per second.
-        for i in range(max_retries):
+        deadline = start_time + timeout
+        last_error: str | None = None
+
+        while time.time() < deadline:
+            process_status = self.get_process_status()
+            if process_status.startswith("Exited"):
+                log_tail = self._tail_log_file()
+                details = (
+                    "Convex decomposition server exited before becoming ready "
+                    f"({process_status})"
+                )
+                if self._log_file is not None:
+                    details += f". Log file: {self._log_file}"
+                if log_tail:
+                    details += f"\nRecent log output:\n{log_tail}"
+                raise RuntimeError(details)
+
             try:
                 response = requests.get(f"{self.get_url()}/health", timeout=2)
                 if response.status_code == 200:
@@ -276,20 +308,32 @@ class ConvexDecompositionServer:
                         f"Convex decomposition server is ready after {elapsed:.1f}s"
                     )
                     return
-            except requests.RequestException:
-                elapsed = time.time() - start_time
-                if elapsed >= timeout:
-                    raise RuntimeError(
-                        f"Convex decomposition server failed to become ready "
-                        f"within {timeout}s"
-                    )
-                if i < max_retries - 1:
-                    time.sleep(0.5)
-                    continue
+                last_error = (
+                    f"HTTP {response.status_code} from readiness probe on "
+                    f"{self.get_url()}/health"
+                )
+                console_logger.debug(last_error)
+            except requests.RequestException as e:
+                last_error = f"{type(e).__name__}: {e}"
+                console_logger.debug(
+                    "Readiness probe failed for "
+                    f"{self.get_url()}/health: {last_error}"
+                )
 
-        raise RuntimeError(
-            f"Convex decomposition server did not become ready within {timeout}s"
-        )
+            remaining = deadline - time.time()
+            if remaining > 0:
+                time.sleep(min(poll_interval, remaining))
+
+        details = f"Convex decomposition server did not become ready within {timeout}s"
+        if last_error:
+            details += f" (last probe: {last_error})"
+        details += f". Process status: {self.get_process_status()}"
+        if self._log_file is not None:
+            details += f". Log file: {self._log_file}"
+        log_tail = self._tail_log_file()
+        if log_tail:
+            details += f"\nRecent log output:\n{log_tail}"
+        raise RuntimeError(details)
 
     def get_client(self) -> "ConvexDecompositionClient":
         """Get a client connected to this server.

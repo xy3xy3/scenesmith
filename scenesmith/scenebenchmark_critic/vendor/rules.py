@@ -81,7 +81,7 @@ def run_case_pack_checks(
             result = evaluate_spatial_accessibility(store, check, rule_config)
         elif metric == "functional_dependency":
             result = evaluate_functional_dependency(store, check)
-        elif metric == "clearance":
+        elif metric == "interaction_clearance":
             result = clearance_source.evaluate_clearance(check)
         else:
             result = None

@@ -18,7 +18,7 @@ from pydrake.math import RollPitchYaw
 from scenesmith.agent_utils.room import ObjectType, RoomScene, SceneObject
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.scenebenchmark_critic import adapter, clearance_source
-from scenesmith.utils.llm_json import parse_llm_json
+from scenesmith.utils.llm_json import parse_llm_json_object
 from scenesmith.utils.openai import encode_image_to_base64
 
 if TYPE_CHECKING:
@@ -484,7 +484,7 @@ def run_prediction(
     )
     # 2026-06-18 hardening: asset-annotation VLM output now uses the shared JSON
     # repair path so fenced or lightly malformed local-model responses survive.
-    payload = parse_llm_json(response_text)
+    payload = parse_llm_json_object(response_text)
     return AssetVlmPrediction.model_validate(payload)
 
 

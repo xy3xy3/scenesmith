@@ -203,6 +203,12 @@ collision_geometry:
   # Decomposition method: "coacd" or "vhacd"
   method: "vhacd"
 
+  startup:
+    ready_timeout_s: 30.0
+    poll_interval_s: 0.5
+    omp_threads: null
+    max_omp_threads: 32
+
   # Port range for convex decomposition server (each worker gets its own port).
   server_port_range: [7100, 7450]
 

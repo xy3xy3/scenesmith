@@ -13,7 +13,7 @@ from scenesmith.agent_utils.room import ObjectType, RoomScene, UniqueID
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.prompts import prompt_manager
 from scenesmith.prompts.registry import ManipulandAgentPrompts
-from scenesmith.utils.llm_json import parse_llm_json, preview_llm_json
+from scenesmith.utils.llm_json import parse_llm_json_object, preview_llm_json
 from scenesmith.utils.omegaconf import OmegaConf
 from scenesmith.utils.openai import encode_image_to_base64
 
@@ -323,7 +323,7 @@ class SceneAnalyzer:
         # Call VLM with retry logic for JSON parsing failures.
         max_retries = self.cfg.openai.furniture_analysis_max_retries
         response_str = ""
-        analysis: dict = {}
+        analysis: dict[str, Any] = {}
 
         for attempt in range(max_retries):
             try:
@@ -350,7 +350,7 @@ class SceneAnalyzer:
 
                 # 2026-06-17 hardening: small/local models may wrap JSON in fenced
                 # Markdown or emit minor JSON defects. Repair before failing.
-                analysis = parse_llm_json(response_str)
+                analysis = parse_llm_json_object(response_str)
                 break  # Success.
             except (json.JSONDecodeError, ValueError) as e:
                 preview = preview_llm_json(response_str)
@@ -367,6 +367,11 @@ class SceneAnalyzer:
                 ) from e
 
         furniture_selections = analysis.get("furniture_selections", [])
+        if not isinstance(furniture_selections, list):
+            raise ValueError(
+                "Furniture analysis returned non-list furniture_selections: "
+                f"{type(furniture_selections).__name__}"
+            )
 
         # Build valid IDs set for validation.
         valid_furniture_ids = {obj.object_id for obj in furniture_objects}
@@ -377,6 +382,12 @@ class SceneAnalyzer:
         # Extract and validate selections.
         furniture_data: list[FurnitureSelection] = []
         for selection in furniture_selections:
+            if not isinstance(selection, dict):
+                console_logger.warning(
+                    "Skipping furniture selection with invalid type: "
+                    f"{type(selection).__name__}"
+                )
+                continue
             furniture_id_str = selection.get("furniture_id")
             suggested_items = selection.get("suggested_items", "")
             prompt_constraints = selection.get(
@@ -469,7 +480,7 @@ class SceneAnalyzer:
         # Call VLM with retry logic.
         max_retries = self.cfg.openai.context_selection_max_retries
         response_str = ""
-        result: dict = {}
+        result: dict[str, Any] = {}
 
         for attempt in range(max_retries):
             try:
@@ -477,7 +488,7 @@ class SceneAnalyzer:
                     furniture_with_candidates=furniture_with_candidates,
                     images=images,
                 )
-                result = parse_llm_json(response_str)
+                result = parse_llm_json_object(response_str)
                 break
             except (json.JSONDecodeError, ValueError) as e:
                 preview = preview_llm_json(response_str)

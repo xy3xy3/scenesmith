@@ -49,7 +49,7 @@ from scenesmith.agent_utils.thin_covering_generator import (
 )
 from scenesmith.agent_utils.vlm_service import VLMService
 from scenesmith.prompts import AssetRouterPrompts, prompt_manager
-from scenesmith.utils.llm_json import parse_llm_json
+from scenesmith.utils.llm_json import parse_llm_json_object
 from scenesmith.utils.openai import encode_image_to_base64
 
 if TYPE_CHECKING:
@@ -174,7 +174,7 @@ class AssetRouter:
                 # 2026-06-18 hardening: route all VLM JSON through the shared
                 # repair helper so fenced / slightly broken local-model output
                 # does not abort asset analysis.
-                response_json = parse_llm_json(response_text)
+                response_json = parse_llm_json_object(response_text)
                 console_logger.info(
                     f"Router analysis completed in {elapsed:.1f}s:\n{response_json}"
                 )
@@ -363,7 +363,7 @@ class AssetRouter:
             elapsed = time.time() - start_time
             # 2026-06-18 hardening: validation responses from local/open models
             # can still arrive as fenced JSON despite response_format hints.
-            response_json = parse_llm_json(response_text)
+            response_json = parse_llm_json_object(response_text)
             console_logger.info(
                 f"Router validation completed in {elapsed:.1f}s for "
                 f"'{description}':\n{response_json}"
@@ -767,7 +767,7 @@ class AssetRouter:
             elapsed = time.time() - start_time
             # 2026-06-18 hardening: reuse the same JSON repair path for the
             # articulated validation branch to avoid format-only failures.
-            response_json = parse_llm_json(response_text)
+            response_json = parse_llm_json_object(response_text)
             console_logger.info(
                 f"Articulated validation completed in {elapsed:.1f}s for "
                 f"'{description}':\n{response_json}"
@@ -1283,7 +1283,7 @@ class AssetRouter:
             elapsed = time.time() - start_time
             # 2026-06-18 hardening: thin-covering validation shares the same
             # local/open-model JSON compatibility fallback.
-            response_json = parse_llm_json(response_text)
+            response_json = parse_llm_json_object(response_text)
             console_logger.info(
                 f"Thin covering validation completed in {elapsed:.1f}s for "
                 f"'{description}':\n{response_json}"

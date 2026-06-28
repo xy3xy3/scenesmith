@@ -177,7 +177,7 @@ def build_checks(
             _build_grouped_functional_dependency_checks(objects, seen_check_ids)
         )
 
-    if "clearance" in enabled:
+    if "interaction_clearance" in enabled:
         for check in clearance_source.build_clearance_checks(objects):
             if check["check_id"] in seen_check_ids:
                 continue

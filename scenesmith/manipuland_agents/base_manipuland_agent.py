@@ -98,9 +98,18 @@ class BaseManipulandAgent(ABC):
 
             # Start ConvexDecompositionServer for collision geometry generation.
             # This isolates OpenMP from ThreadPoolExecutor to prevent deadlocks.
-            # Calculate OMP threads: each worker gets a fair share of CPU cores.
-            cpu_count = os.cpu_count() or 1
-            omp_threads = max(1, cpu_count // num_workers)
+            startup_cfg = cfg.collision_geometry.get("startup", {})
+            configured_omp_threads = startup_cfg.get("omp_threads")
+            if configured_omp_threads is not None:
+                omp_threads = max(1, int(configured_omp_threads))
+            else:
+                # Give each worker a fair share of CPU cores, but avoid spawning
+                # hundreds of OpenMP threads for small mesh decomposition jobs.
+                cpu_count = os.cpu_count() or 1
+                omp_threads = max(1, cpu_count // max(1, num_workers))
+                max_omp_threads = startup_cfg.get("max_omp_threads")
+                if max_omp_threads is not None:
+                    omp_threads = min(omp_threads, max(1, int(max_omp_threads)))
             console_logger.info(
                 f"Starting ConvexDecompositionServer (omp_threads={omp_threads})"
             )
@@ -110,7 +119,10 @@ class BaseManipulandAgent(ABC):
                 log_file=logger.output_dir / "room.log",
             )
             self.collision_server.start()
-            self.collision_server.wait_until_ready()
+            self.collision_server.wait_until_ready(
+                timeout=float(startup_cfg.get("ready_timeout_s", 30.0)),
+                poll_interval=float(startup_cfg.get("poll_interval_s", 0.5)),
+            )
         except Exception:
             # Clean up any servers that were started before the failure.
             self.cleanup()

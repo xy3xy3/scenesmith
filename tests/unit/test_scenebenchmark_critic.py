@@ -4467,6 +4467,43 @@ def test_agent_context_helper_does_not_inject_for_ceiling_agent(
     assert agent._build_scenebenchmark_critic_context() is None
 
 
+def test_create_run_config_adds_session_input_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_openai_run_config(_cfg: Any, **kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "run-config"
+
+    monkeypatch.setattr(
+        base_stateful_agent,
+        "create_openai_run_config",
+        fake_create_openai_run_config,
+    )
+
+    agent = object.__new__(_DummyAgent)
+    agent.cfg = OmegaConf.create(
+        {
+            "session_memory": {
+                "intra_turn_observation_stripping": {
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    result = agent._create_run_config()
+
+    assert result == "run-config"
+    callback = captured["session_input_callback"]
+    assert callable(callback)
+    assert callback([{"role": "assistant"}], [{"role": "user"}]) == [
+        {"role": "assistant"},
+        {"role": "user"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_request_critique_disabled_does_not_change_physics_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4609,6 +4646,222 @@ async def test_request_critique_injects_scenebenchmark_context_when_enabled(
         in captured["physics_context"]
     )
     assert "benchmark-context" in captured["physics_context"]
+
+
+@pytest.mark.asyncio
+async def test_request_critique_retries_with_inline_context_when_model_skips_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakePromptRegistry:
+        def get_prompt(self, **_kwargs: Any) -> str:
+            return "critic instruction"
+
+    def _invalid_scores() -> FurnitureCritiqueWithScores:
+        zero = CategoryScore(name="x", grade=0, comment="missing data")
+        return FurnitureCritiqueWithScores(
+            critique=(
+                "I'm unable to provide a ceiling fixture evaluation because the "
+                "required scene observation tools were not executed."
+            ),
+            realism=zero,
+            functionality=zero,
+            layout=zero,
+            holistic_completeness=zero,
+            prompt_following=zero,
+            reachability=zero,
+        )
+
+    def _valid_scores() -> FurnitureCritiqueWithScores:
+        good = CategoryScore(name="x", grade=8, comment="ok")
+        return FurnitureCritiqueWithScores(
+            critique="Recovered critique",
+            realism=good,
+            functionality=good,
+            layout=good,
+            holistic_completeness=good,
+            prompt_following=good,
+            reachability=good,
+        )
+
+    class FakeResult:
+        def __init__(
+            self,
+            response: FurnitureCritiqueWithScores,
+            new_items: list[Any] | None = None,
+        ):
+            self._response = response
+            self.new_items = new_items or []
+
+        def final_output_as(self, _type: Any) -> FurnitureCritiqueWithScores:
+            return self._response
+
+    async def fake_run(**kwargs: Any) -> FakeResult:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return FakeResult(_invalid_scores())
+        return FakeResult(_valid_scores())
+
+    monkeypatch.setattr(
+        base_stateful_agent,
+        "check_physics_violations",
+        lambda **_kwargs: "physics-only",
+    )
+    monkeypatch.setattr(base_stateful_agent.Runner, "run", fake_run)
+    monkeypatch.setattr(base_stateful_agent, "log_agent_usage", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        base_stateful_agent, "log_agent_response", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        base_stateful_agent, "log_critique_scores", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        base_stateful_agent, "encode_image_to_base64", lambda _path: "abc123"
+    )
+
+    render_dir = tmp_path / "renders_001"
+    render_dir.mkdir()
+    (render_dir / "view_0.png").write_bytes(b"not-a-real-png")
+
+    agent = object.__new__(_DummyAgent)
+    agent.cfg = OmegaConf.create(
+        {
+            "scenebenchmark_critic": {
+                "enabled": False,
+                "inject_into_llm_critic": True,
+            },
+            "agents": {"critic_agent": {"max_turns": 1}},
+        }
+    )
+    agent.scene = _scene(tmp_path / "scene")
+    agent.prompt_registry = FakePromptRegistry()
+    agent.placement_style = "natural"
+    agent.critic = object()
+    agent.critic_session = object()
+    agent.rendering_manager = type(
+        "RenderingManager", (), {"last_render_dir": render_dir}
+    )()
+    agent.previous_scores = None
+    agent.final_render_dir = None
+    agent._create_run_config = lambda: None
+
+    result = await agent._request_critique_impl(update_checkpoint=False)
+
+    assert result == "Recovered critique"
+    assert len(calls) == 2
+    retry_input = calls[1]["input"]
+    assert isinstance(retry_input, list)
+    assert "IMPORTANT FALLBACK CONTEXT" in retry_input[0]["content"][0]["text"]
+    assert retry_input[0]["content"][1]["type"] == "input_image"
+    assert (render_dir / "scores.yaml").exists()
+
+
+@pytest.mark.asyncio
+async def test_request_critique_retries_when_critic_hallucinates_without_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakePromptRegistry:
+        def get_prompt(self, **_kwargs: Any) -> str:
+            return "critic instruction"
+
+    def _hallucinated_scores() -> FurnitureCritiqueWithScores:
+        zero = CategoryScore(name="x", grade=0, comment="missing fixtures")
+        return FurnitureCritiqueWithScores(
+            critique=(
+                "Scene observation shows Ceiling Objects Found: None. "
+                "The ceiling is completely bare and the room has zero lighting."
+            ),
+            realism=zero,
+            functionality=zero,
+            layout=zero,
+            holistic_completeness=zero,
+            prompt_following=zero,
+            reachability=zero,
+        )
+
+    def _valid_scores() -> FurnitureCritiqueWithScores:
+        good = CategoryScore(name="x", grade=8, comment="ok")
+        return FurnitureCritiqueWithScores(
+            critique="Recovered critique",
+            realism=good,
+            functionality=good,
+            layout=good,
+            holistic_completeness=good,
+            prompt_following=good,
+            reachability=good,
+        )
+
+    class FakeResult:
+        def __init__(
+            self,
+            response: FurnitureCritiqueWithScores,
+            new_items: list[Any] | None = None,
+        ):
+            self._response = response
+            self.new_items = new_items or []
+
+        def final_output_as(self, _type: Any) -> FurnitureCritiqueWithScores:
+            return self._response
+
+    async def fake_run(**kwargs: Any) -> FakeResult:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return FakeResult(_hallucinated_scores(), new_items=[])
+        return FakeResult(_valid_scores(), new_items=[])
+
+    monkeypatch.setattr(
+        base_stateful_agent,
+        "check_physics_violations",
+        lambda **_kwargs: "physics-only",
+    )
+    monkeypatch.setattr(base_stateful_agent.Runner, "run", fake_run)
+    monkeypatch.setattr(base_stateful_agent, "log_agent_usage", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        base_stateful_agent, "log_agent_response", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        base_stateful_agent, "log_critique_scores", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        base_stateful_agent, "encode_image_to_base64", lambda _path: "abc123"
+    )
+
+    render_dir = tmp_path / "renders_001"
+    render_dir.mkdir()
+    (render_dir / "view_0.png").write_bytes(b"not-a-real-png")
+
+    agent = object.__new__(_DummyAgent)
+    agent.cfg = OmegaConf.create(
+        {
+            "scenebenchmark_critic": {
+                "enabled": False,
+                "inject_into_llm_critic": True,
+            },
+            "agents": {"critic_agent": {"max_turns": 1}},
+        }
+    )
+    agent.scene = _scene(tmp_path / "scene")
+    agent.prompt_registry = FakePromptRegistry()
+    agent.placement_style = "natural"
+    agent.critic = object()
+    agent.critic_session = object()
+    agent.rendering_manager = type(
+        "RenderingManager", (), {"last_render_dir": render_dir}
+    )()
+    agent.previous_scores = None
+    agent.final_render_dir = None
+    agent._create_run_config = lambda: None
+
+    result = await agent._request_critique_impl(update_checkpoint=False)
+
+    assert result == "Recovered critique"
+    assert len(calls) == 2
+    retry_input = calls[1]["input"]
+    assert isinstance(retry_input, list)
+    assert "IMPORTANT FALLBACK CONTEXT" in retry_input[0]["content"][0]["text"]
 
 
 def test_evaluate_scenes_disabled_does_not_overwrite_existing_reports(

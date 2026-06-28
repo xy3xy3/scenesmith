@@ -331,7 +331,7 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
         checks.append(
             {
                 "check_id": f"clearance__{oid}",
-                "metric": "clearance",
+                "metric": "interaction_clearance",
                 "subject_id": oid,
                 "target_ids": blockers,
                 "clearance_type": ctype,
@@ -372,7 +372,7 @@ def evaluate_clearance(check: dict[str, Any]) -> dict[str, Any]:
         reason = "Clearance could not be determined."
     return {
         "check_id": check.get("check_id"),
-        "metric": "clearance",
+        "metric": "interaction_clearance",
         "label": label,
         "primary_object": check.get("subject_id"),
         "blocking_objects": blockers,

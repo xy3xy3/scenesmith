@@ -200,6 +200,16 @@ collision_geometry:
   # Decomposition method: "coacd" or "vhacd"
   method: "vhacd"
 
+  startup:
+    # Time to wait for the standalone collision server to answer /health.
+    ready_timeout_s: 30.0
+    # Delay between readiness probes.
+    poll_interval_s: 0.5
+    # Set explicitly to force a fixed OpenMP thread count.
+    omp_threads: null
+    # Cap auto-selected OpenMP threads to avoid overcommitting very large CPUs.
+    max_omp_threads: 32
+
   # Port range for convex decomposition server (collision geometry generation).
   server_port_range: [7100, 7350]
 

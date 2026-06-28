@@ -32,11 +32,33 @@ Usage:
     server.stop()
 """
 
-from scenesmith.agent_utils.convex_decomposition_server.client import (
-    ConvexDecompositionClient,
-)
-from scenesmith.agent_utils.convex_decomposition_server.server_manager import (
-    ConvexDecompositionServer,
-)
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 __all__ = ["ConvexDecompositionServer", "ConvexDecompositionClient"]
+
+if TYPE_CHECKING:
+    from scenesmith.agent_utils.convex_decomposition_server.client import (
+        ConvexDecompositionClient,
+    )
+    from scenesmith.agent_utils.convex_decomposition_server.server_manager import (
+        ConvexDecompositionServer,
+    )
+
+
+def __getattr__(name: str):
+    """Lazily import package exports to keep server cold-start fast."""
+    if name == "ConvexDecompositionClient":
+        from scenesmith.agent_utils.convex_decomposition_server.client import (
+            ConvexDecompositionClient,
+        )
+
+        return ConvexDecompositionClient
+    if name == "ConvexDecompositionServer":
+        from scenesmith.agent_utils.convex_decomposition_server.server_manager import (
+            ConvexDecompositionServer,
+        )
+
+        return ConvexDecompositionServer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
