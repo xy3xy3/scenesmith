@@ -354,7 +354,7 @@ def annotate_scene_object(
     object_function_profile = _object_function_profile_from_effective_annotation(
         obj, effective
     )
-    clearance = clearance_source.get_clearance(obj.metadata.get("asset_id"))
+    clearance = clearance_source.get_clearance_for_metadata(obj.metadata)
     if clearance is not None:
         # Mirror into metadata so the adapter carries it into the case_pack
         # geometry without re-querying the provider.
