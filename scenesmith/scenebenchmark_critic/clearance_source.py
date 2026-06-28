@@ -35,6 +35,11 @@ console_logger = logging.getLogger(__name__)
 _DATA_DIR = Path(__file__).resolve().parent / "clearance_data"
 _NONARTIC_FILE = _DATA_DIR / "nonartic_clearance_index.json"
 _ARTIC_FILE = _DATA_DIR / "artic_clearance_index.json"
+# Functional-dependency sidecar (exported from the UD4/funeval source layer's
+# ``functional_dependencies`` field, used_with + requires, keyed by HSSD hash).
+# Used for partner-exclusion: an object's keep-clear is not "intruded" by a
+# category it is *meant* to be used with (chair<->table, sofa<->coffee table).
+_PARTNER_FILE = _DATA_DIR / "functional_partners_index.json"
 
 # Clearance types whose keep-clear region is *above* the object footprint
 # (vertical headroom) rather than extending out a side.
@@ -158,6 +163,66 @@ def _artic_index() -> dict[str, Any]:
     return _load_json(_ARTIC_FILE).get("items", {})
 
 
+@lru_cache(maxsize=1)
+def _partner_index() -> dict[str, Any]:
+    return _load_json(_PARTNER_FILE).get("items", {})
+
+
+# Coarse furniture families. Functional dependencies name specific categories
+# (chair -> dining_table/desk; sofa -> coffee_table); to apply partner-exclusion
+# robustly across the differing vocabularies of the clearance index, the scene,
+# and the synset targets, both the partner targets and a candidate intruder's
+# category are normalized to one of these families before matching.
+_CAT_FAMILY: dict[str, str] = {}
+for _fam, _members in {
+    "seat": (
+        "chair armchair sofa couch loveseat sectional settee swivel_chair "
+        "office_chair desk_chair dining_chair side_chair accent_chair "
+        "lounge_chair rocking_chair recliner bench stool bar_stool counter_stool "
+        "ottoman footstool pouf pouffe beanbag_chair ball_chair"
+    ),
+    "surface": (
+        "table dining_table coffee_table end_table side_table console_table "
+        "conference_table accent_table nightstand bedside_table desk writing_desk "
+        "computer_desk dressing_table vanity countertop counter kitchen_island "
+        "bar sideboard buffet credenza"
+    ),
+    "bed": (
+        "bed double_bed king_bed queen_bed twin_bed single_bed bunk_bed daybed "
+        "round_daybed trundle_bed toddler_bed crib"
+    ),
+}.items():
+    for _m in _members.split():
+        _CAT_FAMILY[_m] = _fam
+
+
+def _family(cat: Any) -> str:
+    """Normalize a category token (synset / instance id stripped) to a family."""
+    token = str(cat or "").strip().lower()
+    token = token.split(".")[0]  # strip ".n.01" synset suffix
+    token = token.replace(" ", "_")  # funeval categories use spaces, the map uses _
+    token = token.rsplit("_", 1)[0] if token[-1:].isdigit() else token  # drop _0
+    return _CAT_FAMILY.get(token, token)
+
+
+def _partner_families(asset_id: str | None) -> set[str]:
+    """Families an asset is *meant* to be used with (from functional deps)."""
+    rec = _partner_index().get(str(asset_id or ""))
+    if not rec:
+        return set()
+    return {_family(p) for p in rec.get("partners", [])}
+
+
+def _category_family_for_metadata(metadata: Any) -> str | None:
+    """Resolve a scene object's coarse family from its HSSD hash / metadata."""
+    aid = asset_id_from_metadata(metadata)
+    rec = _partner_index().get(str(aid or "")) if aid else None
+    cat = rec.get("cat") if rec else None
+    if not cat and isinstance(metadata, dict):
+        cat = metadata.get("category") or metadata.get("cat")
+    return _family(cat) if cat else None
+
+
 def available() -> bool:
     """True when at least one clearance index is loaded with entries."""
     return bool(_nonartic_index()) or bool(_artic_index())
@@ -216,6 +281,10 @@ def get_clearance(asset_id: str | None) -> dict[str, Any] | None:
         }
         if na is None:
             record["kind"] = "articulated"
+
+    # Functional partners: categories this asset is *meant* to be used with, so
+    # their presence in its keep-clear zone is intended, not an intrusion.
+    record["partner_families"] = sorted(_partner_families(key))
     return record
 
 
@@ -427,7 +496,11 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
     deterministic passthrough (no VLM).
     """
     world_boxes = [
-        {"id": oid, "bbox": obj.get("bbox_world")}
+        {
+            "id": oid,
+            "bbox": obj.get("bbox_world"),
+            "family": _category_family_for_metadata(obj.get("metadata") or {}),
+        }
         for oid, obj in objects.items()
         if isinstance(obj.get("bbox_world"), dict)
     ]
@@ -441,7 +514,15 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
         )
         if not keep_clear:
             continue
-        others = [box for box in world_boxes if box["id"] != oid]
+        # Exclude functional partners: an object placed where this asset is meant
+        # to be used with it (chair at its table, sofa by its coffee table) is an
+        # intended adjacency, not a clearance violation.
+        partners = set(record.get("partner_families") or [])
+        others = [
+            box
+            for box in world_boxes
+            if box["id"] != oid and (box.get("family") not in partners)
+        ]
         hits = intrusions(keep_clear, others)
         blockers = sorted({h["object_id"] for h in hits if h.get("object_id")})
         label = "fail" if blockers else "pass"

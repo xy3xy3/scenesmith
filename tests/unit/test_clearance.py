@@ -213,3 +213,39 @@ def _a_key_with_cat(cat: str):
         if (na.get("cat") or "") == cat:
             return key
     return "not-a-real-asset-id"
+
+
+# --- functional-dependency partner exclusion -------------------------------
+
+
+def test_family_normalization_handles_synset_space_and_instance():
+    f = clearance_source._family
+    assert f("coffee table") == "surface"        # funeval space form
+    assert f("dining_table.n.01") == "surface"   # synset suffix
+    assert f("swivel_chair") == "seat"
+    assert f("office_chair_0") == "seat"          # instance suffix dropped
+    assert f("double_bed") == "bed"
+    assert f("wall mirror") == "wall_mirror"      # unmapped -> normalized self
+
+
+def test_functional_partner_is_not_an_intrusion():
+    # A chair whose functional partners include the "surface" family: a table in
+    # its keep-clear is an intended adjacency, not a violation.
+    rec = {
+        "kind": "nonarticulated", "clearance_type": "落座", "direction": "前",
+        "depth_m": 0.6, "height_m": 0.0, "inherits_from_support": False,
+        "partner_families": ["surface"],
+    }
+    chair = _obj("chair", [-0.25, -0.25, 0.0], [0.25, 0.25, 0.9], yaw=0.0, clearance=rec)
+    table = _obj("table", [-0.3, -0.8, 0.0], [0.3, -0.26, 0.75])
+    table["metadata"]["category"] = "dining_table"   # -> surface (a partner)
+    checks = clearance_source.build_clearance_checks({"chair": chair, "table": table})
+    label = {c["subject_id"]: c["clearance_result"]["label"] for c in checks}
+    assert label["chair"] == "pass"  # partner excluded
+
+    # A non-partner object in the same spot is still a real intrusion.
+    wall = _obj("wall", [-1.0, -0.8, 0.0], [1.0, -0.7, 2.5])
+    wall["metadata"]["category"] = "wall"
+    checks2 = clearance_source.build_clearance_checks({"chair": chair, "wall": wall})
+    label2 = {c["subject_id"]: c["clearance_result"]["label"] for c in checks2}
+    assert label2["chair"] == "fail"
