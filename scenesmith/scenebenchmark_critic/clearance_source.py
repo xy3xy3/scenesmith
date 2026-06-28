@@ -43,6 +43,99 @@ _VERTICAL_TYPES = {"上方站立", "above", "overhead"}
 _RING_DIRECTIONS = {"四周", "ring", "all"}
 
 
+# ---------------------------------------------------------------------------
+# Asset-level clearance policy (placement-aware annotation, ZERO scene logic).
+#
+# The raw per-asset annotations over-reserve in two ways that block good,
+# *intended* placements. Both are fixed here at the asset layer — by adjusting
+# what keep-clear an asset advertises — so the scene check stays a dumb
+# AABB-intrusion test and never needs to reason about relations or walls:
+#
+#   1. Seating (落座) reserves a deep front zone (0.6 m) pointing at the very
+#      surface it pairs with (chair -> dining table, sofa -> coffee table,
+#      swivel_chair even reserves a full ring). But that front face is a
+#      *tuck/shared* zone: idle the seat tucks under the surface; occupied, the
+#      person tucks their legs under and needs almost no front gap. The deep
+#      front zone makes the paired table read as an intruder -> false fail.
+#      Fix: collapse to a single front side with a token "tuck" depth, so any
+#      normal table/desk gap (>= the tuck depth) no longer counts as intrusion.
+#
+#   2. Beds / daybeds / cribs reserve a four-side *ring*, so a bed correctly
+#      pushed against a wall is flagged as intruded. A bed is anchored
+#      furniture meant to back against walls on up to three sides; it needs one
+#      accessible side, not a ring. Fix: collapse the ring to a single front
+#      access side (false-fail rate from 4/4 sides down to at most 1).
+#
+# These adjustments depend only on (category, clearance type, direction) — they
+# are properties of the asset, not of any scene.
+# ---------------------------------------------------------------------------
+
+# Seating clearance type: front is a tuck/shared face with the paired surface.
+_SEATING_TYPES = {"落座"}
+# "面前几乎不需要净空" — a token tuck gap. A paired table/desk/coffee-table at
+# any normal distance (>= this) is no longer treated as a clearance intrusion;
+# only a seat literally jammed within this gap of its surface still trips.
+_SEATING_FRONT_DEPTH_M = 0.10
+
+# Categories whose raw clearance is dominated by false positives in real
+# layouts, so no floor keep-clear is reserved at all:
+#   * Anchored sleeping furniture — designed to back against walls on up to
+#     three sides, with nightstands intentionally abutting. The get-in side is
+#     scene-dependent, and a single asset-frame box cannot express "any one side
+#     free", so reserving any side mostly produces false fails (measured on real
+#     scenes: the chosen front side lands on a wall or the bed's own nightstand).
+#   * Wall-mounted decor — a painting / mirror / sconce is not a floor-layout
+#     constraint; furniture below it is normal, and its approach zone projects
+#     into the wall it hangs on (front convention is wall-ward for wall-mounted
+#     assets), so it can only ever flag that wall.
+# These are asset properties (anchored vs free-standing, wall-mounted vs floor),
+# independent of any scene.
+_SUPPRESS_FLOOR_CLEARANCE_CATS = {
+    # anchored sleeping furniture
+    "bed", "double_bed", "king_bed", "queen_bed", "twin_bed", "single_bed",
+    "bunk_bed", "daybed", "round_daybed", "trundle_bed", "toddler_bed", "crib",
+    # wall-mounted decor
+    "wall_art", "wall_mirror", "wall_lamp", "wall_sconce", "wall_shelf",
+    "wall_hook_rack", "wall_clock", "mirror", "picture_frame", "painting",
+    "wall_decor", "window_curtain", "curtain",
+}
+
+
+def _apply_asset_clearance_policy(na: dict[str, Any]) -> dict[str, Any]:
+    """Refine a raw non-articulated annotation into a placement-aware one.
+
+    Pure asset-level: depends only on ``(cat, type, dir)``. Returns a
+    shallow-copied, adjusted record; the human-readable list of adjustments is
+    attached under ``_policy`` for auditability (empty/absent = unchanged).
+    """
+    typ = na.get("type")
+    cat = str(na.get("cat") or "").lower()
+    direction = str(na.get("dir") or "")
+    raw_depth = float(na.get("depth") or 0.0)
+    out = dict(na)
+    notes: list[str] = []
+
+    if cat in _SUPPRESS_FLOOR_CLEARANCE_CATS:
+        out["dir"] = ""
+        out["depth"] = 0.0
+        notes.append(
+            f"{cat}: floor clearance suppressed "
+            f"(anchored/wall-mounted; normal adjacency, not a layout constraint)"
+        )
+    elif typ in _SEATING_TYPES:
+        if direction != "前":
+            out["dir"] = "前"
+            notes.append(f"seating dir {direction or '∅'!r}->'前' (drop ring/back)")
+        tuck_depth = min(raw_depth, _SEATING_FRONT_DEPTH_M)
+        if tuck_depth != raw_depth:
+            out["depth"] = tuck_depth
+            notes.append(f"seating depth {raw_depth}->{tuck_depth} (front=tuck zone)")
+
+    if notes:
+        out["_policy"] = notes
+    return out
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         with path.open(encoding="utf-8") as handle:
@@ -95,6 +188,7 @@ def get_clearance(asset_id: str | None) -> dict[str, Any] | None:
 
     record: dict[str, Any] = {"asset_id": key}
     if na is not None:
+        na = _apply_asset_clearance_policy(na)
         record.update(
             {
                 "kind": "nonarticulated",
@@ -107,6 +201,7 @@ def get_clearance(asset_id: str | None) -> dict[str, Any] | None:
                 "inherits_from_support": bool(na.get("inherits")),
                 "object_bbox_m": list(na.get("bbox") or []),
                 "category": na.get("cat"),
+                "policy_applied": na.get("_policy") or [],
             }
         )
     if ar is not None:

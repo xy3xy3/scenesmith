@@ -149,3 +149,67 @@ def test_get_clearance_for_metadata_uses_real_join_key():
     rec = clearance_source.get_clearance_for_metadata({"hssd_mesh_id": key})
     assert rec is not None and rec["asset_id"] == key
     assert clearance_source.get_clearance_for_metadata({"unrelated": key}) is None
+
+
+# --- asset-level placement-aware clearance policy ---------------------------
+
+
+def _raw(**kw) -> dict:
+    base = dict(
+        type="接近", dir="四周", depth=0.45, width=0.7, height=1.8,
+        conf="med", inherits=False, bbox=[1.0, 2.0, 1.0], cat="x",
+    )
+    base.update(kw)
+    return base
+
+
+def test_policy_suppresses_bed_ring_clearance():
+    # A bed is anchored furniture (backs against walls, nightstands abut); its
+    # raw four-side ring produces mostly false fails, so floor clearance is
+    # suppressed entirely -> no keep-clear region.
+    out = clearance_source._apply_asset_clearance_policy(_raw(cat="bed", dir="四周"))
+    assert out["depth"] == 0.0
+    assert out.get("_policy")
+    bbox = {"min": [0.0, 0.0, 0.0], "max": [1.6, 2.0, 0.7]}
+    rec = clearance_source.get_clearance(_a_key_with_cat("bed"))
+    if rec is not None:  # only assert when a bed asset exists in the index
+        assert clearance_source.project_keep_clear(rec, bbox, 0.0) == []
+
+
+def test_policy_suppresses_wall_mounted_decor():
+    out = clearance_source._apply_asset_clearance_policy(
+        _raw(cat="wall_art", type="接近", dir="前", depth=0.45)
+    )
+    assert out["depth"] == 0.0
+    assert out.get("_policy")
+
+
+def test_policy_shrinks_seating_front_to_tuck_depth():
+    # chair/sofa front points at the paired table -> shrink to a tuck gap and
+    # force a single front side (no ring) so the table is not an intruder.
+    chair = clearance_source._apply_asset_clearance_policy(
+        _raw(cat="chair", type="落座", dir="前", depth=0.6)
+    )
+    assert chair["dir"] == "前"
+    assert chair["depth"] == clearance_source._SEATING_FRONT_DEPTH_M
+    swivel = clearance_source._apply_asset_clearance_policy(
+        _raw(cat="swivel_chair", type="落座", dir="四周", depth=0.6)
+    )
+    assert swivel["dir"] == "前"  # ring dropped
+    assert swivel["depth"] == clearance_source._SEATING_FRONT_DEPTH_M
+
+
+def test_policy_leaves_free_standing_storage_untouched():
+    # a dresser's front access clearance is a genuine layout constraint.
+    out = clearance_source._apply_asset_clearance_policy(
+        _raw(cat="dresser", type="接近", dir="前", depth=0.6)
+    )
+    assert out["depth"] == 0.6
+    assert not out.get("_policy")
+
+
+def _a_key_with_cat(cat: str):
+    for key, na in clearance_source._nonartic_index().items():
+        if (na.get("cat") or "") == cat:
+            return key
+    return "not-a-real-asset-id"
