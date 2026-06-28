@@ -75,7 +75,7 @@ sceneeval_export:
 # Embedded SceneBenchmark rule critic.
 scenebenchmark_critic:
   enabled: false
-  metrics: ["spatial_accessibility", "functional_dependency"]
+  metrics: ["spatial_accessibility", "functional_dependency", "interaction_clearance"]
   room_stage_hooks: ["scene_after_furniture", "final_scene"]
   # Single-room by default; override this to enable combined-house reports.
   house_stage_hooks: []
