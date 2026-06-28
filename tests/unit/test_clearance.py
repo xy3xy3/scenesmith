@@ -130,3 +130,22 @@ def test_gated_small_item_builds_no_check():
     rec["inherits_from_support"] = True
     lamp = _obj("lamp", [0, 0, 0], [0.1, 0.1, 0.3], clearance=rec)
     assert clearance_source.build_clearance_checks({"lamp": lamp}) == []
+
+
+def test_asset_id_resolves_hssd_mesh_id_first():
+    # Real SceneSmith objects carry the HSSD hash under hssd_mesh_id, not asset_id.
+    assert clearance_source.asset_id_from_metadata(
+        {"hssd_mesh_id": "abc", "asset_id": "xyz"}
+    ) == "abc"
+    assert clearance_source.asset_id_from_metadata({"asset_id": "xyz"}) == "xyz"
+    assert clearance_source.asset_id_from_metadata({"object_id": "oid"}) == "oid"
+    assert clearance_source.asset_id_from_metadata({}) is None
+    assert clearance_source.asset_id_from_metadata(None) is None
+
+
+def test_get_clearance_for_metadata_uses_real_join_key():
+    # A real key from the index, placed under hssd_mesh_id, must resolve.
+    key = next(iter(clearance_source._nonartic_index()))
+    rec = clearance_source.get_clearance_for_metadata({"hssd_mesh_id": key})
+    assert rec is not None and rec["asset_id"] == key
+    assert clearance_source.get_clearance_for_metadata({"unrelated": key}) is None
