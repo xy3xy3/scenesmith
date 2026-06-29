@@ -328,6 +328,7 @@ run_batch() {
         cmd+=(
             "experiment.scenebenchmark_critic.asset_annotation.enabled=true"
             "experiment.scenebenchmark_critic.asset_annotation.backend=vlm"
+            "experiment.scenebenchmark_critic.asset_annotation.model=${MODEL_NAME}"
         )
     fi
 
