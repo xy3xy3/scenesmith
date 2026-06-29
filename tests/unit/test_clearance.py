@@ -53,21 +53,21 @@ def test_get_clearance_roundtrip_and_miss():
     assert clearance_source.get_clearance(None) is None
 
 
-def test_project_front_box_extends_toward_minus_y_at_yaw0():
+def test_project_front_box_extends_toward_plus_y_at_yaw0():
     rec = _sit_record()
     bbox = {"min": [-0.25, -0.25, 0.0], "max": [0.25, 0.25, 0.9]}
     regions = clearance_source.project_keep_clear(rec, bbox, yaw_deg=0.0)
     assert len(regions) == 1
     r = regions[0]
-    # front = -Y at yaw 0: box sits below the object on the Y axis
-    assert r["min"][1] == pytest.approx(-0.85)  # -0.25 - 0.60 depth
-    assert r["max"][1] == pytest.approx(-0.25)
+    # facing = +Y at yaw 0 (SceneSmith pose convention): box sits above on Y axis
+    assert r["min"][1] == pytest.approx(0.25)
+    assert r["max"][1] == pytest.approx(0.85)  # 0.25 + 0.60 depth
     assert r["max"][2] == pytest.approx(1.3)  # height applied
 
 
-def test_yaw_180_flips_front_to_plus_y():
+def test_yaw_180_flips_front_to_minus_y():
     axis, sign = clearance_source._front_world_axis(180.0)
-    assert axis == 1 and sign == 1  # front -Y rotated 180 -> +Y
+    assert axis == 1 and sign == -1  # facing +Y rotated 180 -> -Y
 
 
 def test_ring_direction_reserves_four_sides():
@@ -105,7 +105,7 @@ def test_inherited_item_reserves_nothing():
 def test_intruding_object_fails_clearance_check():
     chair = _obj("chair", [-0.25, -0.25, 0.0], [0.25, 0.25, 0.9],
                  clearance=_sit_record(), name="armchair")
-    table = _obj("table", [-0.3, -0.7, 0.0], [0.3, -0.3, 0.7])  # in front (-Y)
+    table = _obj("table", [-0.3, 0.3, 0.0], [0.3, 0.7, 0.7])  # in front (+Y)
     checks = clearance_source.build_clearance_checks({"chair": chair, "table": table})
     assert len(checks) == 1
     result = clearance_source.evaluate_clearance(checks[0])
@@ -237,14 +237,14 @@ def test_functional_partner_is_not_an_intrusion():
         "partner_families": ["surface"],
     }
     chair = _obj("chair", [-0.25, -0.25, 0.0], [0.25, 0.25, 0.9], yaw=0.0, clearance=rec)
-    table = _obj("table", [-0.3, -0.8, 0.0], [0.3, -0.26, 0.75])
+    table = _obj("table", [-0.3, 0.26, 0.0], [0.3, 0.8, 0.75])  # in front (+Y)
     table["metadata"]["category"] = "dining_table"   # -> surface (a partner)
     checks = clearance_source.build_clearance_checks({"chair": chair, "table": table})
     label = {c["subject_id"]: c["clearance_result"]["label"] for c in checks}
     assert label["chair"] == "pass"  # partner excluded
 
     # A non-partner object in the same spot is still a real intrusion.
-    wall = _obj("wall", [-1.0, -0.8, 0.0], [1.0, -0.7, 2.5])
+    wall = _obj("wall", [-1.0, 0.7, 0.0], [1.0, 0.8, 2.5])  # in front (+Y)
     wall["metadata"]["category"] = "wall"
     checks2 = clearance_source.build_clearance_checks({"chair": chair, "wall": wall})
     label2 = {c["subject_id"]: c["clearance_result"]["label"] for c in checks2}
