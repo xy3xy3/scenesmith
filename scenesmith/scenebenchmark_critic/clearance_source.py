@@ -313,15 +313,22 @@ def get_clearance_for_metadata(metadata: Any) -> dict[str, Any] | None:
 
 
 def _front_world_axis(yaw_deg: float) -> tuple[int, int]:
-    """Map object-local front (-Y) through yaw, snap to nearest world axis.
+    """Map the object's facing direction through yaw, snap to nearest world axis.
+
+    SceneSmith places objects with their *facing* direction along local +Y (its
+    pose convention; verified against SceneSmith's own top-down GT renders, where
+    the facing arrow points along local +Y). The clearance index's "-Y" note
+    describes the raw HSSD mesh frame, but the keep-clear region must extend in
+    the direction the placed object actually faces, so we project local +Y
+    through the scene yaw here.
 
     Returns ``(axis, sign)`` where axis is 0 (X) or 1 (Y) and sign is +1/-1,
     i.e. the world-frame outward direction the keep-clear region extends toward.
     """
     theta = math.radians(yaw_deg or 0.0)
-    # local front (0, -1) rotated by yaw about +Z
-    wx = math.sin(theta)
-    wy = -math.cos(theta)
+    # facing = local (0, +1) rotated by yaw about +Z
+    wx = -math.sin(theta)
+    wy = math.cos(theta)
     if abs(wx) >= abs(wy):
         return 0, (1 if wx >= 0 else -1)
     return 1, (1 if wy >= 0 else -1)
