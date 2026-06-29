@@ -54,6 +54,7 @@ SKIP_WALL_MOUNTED="${SKIP_WALL_MOUNTED:-false}"
 SKIP_CEILING_MOUNTED="${SKIP_CEILING_MOUNTED:-false}"
 BRANCH_FROM_SHARED_BASE="${BRANCH_FROM_SHARED_BASE:-false}"
 SHARED_BASE_STOP_STAGE="${SHARED_BASE_STOP_STAGE:-floor_plan}"
+CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-false}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
 CRITIC_REPORT_STAGE_LABEL=""
 BRANCH_START_STAGE=""
@@ -121,6 +122,11 @@ if ! BRANCH_FROM_SHARED_BASE="$(normalize_bool "$BRANCH_FROM_SHARED_BASE")"; the
     exit 1
 fi
 
+if ! CRITIC_ASSET_ANNOTATION="$(normalize_bool "$CRITIC_ASSET_ANNOTATION")"; then
+    echo "错误：CRITIC_ASSET_ANNOTATION 必须是 true/false"
+    exit 1
+fi
+
 case "$PIPELINE_STOP_STAGE" in
     furniture)
         CRITIC_REPORT_STAGE_LABEL="scene_after_furniture"
@@ -182,6 +188,7 @@ echo "SKIP_CEILING_MOUNTED: $SKIP_CEILING_MOUNTED"
 echo "BRANCH_FROM_SHARED_BASE: $BRANCH_FROM_SHARED_BASE"
 echo "SHARED_BASE_STOP_STAGE: $SHARED_BASE_STOP_STAGE"
 echo "BRANCH_START_STAGE: ${BRANCH_START_STAGE:-<none>}"
+echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
 echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
@@ -316,6 +323,13 @@ run_batch() {
         "hydra.run.dir=${hydra_dir}"
         "experiment.csv_path=${batch_csv}"
     )
+
+    if [ "$CRITIC_ASSET_ANNOTATION" = "true" ]; then
+        cmd+=(
+            "experiment.scenebenchmark_critic.asset_annotation.enabled=true"
+            "experiment.scenebenchmark_critic.asset_annotation.backend=vlm"
+        )
+    fi
 
     if [ -n "$start_stage_override" ]; then
         cmd+=(
