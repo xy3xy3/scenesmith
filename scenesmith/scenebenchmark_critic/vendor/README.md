@@ -27,6 +27,10 @@ runtime. SceneSmith provides its own `RoomScene` adapter and report writer.
 - `functional_dependency.proposer` keeps the SceneBenchmark VLM entrypoint, but
   imports the optional agent stack defensively. The default SceneSmith config
   uses the deterministic template proposer.
+- `functional_dependency.relations` has SceneSmith-only evaluators for
+  asset-annotation dependencies (`seat_faces_surface`, `back_against_wall`,
+  mounted architecture relations). These mirror SceneEval-style face-to checks
+  and are intentionally excluded from the optional upstream AST parity test.
 - Lazy exports in metric package `__init__.py` files are package-qualified so
   they do not depend on the external SceneBenchmark repo being on `PYTHONPATH`.
 - `vendor/rules.py` is a SceneSmith bridge that normalizes result payloads and

@@ -941,6 +941,16 @@ def _functional_hints(
         target_relation = _target_relation(category, categories)
         if target_relation:
             hints["target_relation"] = target_relation
+    if not str(hints.get("mobility_class") or "").strip():
+        hints["mobility_class"] = _mobility_class(obj, category)
+    if not str(hints.get("accessibility_policy") or "").strip():
+        hints["accessibility_policy"] = _accessibility_policy(
+            obj, category, categories, str(hints.get("mobility_class") or "")
+        )
+    if not hints.get("access_sides"):
+        hints["access_sides"] = _access_sides(
+            category, categories, hints.get("front_hint")
+        )
     if not isinstance(hints.get("metric_relevance"), dict):
         hints["metric_relevance"] = _metric_relevance(
             categories, _as_string_list(hints.get("explicit_target_relation"))
@@ -984,6 +994,75 @@ def _target_relation(category: str, categories: set[str]) -> list[str]:
     if "supportable" in categories:
         return ["graspable_object"]
     return []
+
+
+def _mobility_class(obj: SceneObject, category: str) -> str:
+    if obj.object_type in {ObjectType.WALL_MOUNTED, ObjectType.CEILING_MOUNTED}:
+        return "mounted"
+    if category in {
+        "bar_stool",
+        "bean_bag",
+        "beanbag_chair",
+        "chair",
+        "dining_chair",
+        "office_chair",
+        "stool",
+    }:
+        return "movable"
+    if category in {
+        "armchair",
+        "bench",
+        "coffee_table",
+        "desk",
+        "dining_table",
+        "loveseat",
+        "nightstand",
+        "side_table",
+        "sofa",
+        "table",
+        "tv_stand",
+    }:
+        return "semi_movable"
+    if category in {
+        "bed",
+        "bookshelf",
+        "cabinet",
+        "dresser",
+        "refrigerator",
+        "shelf",
+        "wardrobe",
+        "wine_cabinet",
+    }:
+        return "fixed"
+    return "unknown"
+
+
+def _accessibility_policy(
+    obj: SceneObject, category: str, categories: set[str], mobility_class: str
+) -> str:
+    if obj.object_type in {ObjectType.WALL_MOUNTED, ObjectType.CEILING_MOUNTED}:
+        return "ignored"
+    if mobility_class == "movable" and "sittable" in categories:
+        return "optional"
+    if category in {"book", "bottle", "bowl", "cup", "mug", "plate", "remote"}:
+        return "ignored"
+    return "required" if categories else "ignored"
+
+
+def _access_sides(category: str, categories: set[str], front_hint: Any) -> list[str]:
+    face = str(front_hint or "").strip().lower()
+    if face not in {"front", "back", "left", "right", "top", "bottom"}:
+        face = "front"
+    sides: list[str] = []
+    if "openable" in categories or "sittable" in categories:
+        sides.append(face)
+    if "supportable" in categories:
+        sides.append("top")
+    if "sleepable" in categories:
+        sides.extend(["left", "right", face])
+    if category in {"bed", "bookshelf", "cabinet", "dresser", "wardrobe"}:
+        sides.append("front")
+    return list(dict.fromkeys(sides))
 
 
 def _metric_relevance(
@@ -1041,6 +1120,9 @@ def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
         "access_directions",
         "anchor_type",
         "asset_annotation_source",
+        "access_sides",
+        "accessibility_policy",
+        "attachment_dependencies",
         "classification_confidence",
         "classification_reason",
         "functional_dependency",
@@ -1048,8 +1130,10 @@ def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
         "explicit_target_relation",
         "low_confidence_candidates",
         "metric_relevance",
+        "mobility_class",
         "operation_space",
         "operation_spaces",
+        "orientation_dependencies",
         "part_of_furniture",
         "part_of_forniture",
         "target_relation",

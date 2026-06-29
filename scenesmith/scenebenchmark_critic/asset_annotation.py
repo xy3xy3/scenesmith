@@ -26,13 +26,15 @@ if TYPE_CHECKING:
 
 console_logger = logging.getLogger(__name__)
 
-ANNOTATION_SCHEMA_VERSION = "asset_vlm_annotation@0.2"
-TASK_SCHEMA_VERSION = "asset_vlm_annotation_task@0.2"
-PROMPT_VERSION = "asset_vlm_annotation_prompt@0.4"
+ANNOTATION_SCHEMA_VERSION = "asset_vlm_annotation@0.3"
+TASK_SCHEMA_VERSION = "asset_vlm_annotation_task@0.3"
+PROMPT_VERSION = "asset_vlm_annotation_prompt@0.5"
 
 SceneObjectType = Literal[
     "wall_mounted", "manipuland", "ceiling_mounted", "furniture", "unknown"
 ]
+MobilityClass = Literal["fixed", "movable", "semi_movable", "mounted", "unknown"]
+AccessibilityPolicy = Literal["required", "optional", "ignored"]
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
@@ -112,6 +114,44 @@ SCENE_OBJECT_TYPES = {
     "furniture",
     "unknown",
 }
+MOBILITY_CLASSES = {"fixed", "movable", "semi_movable", "mounted", "unknown"}
+ACCESSIBILITY_POLICIES = {"required", "optional", "ignored"}
+ACCESS_FACE_NAMES = {"front", "back", "left", "right", "top", "bottom"}
+
+MOVABLE_SEATING_CATEGORIES = {
+    "chair",
+    "office_chair",
+    "dining_chair",
+    "stool",
+    "bar_stool",
+    "bean_bag",
+    "beanbag_chair",
+}
+SEMI_MOVABLE_FURNITURE_CATEGORIES = {
+    "armchair",
+    "bench",
+    "loveseat",
+    "sofa",
+    "coffee_table",
+    "dining_table",
+    "table",
+    "desk",
+    "nightstand",
+    "side_table",
+    "tv_stand",
+}
+WALL_BACKED_CATEGORIES = {
+    "bed",
+    "bookshelf",
+    "cabinet",
+    "dresser",
+    "refrigerator",
+    "shelf",
+    "wardrobe",
+    "wine_cabinet",
+}
+WALL_MOUNTED_CATEGORIES = {"wall_cabinet", "wall_shelf", "wall_sconce"}
+CEILING_MOUNTED_CATEGORIES = {"ceiling_light", "pendant_light"}
 
 
 class AffordancePrediction(BaseModel):
@@ -153,6 +193,11 @@ class AssetVlmPrediction(BaseModel):
     front_face: FrontFacePrediction | None = None
     interaction_surface_map: dict[str, list[str]] = Field(default_factory=dict)
     access_type: dict[str, Any] = Field(default_factory=dict)
+    mobility_class: MobilityClass = "unknown"
+    accessibility_policy: AccessibilityPolicy = "required"
+    access_sides: list[str] = Field(default_factory=list)
+    attachment_dependencies: list[dict[str, Any]] = Field(default_factory=list)
+    orientation_dependencies: list[dict[str, Any]] = Field(default_factory=list)
     interaction_height_m: dict[str, float | None] = Field(default_factory=dict)
     related_categories: list[str] = Field(default_factory=list)
     style_tags: list[str] = Field(default_factory=list)
@@ -174,6 +219,11 @@ class EffectiveAnnotation(BaseModel):
     front_face: str | None = None
     interaction_surface_map: dict[str, list[str]] = Field(default_factory=dict)
     access_type: dict[str, Any] = Field(default_factory=dict)
+    mobility_class: MobilityClass = "unknown"
+    accessibility_policy: AccessibilityPolicy = "required"
+    access_sides: list[str] = Field(default_factory=list)
+    attachment_dependencies: list[dict[str, Any]] = Field(default_factory=list)
+    orientation_dependencies: list[dict[str, Any]] = Field(default_factory=list)
     interaction_height_m: dict[str, float | None] = Field(default_factory=dict)
     related_categories: list[str] = Field(default_factory=list)
     source: str = "heuristic"
@@ -502,11 +552,19 @@ def mock_vlm_prediction(
         affordance_labels = []
     confidence = _prediction_confidence(category, relevance, affordance_labels)
     front_face = _front_face(category, affordance_labels, hints)
+    scene_object_type = _scene_object_type(obj)
+    mobility_class = _mobility_class(
+        category, scene_object_type, affordance_labels, hints
+    )
+    accessibility_policy = _accessibility_policy(
+        category, mobility_class, affordance_labels, scene_object_type, hints
+    )
+    access_sides = _access_sides(category, affordance_labels, front_face, hints)
     return AssetVlmPrediction(
         canonical_name=category.replace("_", " "),
         category_norm=category,
         placement_class=_placement_class(obj),
-        scene_object_type=_scene_object_type(obj),
+        scene_object_type=scene_object_type,
         semantic_size_class=_semantic_size_class(heuristic_prior),
         benchmark_relevance=relevance,
         affordances=[
@@ -525,6 +583,15 @@ def mock_vlm_prediction(
         ),
         interaction_surface_map=_interaction_surface_map(affordance_labels, front_face),
         access_type={"primary": _access_type(affordance_labels), "secondary": None},
+        mobility_class=mobility_class,
+        accessibility_policy=accessibility_policy,
+        access_sides=access_sides,
+        attachment_dependencies=_attachment_dependencies(
+            category, scene_object_type, hints
+        ),
+        orientation_dependencies=_orientation_dependencies(
+            category, affordance_labels, hints
+        ),
         interaction_height_m=_interaction_height(heuristic_prior),
         related_categories=list(hints.get("target_relation") or []),
         ambiguity={
@@ -618,6 +685,23 @@ def merge_asset_annotation(
     if scene_object_type != "unknown":
         source_parts.append("scene_object_type")
 
+    # External HSSD sidecars can pre-populate these keys in metadata. Treat those
+    # as stronger than the VLM/mock fallback so the critic can be upgraded before
+    # the final annotation pipeline lands.
+    mobility_class = _resolve_mobility_class(hints, vlm_prediction)
+    accessibility_policy = _resolve_accessibility_policy(hints, vlm_prediction)
+    access_sides = _resolve_access_sides(hints, vlm_prediction)
+    attachment_dependencies = _resolve_dependency_list(
+        hints, vlm_prediction, "attachment_dependencies"
+    )
+    orientation_dependencies = _resolve_dependency_list(
+        hints, vlm_prediction, "orientation_dependencies"
+    )
+    if mobility_class != "unknown":
+        source_parts.append("mobility_policy")
+    if attachment_dependencies or orientation_dependencies:
+        source_parts.append("dependency_policy")
+
     return EffectiveAnnotation(
         category_norm=category_norm,
         placement_class=vlm_prediction.placement_class
@@ -628,6 +712,11 @@ def merge_asset_annotation(
         front_face=front_face,
         interaction_surface_map=vlm_prediction.interaction_surface_map,
         access_type=vlm_prediction.access_type,
+        mobility_class=mobility_class,
+        accessibility_policy=accessibility_policy,
+        access_sides=access_sides,
+        attachment_dependencies=attachment_dependencies,
+        orientation_dependencies=orientation_dependencies,
         interaction_height_m=vlm_prediction.interaction_height_m,
         related_categories=vlm_prediction.related_categories,
         source="+".join(_unique(source_parts)),
@@ -661,6 +750,13 @@ def write_back_effective_hints(obj: SceneObject, annotation: AssetAnnotation) ->
     hints["scene_object_type"] = effective.scene_object_type
     hints["placement_class"] = effective.placement_class
     hints["benchmark_relevance"] = effective.benchmark_relevance
+    hints["mobility_class"] = effective.mobility_class
+    hints["accessibility_policy"] = effective.accessibility_policy
+    hints["access_sides"] = list(effective.access_sides)
+    if effective.attachment_dependencies:
+        hints["attachment_dependencies"] = list(effective.attachment_dependencies)
+    if effective.orientation_dependencies:
+        hints["orientation_dependencies"] = list(effective.orientation_dependencies)
     if effective.interaction_surface_map:
         hints["interaction_surface_map"] = effective.interaction_surface_map
     if effective.access_type:
@@ -829,6 +925,35 @@ def _build_annotation_prompt(
             "bottom": [],
         },
         "access_type": {"primary": "string or null", "secondary": "string or null"},
+        "mobility_class": "fixed | movable | semi_movable | mounted | unknown",
+        "accessibility_policy": "required | optional | ignored",
+        "access_sides": ["front|back|left|right|top|bottom"],
+        "attachment_dependencies": [
+            {
+                "relation_type": "back_against_wall | side_or_back_against_wall | object_on_floor | mounted_to_wall | mounted_to_ceiling",
+                "target_kind": "architecture",
+                "target_category": "wall|floor|ceiling",
+                "subject_face": "front|back|left|right|top|bottom|null",
+                "target_face": "front|back|left|right|top|bottom|any|null",
+                "max_angle_deg": "number|null",
+                "max_distance_m": "number|null",
+                "confidence": "0..1",
+                "reason": "string",
+            }
+        ],
+        "orientation_dependencies": [
+            {
+                "relation_type": "seat_faces_surface | furniture_faces_furniture",
+                "target_kind": "object",
+                "target_category": "string or list",
+                "subject_face": "front|back|left|right|top|bottom",
+                "target_face": "front|back|left|right|top|bottom|any|null",
+                "max_angle_deg": "number|null",
+                "max_distance_m": "number|null",
+                "confidence": "0..1",
+                "reason": "string",
+            }
+        ],
         "interaction_height_m": {"min": "number|null", "max": "number|null"},
         "related_categories": ["string"],
         "style_tags": ["string"],
@@ -847,6 +972,11 @@ def _build_annotation_prompt(
             "category_keywords": hints.get("category_keywords") or [],
             "target_relation": hints.get("target_relation") or [],
             "metric_relevance": hints.get("metric_relevance") or {},
+            "mobility_class": hints.get("mobility_class"),
+            "accessibility_policy": hints.get("accessibility_policy"),
+            "access_sides": hints.get("access_sides") or [],
+            "attachment_dependencies": hints.get("attachment_dependencies") or [],
+            "orientation_dependencies": hints.get("orientation_dependencies") or [],
         },
         "geometry_prior": heuristic_prior.get("bbox_world") or {},
     }
@@ -868,6 +998,12 @@ def _build_annotation_prompt(
         "manipuland, furniture, or unknown. For scene_object_type, classify the "
         "object's intended installation/function class, not merely the current "
         "transform. If uncertain, keep low confidence and mark ambiguity notes.\n"
+        "For mobility/accessibility, movable seating such as chairs or stools may "
+        "be optional rather than a hard spatial-accessibility requirement. For "
+        "functional dependencies, follow SceneEval-style face_to orientation: "
+        "chairs face desks/tables, and large storage/sleeping furniture often has "
+        "a back-against-wall architecture relation. Ignore small-object orientation "
+        "dependencies unless they are explicitly visible and important.\n"
         "Return only strict JSON matching this shape:\n"
         f"{json.dumps(schema_hint, ensure_ascii=False)}"
     )
@@ -1023,6 +1159,158 @@ def _access_type(affordances: list[str]) -> str | None:
     return None
 
 
+def _mobility_class(
+    category: str,
+    scene_object_type: SceneObjectType,
+    affordances: list[str],
+    hints: dict[str, Any],
+) -> MobilityClass:
+    explicit = _normalize_mobility_class(hints.get("mobility_class"))
+    if explicit != "unknown":
+        return explicit
+    if scene_object_type in {"wall_mounted", "ceiling_mounted"}:
+        return "mounted"
+    if category in WALL_MOUNTED_CATEGORIES or category in CEILING_MOUNTED_CATEGORIES:
+        return "mounted"
+    if category in MOVABLE_SEATING_CATEGORIES:
+        return "movable"
+    if category in SEMI_MOVABLE_FURNITURE_CATEGORIES:
+        return "semi_movable"
+    if category in WALL_BACKED_CATEGORIES or "openable" in affordances:
+        return "fixed"
+    return "unknown"
+
+
+def _accessibility_policy(
+    category: str,
+    mobility_class: MobilityClass,
+    affordances: list[str],
+    scene_object_type: SceneObjectType,
+    hints: dict[str, Any],
+) -> AccessibilityPolicy:
+    explicit = _normalize_accessibility_policy(hints.get("accessibility_policy"))
+    if explicit is not None:
+        return explicit
+    if scene_object_type == "ceiling_mounted" or mobility_class == "mounted":
+        return "ignored"
+    if category in SMALL_LOOSE_CATEGORIES or affordances == ["graspable"]:
+        return "ignored"
+    if mobility_class == "movable" and "sittable" in affordances:
+        return "optional"
+    if {"openable", "sleepable"} & set(affordances):
+        return "required"
+    if category in WALL_BACKED_CATEGORIES:
+        return "required"
+    return "required" if affordances else "ignored"
+
+
+def _access_sides(
+    category: str,
+    affordances: list[str],
+    front_face: str | None,
+    hints: dict[str, Any],
+) -> list[str]:
+    explicit = _normalize_face_list(hints.get("access_sides"))
+    if explicit:
+        return explicit
+    face = _surface_map_face(front_face)
+    sides: list[str] = []
+    if "openable" in affordances or "sittable" in affordances:
+        sides.append(face)
+    if "supportable" in affordances:
+        sides.append("top")
+    if "sleepable" in affordances:
+        sides.extend(["left", "right", face])
+    if category in WALL_BACKED_CATEGORIES and "front" not in sides:
+        sides.append("front")
+    return _unique(sides)
+
+
+def _attachment_dependencies(
+    category: str,
+    scene_object_type: SceneObjectType,
+    hints: dict[str, Any],
+) -> list[dict[str, Any]]:
+    explicit = _as_dependency_list(hints.get("attachment_dependencies"))
+    if explicit:
+        return explicit
+    dependencies: list[dict[str, Any]] = []
+    if scene_object_type == "furniture":
+        dependencies.append(
+            {
+                "relation_type": "object_on_floor",
+                "target_kind": "architecture",
+                "target_category": "floor",
+                "max_distance_m": 0.12,
+                "confidence": 0.74,
+                "reason": "large floor furniture should be supported by the floor",
+            }
+        )
+    if scene_object_type == "wall_mounted" or category in WALL_MOUNTED_CATEGORIES:
+        return [
+            {
+                "relation_type": "mounted_to_wall",
+                "target_kind": "architecture",
+                "target_category": "wall",
+                "subject_face": "back",
+                "max_angle_deg": 45.0,
+                "max_distance_m": 0.18,
+                "confidence": 0.72,
+                "reason": "wall-mounted assets should remain attached to a wall plane",
+            }
+        ]
+    if scene_object_type == "ceiling_mounted" or category in CEILING_MOUNTED_CATEGORIES:
+        return [
+            {
+                "relation_type": "mounted_to_ceiling",
+                "target_kind": "architecture",
+                "target_category": "ceiling",
+                "max_distance_m": 0.18,
+                "confidence": 0.72,
+                "reason": "ceiling-mounted assets should remain attached to the ceiling",
+            }
+        ]
+    if category in WALL_BACKED_CATEGORIES:
+        dependencies.append(
+            {
+                "relation_type": "back_against_wall",
+                "target_kind": "architecture",
+                "target_category": "wall",
+                "subject_face": "back",
+                "max_angle_deg": 45.0,
+                "max_distance_m": 0.25,
+                "confidence": 0.68,
+                "reason": "large storage/sleeping furniture is normally backed by a wall",
+            }
+        )
+    return dependencies
+
+
+def _orientation_dependencies(
+    category: str, affordances: list[str], hints: dict[str, Any]
+) -> list[dict[str, Any]]:
+    explicit = _as_dependency_list(hints.get("orientation_dependencies"))
+    if explicit:
+        return explicit
+    if category in MOVABLE_SEATING_CATEGORIES or (
+        "sittable" in affordances and category not in {"sofa", "loveseat", "bench"}
+    ):
+        return [
+            {
+                "relation_type": "seat_faces_surface",
+                "target_kind": "object",
+                "target_category": ["desk", "table", "dining_table"],
+                "subject_face": "front",
+                "target_face": "any",
+                "max_angle_deg": 90.0,
+                "max_distance_m": 1.5,
+                "confidence": 0.70,
+                "reason": "SceneEval-style face_to relation for chair/table pairs",
+            }
+        ]
+    return []
+
+
 def _interaction_height(heuristic_prior: dict[str, Any]) -> dict[str, float | None]:
     bbox = heuristic_prior.get("bbox_world") or {}
     bmin = bbox.get("min") or []
@@ -1061,6 +1349,74 @@ def _resolve_scene_object_type(
 def _normalize_scene_object_type(value: Any) -> SceneObjectType:
     text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return text if text in SCENE_OBJECT_TYPES else "unknown"  # type: ignore[return-value]
+
+
+def _resolve_mobility_class(
+    hints: dict[str, Any], vlm_prediction: AssetVlmPrediction
+) -> MobilityClass:
+    existing = _normalize_mobility_class(hints.get("mobility_class"))
+    if existing != "unknown":
+        return existing
+    return _normalize_mobility_class(vlm_prediction.mobility_class)
+
+
+def _normalize_mobility_class(value: Any) -> MobilityClass:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in MOBILITY_CLASSES else "unknown"  # type: ignore[return-value]
+
+
+def _resolve_accessibility_policy(
+    hints: dict[str, Any], vlm_prediction: AssetVlmPrediction
+) -> AccessibilityPolicy:
+    existing = _normalize_accessibility_policy(hints.get("accessibility_policy"))
+    if existing is not None:
+        return existing
+    return (
+        _normalize_accessibility_policy(vlm_prediction.accessibility_policy)
+        or "required"
+    )
+
+
+def _normalize_accessibility_policy(value: Any) -> AccessibilityPolicy | None:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in ACCESSIBILITY_POLICIES else None  # type: ignore[return-value]
+
+
+def _resolve_access_sides(
+    hints: dict[str, Any], vlm_prediction: AssetVlmPrediction
+) -> list[str]:
+    existing = _normalize_face_list(hints.get("access_sides"))
+    if existing:
+        return existing
+    return _normalize_face_list(vlm_prediction.access_sides)
+
+
+def _normalize_face_list(raw: Any) -> list[str]:
+    values = raw if isinstance(raw, list) else [raw]
+    faces: list[str] = []
+    for value in values:
+        text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if text in ACCESS_FACE_NAMES and text not in faces:
+            faces.append(text)
+    return faces
+
+
+def _resolve_dependency_list(
+    hints: dict[str, Any], vlm_prediction: AssetVlmPrediction, key: str
+) -> list[dict[str, Any]]:
+    existing = _as_dependency_list(hints.get(key))
+    if existing:
+        return existing
+    return _as_dependency_list(getattr(vlm_prediction, key, []))
+
+
+def _as_dependency_list(raw: Any) -> list[dict[str, Any]]:
+    values = raw if isinstance(raw, list) else [raw]
+    dependencies: list[dict[str, Any]] = []
+    for item in values:
+        if isinstance(item, dict):
+            dependencies.append(dict(item))
+    return dependencies
 
 
 def _model_name(config: dict[str, Any], raw_config: Any | None) -> str:

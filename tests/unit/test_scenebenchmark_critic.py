@@ -311,6 +311,8 @@ def test_room_scene_adapter_uses_scenebenchmark_demo_category_aliases(
     assert beanbag_hints["front_hint"] == "front"
     assert beanbag_hints["target_relation"] == ["desk", "table"]
     assert beanbag_hints["metric_relevance"]["spatial_accessibility"] == 0.8
+    assert beanbag_hints["mobility_class"] == "movable"
+    assert beanbag_hints["accessibility_policy"] == "optional"
 
     fridge_hints = objects["fridge_0"]["functional_hints"]
     assert objects["fridge_0"]["category_norm"] == "refrigerator"
@@ -334,7 +336,55 @@ def test_room_scene_adapter_uses_scenebenchmark_demo_category_aliases(
         for check in case_pack["checks"]
         if check["metric"] == "spatial_accessibility"
     }
-    assert {"beanbag_0", "fridge_0", "bedroom_nightstand_1_f0_c"} <= checked_subjects
+    assert "beanbag_0" not in checked_subjects
+    assert {"fridge_0", "bedroom_nightstand_1_f0_c"} <= checked_subjects
+
+
+def test_room_scene_adapter_preserves_external_dependency_annotations(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    chair = _box_object(
+        "chair_0",
+        "desk chair",
+        ObjectType.FURNITURE,
+        center=(0.0, 0.0, 0.45),
+        size=(0.6, 0.6, 0.9),
+    )
+    chair.metadata["functional_hints"] = {
+        "mobility_class": "movable",
+        "accessibility_policy": "optional",
+        "access_sides": ["front"],
+        "orientation_dependencies": [
+            {
+                "relation_type": "seat_faces_surface",
+                "target_kind": "object",
+                "target_category": ["desk", "table"],
+            }
+        ],
+    }
+    scene.add_object(chair)
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="final_scene",
+        metrics=["spatial_accessibility", "functional_dependency"],
+    )
+    chair_record = next(
+        obj for obj in case_pack["scene_geometry"]["objects"] if obj["id"] == "chair_0"
+    )
+
+    hints = chair_record["functional_hints"]
+    assert hints["mobility_class"] == "movable"
+    assert hints["accessibility_policy"] == "optional"
+    assert hints["access_sides"] == ["front"]
+    assert hints["orientation_dependencies"][0]["relation_type"] == "seat_faces_surface"
+    assert all(
+        check["subject_id"] != "chair_0"
+        for check in case_pack["checks"]
+        if check["metric"] == "spatial_accessibility"
+    )
 
 
 def test_room_scene_adapter_exports_scenebenchmark_geometry_fields(
@@ -957,6 +1007,32 @@ def test_spatial_accessibility_checks_keep_nearby_blocker_targets() -> None:
     assert sofa_check["target_ids"] == ["coffee_table_1"]
 
 
+def test_spatial_accessibility_policy_skips_movable_seating() -> None:
+    chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
+    chair["functional_hints"] = {
+        "functional_categories": ["sittable"],
+        "mobility_class": "movable",
+        "accessibility_policy": "optional",
+    }
+    refrigerator = _benchmark_obj(
+        "fridge_1", "refrigerator", (3.0, 2.0, 0.9), (0.7, 0.7, 1.8)
+    )
+    refrigerator["functional_hints"] = {
+        "functional_categories": ["containable", "openable"],
+        "mobility_class": "fixed",
+        "accessibility_policy": "required",
+    }
+
+    checks = build_checks(
+        _benchmark_case_pack([chair, refrigerator]),
+        metrics=["spatial_accessibility"],
+    )
+    checked_subjects = {check["subject_id"] for check in checks}
+
+    assert "chair_1" not in checked_subjects
+    assert "fridge_1" in checked_subjects
+
+
 def test_spatial_accessibility_skips_ceiling_mounted_lamps() -> None:
     table = _benchmark_obj("table_1", "table", (2.0, 2.0, 0.4), (1.0, 0.8, 0.8))
     table["functional_hints"]["functional_categories"] = ["supportable"]
@@ -1072,13 +1148,21 @@ def test_asset_annotation_mock_writes_effective_hints_and_files(
     assert table_hints["classification_source"] == "asset_annotation"
     assert table_hints["asset_annotation_source"] == ("scenesmith_vlm_asset_annotator")
     assert "supportable" in table_hints["functional_categories"]
+    assert table_hints["mobility_class"] == "semi_movable"
+    assert table_hints["accessibility_policy"] == "required"
+    assert "top" in table_hints["access_sides"]
+    assert table_hints["attachment_dependencies"][0]["relation_type"] == (
+        "object_on_floor"
+    )
     table_annotation = yaml.safe_load(
         (stage_dir / "asset_annotations" / "table_0.yaml").read_text(encoding="utf-8")
     )
     assert table_annotation["object_function_profile"]["can_support_top"] is True
+    assert table_annotation["effective_annotation"]["mobility_class"] == "semi_movable"
     saved_state = json.loads((stage_dir / "scene_state.json").read_text())
     saved_hints = saved_state["objects"]["table_0"]["metadata"]["functional_hints"]
     assert saved_hints["classification_source"] == "asset_annotation"
+    assert saved_hints["accessibility_policy"] == "required"
 
 
 def test_asset_annotation_reuses_saved_object_function_profile(
@@ -1660,6 +1744,8 @@ def test_vendored_scenebenchmark_rule_bodies_match_upstream_when_available() -> 
         pytest.skip("SceneBenchmark source checkout is not available")
 
     vendor_root = Path("scenesmith/scenebenchmark_critic/vendor/scenebenchmark")
+    # relations.py carries SceneSmith-only asset dependency evaluators, so it is
+    # covered by local behavioral tests instead of upstream AST parity.
     parity_files = {
         "critic/accessibility.py",
         "critic/config.py",
@@ -1674,7 +1760,6 @@ def test_vendored_scenebenchmark_rule_bodies_match_upstream_when_available() -> 
         "metrics/functional_dependency/plugin.py",
         "metrics/functional_dependency/profiles.py",
         "metrics/functional_dependency/proposer.py",
-        "metrics/functional_dependency/relations.py",
         "metrics/functional_dependency/results.py",
         "metrics/functional_dependency/semantics.py",
         "metrics/functional_dependency/support.py",
@@ -2417,6 +2502,120 @@ def test_rule_functional_dependency_fails_when_chair_back_faces_desk() -> None:
 
     result = next(item for item in results if item["check_id"] == "fd_back_facing")
     assert result["label"] == "fail"
+
+
+def test_dependency_annotation_checks_generate_orientation_and_wall_relations() -> None:
+    chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
+    chair["functional_hints"].update(
+        {
+            "functional_categories": ["sittable"],
+            "orientation_dependencies": [
+                {
+                    "relation_type": "seat_faces_surface",
+                    "target_kind": "object",
+                    "target_category": ["desk", "table"],
+                    "max_distance_m": 1.5,
+                }
+            ],
+        }
+    )
+    desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
+    bed = _benchmark_obj("bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7))
+    bed["functional_hints"].update(
+        {
+            "functional_categories": ["sleepable"],
+            "attachment_dependencies": [
+                {
+                    "relation_type": "back_against_wall",
+                    "target_kind": "architecture",
+                    "target_category": "wall",
+                    "subject_face": "back",
+                    "max_distance_m": 0.25,
+                }
+            ],
+        }
+    )
+    wall = _benchmark_obj("wall_n", "wall", (2.5, 4.95, 1.5), (5.0, 0.1, 3.0))
+
+    checks = build_checks(
+        _benchmark_case_pack([chair, desk, bed, wall]),
+        metrics=["functional_dependency"],
+    )
+
+    annotation_checks = {
+        check["relation_type"]: check
+        for check in checks
+        if str(check.get("check_source", "")).startswith("asset_")
+    }
+    assert annotation_checks["seat_faces_surface"]["target_ids"] == ["desk_1"]
+    assert annotation_checks["back_against_wall"]["target_ids"] == ["wall_n"]
+
+
+def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> None:
+    desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
+    check = {
+        "check_id": "fd_seat_faces_surface",
+        "metric": "functional_dependency",
+        "subject_id": "chair_1",
+        "target_ids": ["desk_1"],
+        "relation_type": "seat_faces_surface",
+    }
+
+    pass_chair = _benchmark_obj(
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=0.0
+    )
+    fail_chair = _benchmark_obj(
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=180.0
+    )
+
+    pass_result = _run_direct_case_pack(
+        _benchmark_case_pack([pass_chair, desk], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    fail_result = _run_direct_case_pack(
+        _benchmark_case_pack([fail_chair, desk], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert pass_result["relation_type"] == "seat_faces_surface"
+    assert pass_result["label"] == "pass"
+    assert fail_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None:
+    wall = _benchmark_obj("wall_n", "wall", (2.5, 4.95, 1.5), (5.0, 0.1, 3.0))
+    check = {
+        "check_id": "fd_back_against_wall",
+        "metric": "functional_dependency",
+        "subject_id": "bed_1",
+        "target_ids": ["wall_n"],
+        "relation_type": "back_against_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 45.0,
+                "max_distance_m": 0.25,
+            }
+        },
+    }
+    pass_bed = _benchmark_obj(
+        "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=-90.0
+    )
+    fail_bed = _benchmark_obj(
+        "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=90.0
+    )
+
+    pass_result = _run_direct_case_pack(
+        _benchmark_case_pack([pass_bed, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    fail_result = _run_direct_case_pack(
+        _benchmark_case_pack([fail_bed, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert pass_result["label"] == "pass"
+    assert fail_result["label"] == "fail"
 
 
 def test_rule_functional_dependency_front_hint_rotates_seating_orientation() -> None:
