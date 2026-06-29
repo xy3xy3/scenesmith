@@ -54,6 +54,7 @@ SKIP_WALL_MOUNTED="${SKIP_WALL_MOUNTED:-false}"
 SKIP_CEILING_MOUNTED="${SKIP_CEILING_MOUNTED:-false}"
 BRANCH_FROM_SHARED_BASE="${BRANCH_FROM_SHARED_BASE:-false}"
 SHARED_BASE_STOP_STAGE="${SHARED_BASE_STOP_STAGE:-floor_plan}"
+SHARED_BASE_ROOT="${SHARED_BASE_ROOT:-}"
 CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-true}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
 CRITIC_REPORT_STAGE_LABEL=""
@@ -160,6 +161,11 @@ if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
         echo "错误：无法从 SHARED_BASE_STOP_STAGE=$SHARED_BASE_STOP_STAGE 推导分叉起点"
         exit 1
     fi
+
+    if [ -n "$SHARED_BASE_ROOT" ] && [ ! -d "$SHARED_BASE_ROOT" ]; then
+        echo "错误：SHARED_BASE_ROOT 不存在或不是目录: $SHARED_BASE_ROOT"
+        exit 1
+    fi
 fi
 
 if [ -z "$CRITIC_ROOM_STAGE_HOOKS" ]; then
@@ -187,6 +193,7 @@ echo "SKIP_WALL_MOUNTED: $SKIP_WALL_MOUNTED"
 echo "SKIP_CEILING_MOUNTED: $SKIP_CEILING_MOUNTED"
 echo "BRANCH_FROM_SHARED_BASE: $BRANCH_FROM_SHARED_BASE"
 echo "SHARED_BASE_STOP_STAGE: $SHARED_BASE_STOP_STAGE"
+echo "SHARED_BASE_ROOT: ${SHARED_BASE_ROOT:-<auto-generate under OUTPUT_ROOT>}"
 echo "BRANCH_START_STAGE: ${BRANCH_START_STAGE:-<none>}"
 echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
 echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
@@ -273,7 +280,17 @@ run_batch() {
 
     if [ "$run_kind" != "shared_base" ] && [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
         start_stage_override="$BRANCH_START_STAGE"
-        resume_from_path="$OUTPUT_ROOT/shared_base/$(printf "batch_%03d" "$batch_index")"
+        if [ -n "$SHARED_BASE_ROOT" ]; then
+            resume_from_path="$SHARED_BASE_ROOT/$(printf "batch_%03d" "$batch_index")"
+        else
+            resume_from_path="$OUTPUT_ROOT/shared_base/$(printf "batch_%03d" "$batch_index")"
+        fi
+
+        if [ ! -d "$resume_from_path" ]; then
+            echo "错误：未找到可复用的 shared_base 批次目录: $resume_from_path"
+            echo "请确认 SHARED_BASE_ROOT、SCENE_BATCH_SIZE、MAX_CASES 与 shared_base 产物一致。"
+            exit 1
+        fi
     fi
 
     local batch_label
@@ -386,9 +403,15 @@ done
 echo
 
 if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
-    echo "========== 第零部分：生成 shared_base =========="
-    echo
-    run_mode "shared_base"
+    if [ -n "$SHARED_BASE_ROOT" ]; then
+        echo "========== 第零部分：复用已有 shared_base =========="
+        echo "shared_base 来源: $SHARED_BASE_ROOT"
+        echo
+    else
+        echo "========== 第零部分：生成 shared_base =========="
+        echo
+        run_mode "shared_base"
+    fi
 fi
 
 if [ "$MODE" = "both" ] || [ "$MODE" = "off" ]; then
