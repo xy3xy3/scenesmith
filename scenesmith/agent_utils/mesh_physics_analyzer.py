@@ -255,7 +255,27 @@ def analyze_mesh_orientation_and_material(
     ]
 
     # Add images to user message.
-    for img_base64 in encoded_images:
+    side_axis_labels = ["+X", "+Y", "-X", "-Y"]
+    for image_index, img_base64 in enumerate(encoded_images):
+        # 2026-06-30: local VLMs can misread tiny render labels or use 1-based
+        # image numbering. Put an explicit text label immediately before each
+        # image so front_view_image_index stays tied to the intended 0-based
+        # side-view order.
+        if prompt_type == "hssd" and not include_vertical_views:
+            axis_label = (
+                side_axis_labels[image_index]
+                if image_index < len(side_axis_labels)
+                else "unknown"
+            )
+            user_content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"IMAGE_INDEX={image_index} "
+                        f"(0-based side view, front axis would be {axis_label})"
+                    ),
+                }
+            )
         user_content.append(
             {
                 "type": "image_url",
