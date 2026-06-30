@@ -17,6 +17,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 #   off : 只跑关闭 critic
 #   on  : 只跑开启 critic
 MODE="${1:-both}"
+REQUESTED_MODE="$MODE"
 
 case "$MODE" in
     both|off|on)
@@ -180,11 +181,48 @@ fi
 # shellcheck disable=SC1091
 source "$PROJECT_ROOT/.venv/bin/activate"
 
+echo "检查 bpy 安装..."
+python - <<'PY'
+from pathlib import Path
+import importlib.metadata as metadata
+import sys
+
+try:
+    dist = metadata.distribution("bpy")
+except metadata.PackageNotFoundError:
+    print("错误：当前虚拟环境未安装 bpy。请在 .venv 中重新安装项目依赖。", file=sys.stderr)
+    raise SystemExit(1)
+
+required = [
+    "bpy/4.5/datafiles/colormanagement/config.ocio",
+    "bpy/4.5/datafiles/fonts/Inter.woff2",
+    "bpy/4.5/datafiles/fonts/DejaVuSansMono.woff2",
+    "bpy/4.5/scripts/modules/bpy_types.py",
+]
+missing = [path for path in required if not Path(dist.locate_file(path)).exists()]
+if missing:
+    print("错误：bpy wheel 数据文件不完整，缺失：", file=sys.stderr)
+    for path in missing:
+        print(f"  - {path}", file=sys.stderr)
+    print("建议修复：source .venv/bin/activate && uv pip install --reinstall bpy==4.5.4", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    import bpy  # noqa: F401
+except Exception as exc:
+    print(f"错误：bpy 导入失败：{exc}", file=sys.stderr)
+    print("建议修复：source .venv/bin/activate && uv pip install --reinstall bpy==4.5.4", file=sys.stderr)
+    raise SystemExit(1)
+PY
+echo "bpy 安装正常。"
+echo
+
 echo "=========================================="
 echo "单房间 critic 对照批跑"
 echo "项目目录: $PROJECT_ROOT"
 echo "输出根目录: $OUTPUT_ROOT"
-echo "运行模式: $MODE"
+echo "请求运行模式: $REQUESTED_MODE"
+echo "实际运行模式: $MODE"
 echo "模型名: $MODEL_NAME"
 echo "MAX_CASES: $MAX_CASES (0 表示不限制)"
 echo "SCENE_BATCH_SIZE: $SCENE_BATCH_SIZE"
@@ -431,11 +469,16 @@ echo "全部批跑完成。"
 echo "输出根目录: $OUTPUT_ROOT"
 echo
 echo "建议重点对比："
-echo "1. critic_off 与 critic_on 下，同一 case 的 ${CRITIC_REPORT_STAGE_LABEL} 场景差异。"
-echo "2. 先看各批次目录里的 batch_cases.csv，确认 scene_XXX 对应哪个 case_id。"
-echo "3. 如果启用了 shared_base，先确认 shared_base / critic_off / critic_on 的 batch_XXX 一一对应。"
-echo "4. critic_on 下各房间的 ${CRITIC_REPORT_STAGE_LABEL} 报告。"
-echo "5. 重点查看 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
+if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
+    echo "1. shared_base 与 critic_on 下，同一 case 的 ${CRITIC_REPORT_STAGE_LABEL} 场景差异。"
+    echo "2. 先看各批次目录里的 batch_cases.csv，确认 scene_XXX 对应哪个 case_id。"
+    echo "3. 确认 shared_base / critic_on 的 batch_XXX 一一对应。"
+    echo "4. 重点查看 critic_on 下的 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
+else
+    echo "1. critic_off 与 critic_on 下，同一 case 的 ${CRITIC_REPORT_STAGE_LABEL} 场景差异。"
+    echo "2. 先看各批次目录里的 batch_cases.csv，确认 scene_XXX 对应哪个 case_id。"
+    echo "3. 重点查看 scenebenchmark_critic.md 和 scenebenchmark_critic.json。"
+fi
 echo
 echo "可用命令示例："
 echo "find \"$OUTPUT_ROOT\" -name 'scenebenchmark_critic.md' | sort"
