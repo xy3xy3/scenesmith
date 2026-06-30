@@ -30,6 +30,7 @@ LABEL_TO_SCORE = {"pass": 1.0, "degraded": 0.5, "fail": 0.0}
 @dataclass(frozen=True)
 class _RuleConfig:
     run: "_RuleRunConfig"
+    provider: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -253,11 +254,14 @@ def _normalize_result(result: dict[str, Any], check: dict[str, Any]) -> dict[str
 
 def _to_rule_config(config: CriticConfig) -> _RuleConfig:
     extra = config.extra or {}
+    asset_annotation = config.asset_annotation or {}
 
     def _get(name: str, default: Any) -> Any:
         return extra.get(name, default)
 
+    model = asset_annotation.get("model")
     return _RuleConfig(
+        provider={"model": model} if model else None,
         run=_RuleRunConfig(
             metrics=list(config.metrics),
             accessibility_grid_resolution_m=float(
@@ -281,7 +285,7 @@ def _to_rule_config(config: CriticConfig) -> _RuleConfig:
                 _get("fd_relation_proposer_mode", "template")
             ),
             max_fd_relation_proposals=int(_get("max_fd_relation_proposals", 8)),
-        )
+        ),
     )
 
 

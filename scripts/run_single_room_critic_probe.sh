@@ -58,6 +58,8 @@ SHARED_BASE_STOP_STAGE="${SHARED_BASE_STOP_STAGE:-floor_plan}"
 SHARED_BASE_ROOT="${SHARED_BASE_ROOT:-}"
 CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-true}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
+CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE:-vlm}"
+CRITIC_MAX_FD_RELATION_PROPOSALS="${CRITIC_MAX_FD_RELATION_PROPOSALS:-8}"
 CRITIC_REPORT_STAGE_LABEL=""
 BRANCH_START_STAGE=""
 
@@ -126,6 +128,28 @@ fi
 
 if ! CRITIC_ASSET_ANNOTATION="$(normalize_bool "$CRITIC_ASSET_ANNOTATION")"; then
     echo "错误：CRITIC_ASSET_ANNOTATION 必须是 true/false"
+    exit 1
+fi
+
+case "${CRITIC_FD_RELATION_PROPOSER_MODE,,}" in
+    template|vlm|hybrid|auto)
+        CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE,,}"
+        ;;
+    *)
+        echo "错误：CRITIC_FD_RELATION_PROPOSER_MODE 必须是 template / vlm / hybrid / auto"
+        exit 1
+        ;;
+esac
+
+case "$CRITIC_MAX_FD_RELATION_PROPOSALS" in
+    ''|*[!0-9]*)
+        echo "错误：CRITIC_MAX_FD_RELATION_PROPOSALS 必须是正整数，当前为 '$CRITIC_MAX_FD_RELATION_PROPOSALS'"
+        exit 1
+        ;;
+esac
+
+if [ "$CRITIC_MAX_FD_RELATION_PROPOSALS" -lt 1 ]; then
+    echo "错误：CRITIC_MAX_FD_RELATION_PROPOSALS 至少为 1"
     exit 1
 fi
 
@@ -235,6 +259,8 @@ echo "SHARED_BASE_ROOT: ${SHARED_BASE_ROOT:-<auto-generate under OUTPUT_ROOT>}"
 echo "BRANCH_START_STAGE: ${BRANCH_START_STAGE:-<none>}"
 echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
 echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
+echo "CRITIC_FD_RELATION_PROPOSER_MODE: $CRITIC_FD_RELATION_PROPOSER_MODE"
+echo "CRITIC_MAX_FD_RELATION_PROPOSALS: $CRITIC_MAX_FD_RELATION_PROPOSALS"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
 echo
@@ -278,7 +304,8 @@ COMMON_ARGS=(
     "ceiling_agent.openai.model=${MODEL_NAME}"
     "manipuland_agent.openai.model=${MODEL_NAME}"
     "openai.use_responses=false"
-    "experiment.scenebenchmark_critic.fd_relation_proposer_mode=template"
+    "experiment.scenebenchmark_critic.fd_relation_proposer_mode=${CRITIC_FD_RELATION_PROPOSER_MODE}"
+    "experiment.scenebenchmark_critic.max_fd_relation_proposals=${CRITIC_MAX_FD_RELATION_PROPOSALS}"
 )
 
 csv_quote() {

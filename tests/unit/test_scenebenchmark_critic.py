@@ -1831,6 +1831,74 @@ def test_vendored_scenebenchmark_modules_import_cleanly() -> None:
         importlib.import_module(module_name)
 
 
+def test_vendored_structured_agent_uses_project_vlm_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic import (
+        agent as agent_module,
+    )
+    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.agent import (
+        build_structured_agent,
+    )
+    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import (
+        FunctionalDependencyProposalSet,
+    )
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeVLMService:
+        def __init__(self, cfg: Any) -> None:
+            self.cfg = cfg
+
+        def create_completion(self, **kwargs: Any) -> str:
+            calls.append({"cfg": self.cfg, "kwargs": kwargs})
+            return json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "subject_id": "chair_1",
+                            "target_ids": ["desk_1"],
+                            "relation_type": "seating_to_work_surface",
+                            "expected_use": "sit at and use the work surface",
+                            "priority": 0.9,
+                            "reason": "unit test",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(agent_module, "VLMService", FakeVLMService)
+
+    cfg = OmegaConf.create({"provider": {"model": "local-model"}})
+    agent = build_structured_agent(
+        cfg,
+        output_type=FunctionalDependencyProposalSet,
+        system_prompt="system",
+        name="unit_test_agent",
+    )
+
+    result = agent.run_sync('{"subjects": [], "targets": []}')
+
+    assert result.output.proposals[0].subject_id == "chair_1"
+    assert calls[0]["cfg"] is cfg
+    assert calls[0]["kwargs"]["model"] == "local-model"
+    assert calls[0]["kwargs"]["messages"][0]["role"] == "system"
+    assert calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
+
+
+def test_rule_config_forwards_asset_annotation_model_to_vlm_proposer() -> None:
+    from scenesmith.scenebenchmark_critic.vendor.rules import _to_rule_config
+
+    rule_config = _to_rule_config(
+        CriticConfig(
+            enabled=True,
+            asset_annotation={"enabled": True, "backend": "vlm", "model": "qwen-local"},
+        )
+    )
+
+    assert rule_config.provider == {"model": "qwen-local"}
+
+
 def test_vendored_critic_wrappers_evaluate_rules_without_external_repo() -> None:
     from scenesmith.scenebenchmark_critic.vendor.rules import _to_rule_config
     from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic import (
