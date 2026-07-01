@@ -1469,9 +1469,9 @@ def test_hard_gate_records_blocked_metadata_without_rewriting_scene() -> None:
     chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     chair["functional_hints"]["functional_categories"] = ["sittable"]
     blockers = [
-        _benchmark_obj("front_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
-        _benchmark_obj("left_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
-        _benchmark_obj("right_block", "cabinet", (2.0, 1.15, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("front_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("left_block", "cabinet", (1.15, 2.0, 0.5), (0.8, 1.2, 1.0)),
+        _benchmark_obj("right_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
     ]
     case_pack = _benchmark_case_pack(
         [chair, *blockers],
@@ -2361,9 +2361,9 @@ def test_rule_spatial_accessibility_blocked_access_zone_fails() -> None:
     chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     chair["functional_hints"]["functional_categories"] = ["sittable"]
     blockers = [
-        _benchmark_obj("front_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
-        _benchmark_obj("left_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
-        _benchmark_obj("right_block", "cabinet", (2.0, 1.15, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("front_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("left_block", "cabinet", (1.15, 2.0, 0.5), (0.8, 1.2, 1.0)),
+        _benchmark_obj("right_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
     ]
     check = {
         "check_id": "sa_blocked",
@@ -2386,7 +2386,7 @@ def test_rule_spatial_accessibility_partially_blocked_zone_is_degraded() -> None
     cabinet = _benchmark_obj("cabinet_1", "cabinet", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     cabinet["functional_hints"]["functional_categories"] = ["openable"]
     blocker = _benchmark_obj(
-        "partial_block", "cabinet", (2.85, 2.35, 0.5), (0.8, 0.2, 1.0)
+        "partial_block", "cabinet", (1.45, 2.45, 0.5), (0.8, 0.2, 1.0)
     )
     check = {
         "check_id": "sa_partial",
