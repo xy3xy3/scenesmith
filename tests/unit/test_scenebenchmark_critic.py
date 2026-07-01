@@ -2667,7 +2667,7 @@ def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None
         },
     }
     pass_bed = _benchmark_obj(
-        "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=-90.0
+        "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=180.0
     )
     fail_bed = _benchmark_obj(
         "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=90.0
@@ -2684,6 +2684,84 @@ def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None
 
     assert pass_result["label"] == "pass"
     assert fail_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_sideboard_back_against_north_wall_passes() -> None:
+    wall = _benchmark_obj("north_wall", "wall", (0.0, 2.0, 1.5), (4.0, 0.1, 3.0))
+    check = {
+        "check_id": "fd_sideboard_back_against_wall",
+        "metric": "functional_dependency",
+        "subject_id": "sideboard_1",
+        "target_ids": ["north_wall"],
+        "relation_type": "back_against_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 15.0,
+                "max_distance_m": 0.05,
+            }
+        },
+    }
+    pass_sideboard = _benchmark_obj(
+        "sideboard_1",
+        "sideboard",
+        (1.6, 1.65, 0.35),
+        (1.2, 0.6, 0.7),
+        yaw=-90.0,
+    )
+    fail_sideboard = _benchmark_obj(
+        "sideboard_1",
+        "sideboard",
+        (1.6, 1.65, 0.35),
+        (1.2, 0.6, 0.7),
+        yaw=90.0,
+    )
+
+    pass_result = _run_direct_case_pack(
+        _benchmark_case_pack([pass_sideboard, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    fail_result = _run_direct_case_pack(
+        _benchmark_case_pack([fail_sideboard, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert pass_result["label"] == "pass"
+    assert fail_result["label"] == "fail"
+
+
+def test_adapter_front_vector_uses_y_axis_canonical_convention() -> None:
+    scene = _scene(Path("/tmp/scenesmith_front_vector_test"))
+    scene.objects.clear()
+    sideboard = _box_object(
+        "sideboard_0",
+        "sideboard cabinet",
+        ObjectType.FURNITURE,
+        center=(0.0, 0.0, 0.35),
+        size=(1.2, 0.6, 0.7),
+        yaw_deg=180.0,
+    )
+    sideboard.metadata["functional_hints"] = {
+        "functional_categories": ["openable", "supportable", "storage"],
+        "candidate_affordances": ["openable", "supportable", "storage"],
+        "front_hint": "front",
+    }
+    scene.add_object(sideboard)
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="debug",
+        metrics=["functional_dependency"],
+    )
+    exported = next(
+        obj for obj in case_pack["scene_geometry"]["objects"] if obj["id"] == "sideboard_0"
+    )
+    front_face = next(
+        face for face in exported["interaction_faces"] if face["name"] == "front"
+    )
+
+    assert front_face["normal_xy"][0] == pytest.approx(0.0, abs=1e-6)
+    assert front_face["normal_xy"][1] == pytest.approx(-1.0, abs=1e-6)
 
 
 def test_rule_functional_dependency_front_hint_rotates_seating_orientation() -> None:

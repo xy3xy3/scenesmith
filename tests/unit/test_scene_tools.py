@@ -439,6 +439,62 @@ class TestSnapToObject(unittest.TestCase):
         # Check that rotation was applied (exact angle depends on both operations).
         self.assertIsNotNone(result["rotation_angle_degrees"])
 
+    def test_orientation_away_uses_wall_normal_instead_of_corner_point(self):
+        """Contract: away+wall aligns furniture front to room via wall normal."""
+        obj_mesh = self._create_cube_mesh(size=1.0)
+
+        obj = SceneObject(
+            object_id=UniqueID("sideboard"),
+            object_type=ObjectType.FURNITURE,
+            name="Sideboard",
+            description="Dining Sideboard",
+            transform=RigidTransform(
+                rpy=RollPitchYaw(0.0, 0.0, math.radians(135.0)),
+                p=[1.6, 1.0, 0.5],
+            ),
+            geometry_path=obj_mesh,
+            bbox_min=np.array([-0.5, -0.5, -0.5]),
+            bbox_max=np.array([0.5, 0.5, 0.5]),
+        )
+
+        wall = SceneObject(
+            object_id=UniqueID("north_wall"),
+            object_type=ObjectType.WALL,
+            name="north_wall",
+            description="North Wall",
+            transform=RigidTransform(p=[0.0, 2.0, 1.5]),
+            geometry_path=None,
+            bbox_min=np.array([-2.0, -0.05, 0.0]),
+            bbox_max=np.array([2.0, 0.05, 3.0]),
+            immutable=True,
+        )
+
+        self.mock_scene.objects = {obj.object_id: obj, wall.object_id: wall}
+        self.mock_scene.get_object = lambda uid: self.mock_scene.objects.get(uid)
+        self.mock_scene.move_object = Mock(return_value=True)
+        self.mock_scene.room_geometry = Mock()
+        self.mock_scene.room_geometry.wall_normals = {
+            "north_wall": np.array([0.0, -1.0])
+        }
+
+        result_json = self.scene_tools._snap_to_object_impl(
+            object_id=str(obj.object_id),
+            target_id=str(wall.object_id),
+            orientation="away",
+        )
+        result = json.loads(result_json)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["rotation_applied"])
+        self.assertIsNotNone(result["rotation_angle_degrees"])
+        normalized_yaw = ((result["rotation_angle_degrees"] + 180.0) % 360.0) - 180.0
+        self.assertAlmostEqual(
+            abs(normalized_yaw),
+            180.0,
+            delta=5.0,
+            msg="North wall should make furniture front face south into room",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

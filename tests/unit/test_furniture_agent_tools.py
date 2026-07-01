@@ -1214,6 +1214,48 @@ class TestFacingCheck(BaseAgentToolsTest):
             msg="Optimal rotation for 'away' should be 180° from 'toward'",
         )
 
+    def test_facing_away_from_wall_uses_wall_normal(self):
+        """Test away-facing wall checks align front to room via wall normal."""
+        obj_a = self.create_scene_object_with_bbox(
+            name="sideboard",
+            position=[1.6, 1.0, 0.0],
+            yaw_degrees=180.0,
+            bbox_min=[-0.6, -0.3, -0.4],
+            bbox_max=[0.6, 0.3, 0.4],
+        )
+        obj_b = SceneObject(
+            object_id=UniqueID("north_wall"),
+            object_type=ObjectType.WALL,
+            name="north_wall",
+            description="North wall",
+            transform=RigidTransform(p=[0.0, 2.0, 1.5]),
+            bbox_min=np.array([-2.0, -0.05, 0.0]),
+            bbox_max=np.array([2.0, 0.05, 3.0]),
+            immutable=True,
+        )
+
+        self.mock_scene.objects = {obj_a.object_id: obj_a, obj_b.object_id: obj_b}
+        self.mock_scene.room_geometry = Mock()
+        self.mock_scene.room_geometry.wall_normals = {
+            "north_wall": np.array([0.0, -1.0])
+        }
+
+        result_str = self.scene_tools._check_facing_impl(
+            object_a_id=str(obj_a.object_id),
+            object_b_id=str(obj_b.object_id),
+            direction="away",
+        )
+        result = json.loads(result_str)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["is_facing"])
+        normalized_yaw = ((result["optimal_rotation_degrees"] + 180.0) % 360.0) - 180.0
+        self.assertAlmostEqual(
+            abs(normalized_yaw),
+            180.0,
+            delta=5.0,
+        )
+
     def test_facing_with_z_height_difference(self):
         """Test facing check works with chair at different Z-height than table.
 

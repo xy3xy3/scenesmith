@@ -686,7 +686,8 @@ def _normalize_xy(dx: float, dy: float) -> list[float]:
 def _front_vector_from_hint(
     yaw_rad: float, functional_hints: dict[str, Any]
 ) -> tuple[float, float]:
-    fx, fy = math.cos(yaw_rad), math.sin(yaw_rad)
+    # SceneSmith canonical convention uses +Y as front at yaw=0.
+    fx, fy = -math.sin(yaw_rad), math.cos(yaw_rad)
     front_hint = str(functional_hints.get("front_hint") or "").strip().lower()
     if front_hint == "back":
         return -fx, -fy

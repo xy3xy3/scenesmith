@@ -277,7 +277,8 @@ def yaw_rad(obj: dict[str, Any] | None) -> float:
 
 def front_vector(obj: dict[str, Any] | None) -> tuple[float, float]:
     yaw = yaw_rad(obj)
-    base = (math.cos(yaw), math.sin(yaw))
+    # SceneSmith canonical convention: yaw=0 means front points along +Y.
+    base = (-math.sin(yaw), math.cos(yaw))
     face = _horizontal_front_face(obj)
     return _face_dir_from_base(base, face)
 
