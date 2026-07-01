@@ -2619,6 +2619,56 @@ def test_dependency_annotation_checks_generate_orientation_and_wall_relations() 
     assert annotation_checks["back_against_wall"]["target_ids"] == ["wall_n"]
 
 
+def test_dependency_annotation_checks_skip_floor_attachment_for_surface_object() -> None:
+    table = _benchmark_obj(
+        "table_1", "dining_table", (2.0, 2.0, 0.35), (1.2, 0.8, 0.7)
+    )
+    table["functional_hints"]["functional_categories"] = ["supportable"]
+    table["support_regions"] = [
+        {
+            "region_id": "S_table",
+            "support_kind": "top_surface",
+            "height_world_z": 0.7,
+            "polygon_world_xy": [
+                [1.4, 1.6],
+                [2.6, 1.6],
+                [2.6, 2.4],
+                [1.4, 2.4],
+            ],
+            "clearance_above_m": 1.0,
+            "access_type": "top",
+        }
+    ]
+    vase = _benchmark_obj("vase_1", "vase", (2.0, 2.0, 0.8), (0.1, 0.1, 0.2))
+    vase["placement_info"] = {
+        "parent_surface_id": "S_table",
+        "placement_method": "surface_placement",
+    }
+    vase["functional_hints"].update(
+        {
+            "scene_object_type": "manipuland",
+            "placement_class": "surface_object",
+            "attachment_dependencies": [
+                {
+                    "relation_type": "object_on_floor",
+                    "target_kind": "architecture",
+                    "target_category": "floor",
+                }
+            ],
+        }
+    )
+    floor = _benchmark_obj("floor_1", "floor", (2.0, 2.0, -0.05), (5.0, 5.0, 0.1))
+
+    checks = build_checks(
+        _benchmark_case_pack([table, vase, floor]),
+        metrics=["functional_dependency"],
+    )
+
+    vase_checks = [check for check in checks if check["subject_id"] == "vase_1"]
+    assert {check["relation_type"] for check in vase_checks} == {"object_on_support"}
+    assert vase_checks[0]["target_ids"] == ["table_1"]
+
+
 def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> None:
     desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
     check = {
@@ -2630,10 +2680,10 @@ def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> Non
     }
 
     pass_chair = _benchmark_obj(
-        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=0.0
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=-90.0
     )
     fail_chair = _benchmark_obj(
-        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=180.0
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=90.0
     )
 
     pass_result = _run_direct_case_pack(
@@ -2648,6 +2698,39 @@ def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> Non
     assert pass_result["relation_type"] == "seat_faces_surface"
     assert pass_result["label"] == "pass"
     assert fail_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_display_faces_user_uses_face_orientation() -> None:
+    alarm_clock = _benchmark_obj(
+        "alarm_clock_1", "alarm_clock", (2.0, 2.0, 0.6), (0.2, 0.1, 0.12), yaw=0.0
+    )
+    bed = _benchmark_obj("bed_1", "bed", (2.0, 2.8, 0.45), (1.2, 1.0, 0.9))
+    check = {
+        "check_id": "fd_alarm_display_faces_bed",
+        "metric": "functional_dependency",
+        "subject_id": "alarm_clock_1",
+        "target_ids": ["bed_1"],
+        "relation_type": "display_faces_user",
+        "evidence": {
+            "dependency": {
+                "relation_type": "display_faces_user",
+                "subject_face": "front",
+                "target_face": "any",
+                "max_angle_deg": 45,
+                "max_distance_m": 1.0,
+            }
+        },
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([alarm_clock, bed], [check]),
+        metrics=["functional_dependency"],
+    )
+
+    result = next(item for item in results if item["check_id"] == check["check_id"])
+    assert result["label"] == "pass"
+    assert "`display_faces_user` holds" in result["reason"]
+    assert "support region" not in result["reason"]
 
 
 def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None:

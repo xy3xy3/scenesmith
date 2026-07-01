@@ -542,6 +542,10 @@ def _build_dependency_annotation_checks(
                 )
                 if not relation_type:
                     continue
+                if _dependency_conflicts_with_placement(
+                    subject, relation_type, source_key
+                ):
+                    continue
                 targets = _dependency_targets(subject, objects.values(), dependency)
                 if not targets:
                     continue
@@ -594,6 +598,24 @@ def _dependency_annotation_items(
     raw = hints.get(source_key)
     values = raw if isinstance(raw, list) else [raw]
     return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _dependency_conflicts_with_placement(
+    subject: dict[str, Any], relation_type: str, source_key: str
+) -> bool:
+    if source_key != "attachment_dependencies" or relation_type != "object_on_floor":
+        return False
+    placement = subject.get("placement_info") or {}
+    parent_surface_id = str(placement.get("parent_surface_id") or "").strip()
+    if not parent_surface_id:
+        return False
+    hints = subject.get("functional_hints") or {}
+    placement_class = _normalize_relation_token(hints.get("placement_class"))
+    scene_object_type = _scene_object_type(subject)
+    return (
+        scene_object_type == "manipuland"
+        or placement_class in {"surface_object", "tabletop_object", "shelf_object"}
+    )
 
 
 def _dependency_targets(
