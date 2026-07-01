@@ -7,6 +7,8 @@ import numpy as np
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
     GeometryStore,
     floor_polygon_for_object,
+    is_small_object,
+    object_affordances,
     object_bbox,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.spatial_accessibility.config import (
@@ -160,6 +162,7 @@ def _evaluate_profile(
             "blocking_objects": [],
         }
 
+    reach_only = _uses_reach_only_access(subject, affordance)
     scored: list[tuple[float, str, np.ndarray, tuple[float, float, float, float]]] = []
     for zone_name, zone in zones:
         zone_mask = _oriented_rect_mask(xs, ys, zone)
@@ -171,7 +174,12 @@ def _evaluate_profile(
         scored.append((ratio, zone_name, zone_mask, _zone_aabb(zone)))
     scored.sort(key=lambda item: item[0], reverse=True)
     best_ratio, best_side, best_zone_mask, best_aabb = scored[0]
-    stance_mask = best_zone_mask & component
+    if reach_only:
+        stance_mask = component
+        best_ratio = 1.0
+        best_side = "connected_floor"
+    else:
+        stance_mask = best_zone_mask & component
     reach = _min_reach_distance(subject, affordance, xs, ys, stance_mask, profile)
     min_reach = float(reach["min_reach_distance_m"])
     reachable_stance_count = int(stance_mask.sum())
@@ -207,3 +215,14 @@ def _evaluate_profile(
         "reach_origin_height_m": reach["reach_origin_height_m"],
         "blocking_objects": blockers if label != "pass" else [],
     }
+
+
+def _uses_reach_only_access(subject: dict[str, Any], affordance: str) -> bool:
+    hints = subject.get("functional_hints") or {}
+    scene_type = str(hints.get("scene_object_type") or subject.get("object_type") or "")
+    scene_type = scene_type.strip().lower().replace("-", "_")
+    if scene_type == "manipuland":
+        return True
+    return affordance == "graspable" and (
+        is_small_object(subject) or object_affordances(subject) == {"graspable"}
+    )

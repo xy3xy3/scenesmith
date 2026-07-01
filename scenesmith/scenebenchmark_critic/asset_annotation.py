@@ -689,7 +689,9 @@ def merge_asset_annotation(
     # as stronger than the VLM/mock fallback so the critic can be upgraded before
     # the final annotation pipeline lands.
     mobility_class = _resolve_mobility_class(hints, vlm_prediction)
-    accessibility_policy = _resolve_accessibility_policy(hints, vlm_prediction)
+    accessibility_policy = _resolve_accessibility_policy(
+        hints, vlm_prediction, scene_object_type, affordances
+    )
     access_sides = _resolve_access_sides(hints, vlm_prediction)
     attachment_dependencies = _resolve_dependency_list(
         hints, vlm_prediction, "attachment_dependencies"
@@ -1193,6 +1195,8 @@ def _accessibility_policy(
         return explicit
     if scene_object_type == "ceiling_mounted" or mobility_class == "mounted":
         return "ignored"
+    if scene_object_type == "manipuland":
+        return "required" if affordances else "ignored"
     if category in SMALL_LOOSE_CATEGORIES or affordances == ["graspable"]:
         return "ignored"
     if mobility_class == "movable" and "sittable" in affordances:
@@ -1366,9 +1370,14 @@ def _normalize_mobility_class(value: Any) -> MobilityClass:
 
 
 def _resolve_accessibility_policy(
-    hints: dict[str, Any], vlm_prediction: AssetVlmPrediction
+    hints: dict[str, Any],
+    vlm_prediction: AssetVlmPrediction,
+    scene_object_type: SceneObjectType,
+    affordances: list[str],
 ) -> AccessibilityPolicy:
     existing = _normalize_accessibility_policy(hints.get("accessibility_policy"))
+    if scene_object_type == "manipuland" and affordances:
+        return "required"
     if existing is not None:
         return existing
     return (

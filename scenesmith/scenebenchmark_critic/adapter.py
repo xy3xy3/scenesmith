@@ -948,6 +948,8 @@ def _functional_hints(
         hints["accessibility_policy"] = _accessibility_policy(
             obj, category, categories, str(hints.get("mobility_class") or "")
         )
+    elif obj.object_type == ObjectType.MANIPULAND and categories:
+        hints["accessibility_policy"] = "required"
     if not hints.get("access_sides"):
         hints["access_sides"] = _access_sides(
             category, categories, hints.get("front_hint")
@@ -1043,6 +1045,8 @@ def _accessibility_policy(
 ) -> str:
     if obj.object_type in {ObjectType.WALL_MOUNTED, ObjectType.CEILING_MOUNTED}:
         return "ignored"
+    if obj.object_type == ObjectType.MANIPULAND:
+        return "required" if categories else "ignored"
     if mobility_class == "movable" and "sittable" in categories:
         return "optional"
     if category in {"book", "bottle", "bowl", "cup", "mug", "plate", "remote"}:

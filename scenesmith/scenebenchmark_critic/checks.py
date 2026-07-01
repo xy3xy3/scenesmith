@@ -305,6 +305,8 @@ def _is_spatial_access_target(candidate: dict[str, Any]) -> bool:
 
 
 def _should_drop_small_spatial_accessibility(obj: dict[str, Any]) -> bool:
+    if _scene_object_type(obj) == "manipuland":
+        return False
     if is_small_object(obj):
         return True
     text = " ".join(
@@ -612,10 +614,11 @@ def _dependency_conflicts_with_placement(
     hints = subject.get("functional_hints") or {}
     placement_class = _normalize_relation_token(hints.get("placement_class"))
     scene_object_type = _scene_object_type(subject)
-    return (
-        scene_object_type == "manipuland"
-        or placement_class in {"surface_object", "tabletop_object", "shelf_object"}
-    )
+    return scene_object_type == "manipuland" or placement_class in {
+        "surface_object",
+        "tabletop_object",
+        "shelf_object",
+    }
 
 
 def _dependency_targets(

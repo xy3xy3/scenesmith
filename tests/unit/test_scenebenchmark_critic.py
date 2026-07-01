@@ -2245,7 +2245,9 @@ def test_single_room_offline_smoke_runs_fd_sa_and_template_proposer(
     )
 
 
-def test_spatial_accessibility_skips_small_placeable_objects(tmp_path: Path) -> None:
+def test_spatial_accessibility_checks_manipuland_placeable_objects(
+    tmp_path: Path,
+) -> None:
     payload = evaluate_room_scene(
         _scene(tmp_path),
         config={
@@ -2262,7 +2264,36 @@ def test_spatial_accessibility_skips_small_placeable_objects(tmp_path: Path) -> 
         for result in payload["results"]
         if result["metric"] == "spatial_accessibility"
     }
-    assert "mug_0" not in subjects
+    assert "mug_0" in subjects
+
+
+def test_spatial_accessibility_promotes_cached_ignored_manipuland_policy(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    mug = scene.objects[UniqueID("mug_0")]
+    mug.metadata["functional_hints"] = {
+        "functional_categories": ["graspable"],
+        "scene_object_type": "manipuland",
+        "accessibility_policy": "ignored",
+    }
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="final_scene",
+        metrics=["spatial_accessibility"],
+    )
+    mug_record = next(
+        obj for obj in case_pack["scene_geometry"]["objects"] if obj["id"] == "mug_0"
+    )
+    checked_subjects = {
+        check["subject_id"]
+        for check in case_pack["checks"]
+        if check["metric"] == "spatial_accessibility"
+    }
+
+    assert mug_record["functional_hints"]["accessibility_policy"] == "required"
+    assert "mug_0" in checked_subjects
 
 
 def test_spatial_accessibility_uses_grid_reach_diagnostics(tmp_path: Path) -> None:
@@ -2550,6 +2581,34 @@ def test_rule_spatial_accessibility_crouch_posture_reaches_low_support() -> None
     assert "crouch/lean" in crouch_result["reason"]
 
 
+def test_rule_spatial_accessibility_fails_unreachable_manipuland() -> None:
+    island = _benchmark_obj("island_1", "table", (2.5, 2.5, 0.4), (3.0, 3.0, 0.8))
+    island["functional_hints"]["functional_categories"] = ["supportable"]
+    mug = _benchmark_obj("mug_1", "mug", (2.5, 2.5, 0.9), (0.12, 0.12, 0.18))
+    mug["object_type"] = "manipuland"
+    mug["functional_hints"] = {
+        "functional_categories": ["graspable"],
+        "scene_object_type": "manipuland",
+        "accessibility_policy": "required",
+    }
+    check = {
+        "check_id": "sa_manipuland_reach",
+        "metric": "spatial_accessibility",
+        "subject_id": "mug_1",
+        "affordance": "graspable",
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([island, mug], [check]),
+        metrics=["spatial_accessibility"],
+    )
+
+    result = next(item for item in results if item["check_id"] == check["check_id"])
+    assert result["label"] == "fail"
+    assert result["diagnostics"]["access_side"] == "connected_floor"
+    assert result["diagnostics"]["min_reach_distance_m"] > 0.75
+
+
 def test_rule_functional_dependency_fails_when_chair_back_faces_desk() -> None:
     chair = _benchmark_obj(
         "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=180.0
@@ -2619,10 +2678,10 @@ def test_dependency_annotation_checks_generate_orientation_and_wall_relations() 
     assert annotation_checks["back_against_wall"]["target_ids"] == ["wall_n"]
 
 
-def test_dependency_annotation_checks_skip_floor_attachment_for_surface_object() -> None:
-    table = _benchmark_obj(
-        "table_1", "dining_table", (2.0, 2.0, 0.35), (1.2, 0.8, 0.7)
-    )
+def test_dependency_annotation_checks_skip_floor_attachment_for_surface_object() -> (
+    None
+):
+    table = _benchmark_obj("table_1", "dining_table", (2.0, 2.0, 0.35), (1.2, 0.8, 0.7))
     table["functional_hints"]["functional_categories"] = ["supportable"]
     table["support_regions"] = [
         {
@@ -2837,7 +2896,9 @@ def test_adapter_front_vector_uses_y_axis_canonical_convention() -> None:
         metrics=["functional_dependency"],
     )
     exported = next(
-        obj for obj in case_pack["scene_geometry"]["objects"] if obj["id"] == "sideboard_0"
+        obj
+        for obj in case_pack["scene_geometry"]["objects"]
+        if obj["id"] == "sideboard_0"
     )
     front_face = next(
         face for face in exported["interaction_faces"] if face["name"] == "front"
