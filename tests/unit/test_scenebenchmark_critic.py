@@ -54,6 +54,10 @@ from scenesmith.scenebenchmark_critic.adapter import (
 )
 from scenesmith.scenebenchmark_critic.checks import build_checks
 from scenesmith.scenebenchmark_critic.config import critic_config_from_any
+from scenesmith.scenebenchmark_critic.orientation_contracts import (
+    CONTRACT_CHECK_SOURCE,
+    stabilize_orientation_contracts,
+)
 from scenesmith.scenebenchmark_critic.reports import format_markdown_report
 from scenesmith.scenebenchmark_critic.vendor.rules import (
     aggregate_results,
@@ -1397,6 +1401,71 @@ def test_evaluate_room_scene_returns_rule_results(tmp_path: Path) -> None:
     )
     assert fd_result["label"] == "pass"
     assert payload["summary"]["scene_summary"]["total_checks"] >= 1
+
+
+def test_orientation_contract_keeps_living_room_seat_target_stable(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.room_type = "living_room"
+    scene.text_description = (
+        "A living room with an armchair near a coffee table facing a TV stand."
+    )
+    scene.add_object(
+        _box_object(
+            "armchair_0",
+            "comfortable armchair",
+            ObjectType.FURNITURE,
+            center=(1.2, 0.4, 0.4),
+            size=(0.8, 0.8, 0.8),
+            yaw_deg=90.0,
+        )
+    )
+    scene.add_object(
+        _box_object(
+            "coffee_table_0",
+            "coffee table",
+            ObjectType.FURNITURE,
+            center=(0.0, 0.0, 0.25),
+            size=(1.1, 0.55, 0.5),
+        )
+    )
+    scene.add_object(
+        _box_object(
+            "tv_stand_0",
+            "tv stand media console",
+            ObjectType.FURNITURE,
+            center=(0.0, -1.7, 0.3),
+            size=(1.4, 0.35, 0.6),
+        )
+    )
+
+    config = CriticConfig(
+        enabled=True,
+        metrics=("functional_dependency",),
+        extra={"stable_orientation_contracts": True},
+    )
+    first = room_scene_to_case_pack(scene, stage="scene_after_furniture")
+    stabilize_orientation_contracts(first, scene, config, stage="scene_after_furniture")
+    second = room_scene_to_case_pack(scene, stage="final_scene")
+    stabilize_orientation_contracts(second, scene, config, stage="final_scene")
+
+    first_check = _contract_check_for(first, "armchair_0")
+    second_check = _contract_check_for(second, "armchair_0")
+
+    assert first_check["relation_type"] == "seating_to_media"
+    assert first_check["target_ids"] == ["tv_stand_0"]
+    assert second_check["relation_type"] == "seating_to_media"
+    assert second_check["target_ids"] == ["tv_stand_0"]
+
+
+def _contract_check_for(case_pack: dict[str, Any], subject_id: str) -> dict[str, Any]:
+    return next(
+        check
+        for check in case_pack["checks"]
+        if check.get("check_source") == CONTRACT_CHECK_SOURCE
+        and check.get("subject_id") == subject_id
+    )
 
 
 def test_direct_evaluate_room_scene_runs_with_default_config(tmp_path: Path) -> None:

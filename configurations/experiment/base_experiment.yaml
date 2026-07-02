@@ -99,6 +99,11 @@ scenebenchmark_critic:
   # "template" avoids VLM/network calls and mirrors SceneBenchmark's deterministic fallback.
   fd_relation_proposer_mode: "template"
   max_fd_relation_proposals: 8
+  # Keep seating orientation targets stable across SceneBenchmark stages.
+  # This lets a chair use a table as a placement/support anchor while preserving
+  # a chosen media/table facing target until the target disappears or a semantic
+  # focal point is introduced.
+  stable_orientation_contracts: true
   # Optional asset-level semantic annotation before running the rule critic.
   # backend="mock" mirrors SceneBenchmark's deterministic dry-run annotation path.
   # Set backend="vlm" to call the configured OpenAI-compatible vision model.

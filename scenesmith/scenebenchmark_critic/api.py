@@ -15,6 +15,9 @@ from scenesmith.scenebenchmark_critic.adapter import (
 )
 from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
 from scenesmith.scenebenchmark_critic.config import CriticConfig, critic_config_from_any
+from scenesmith.scenebenchmark_critic.orientation_contracts import (
+    stabilize_orientation_contracts,
+)
 from scenesmith.scenebenchmark_critic.reports import (
     build_evaluation_payload,
     format_prompt_context as _format_prompt_context,
@@ -44,6 +47,12 @@ def evaluate_room_scene(
         )
     case_pack = room_scene_to_case_pack(
         scene, stage=stage, metrics=list(critic_config.metrics)
+    )
+    stabilize_orientation_contracts(
+        case_pack,
+        scene,
+        critic_config,
+        stage=stage,
     )
     results = run_case_pack_checks(case_pack, config=critic_config)
     return build_evaluation_payload(
