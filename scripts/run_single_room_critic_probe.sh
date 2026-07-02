@@ -2,7 +2,7 @@
 # 批量运行单房间场景，对比开启/关闭 SceneBenchmark critic 的效果。
 # 设计目标：
 # 1. 复用当前项目里常用的单房间、串行、HSSD、禁用 articulated 资源的配置。
-# 2. 内置一组更容易触发 spatial_accessibility / functional_dependency 提示的英文 prompt。
+# 2. 内置一组四个典型单房间场景，更容易触发 spatial_accessibility / functional_dependency。
 # 3. 支持 shared_base -> critic_off -> critic_on 分叉，减少前缀随机性。
 # 4. 支持按阶段停止，或跳过 wall / ceiling 后继续测试 manipulands。
 # 5. 默认分别跑 critic=off 与 critic=on，方便直接对照生成结果和评测报告。
@@ -273,11 +273,10 @@ echo
 # 每一项格式：
 #   case_id|主要想刺激的 critic 类型|英文 prompt
 CASES=(
-    "tiny_bedroom_wardrobe|床侧通行 + 衣柜可达性|A tiny bedroom with a bed, two nightstands, a large wardrobe, and a narrow desk with 2 chairs, with the wardrobe and desk packed tightly around the bed and very little walking clearance."
-    "small_dining_six_chairs|餐桌-餐椅关系 + 餐区可达性|A very small dining room with a compact dining table, 6 dining chairs packed tightly around it, and a sideboard, leaving almost no clearance between chairs and the table."
-    "narrow_home_office|办公椅-书桌关系 + 书桌接近通道|A narrow home office with one desk, one office chair, 2 guest chairs, and a bookshelf, with the chairs crowded together and barely any free space to approach the desk."
-    "packed_bedroom_desk_block|床侧可达性 + 卧室多功能拥挤|A cramped bedroom with a bed, two nightstands, a dresser, and a desk with 3 chairs, with the desk pushed too close to one side of the bed and very limited bedside clearance."
-    "compact_studio_two_zones|混合功能分区 + 基本通行空间|A compact studio room with a bed, a desk, a chair, a sofa, and a coffee table, arranged so tightly that the sleeping area and seating area leave only narrow walking paths."
+    "living_room_media_bottleneck|沙发-茶几-TV 功能关系 + 客厅通行瓶颈|A cramped living room with a sofa facing a TV stand and television, a coffee table, two armchairs, and a floor lamp, arranged so tightly that the armchairs and coffee table leave only narrow paths to reach the sofa and TV area."
+    "study_desk_access_crunch|书桌-办公椅-显示器功能关系 + 书房接近空间|A narrow study with a desk, an office chair, a computer monitor, two guest chairs, and a bookshelf, arranged so tightly that the guest chairs and bookshelf leave barely any space to approach or pull out the desk chair."
+    "bedroom_bedside_blockage|床-床头柜-台灯功能关系 + 床侧与衣柜可达性|A compact bedroom with a bed, two nightstands, two table lamps, a dresser, and a wardrobe, arranged so tightly that one side of the bed and the wardrobe have very limited walking and access clearance."
+    "dining_room_service_squeeze|餐桌-餐椅-餐具功能关系 + 用餐区与餐边柜可达性|A small dining room with a dining table, four dining chairs, a sideboard, and table settings for four, arranged so tightly that the chairs and sideboard leave very little space to sit down, move around the table, or access the sideboard."
 )
 
 COMMON_ARGS=(
