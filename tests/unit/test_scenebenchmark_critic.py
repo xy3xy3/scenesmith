@@ -2678,6 +2678,43 @@ def test_dependency_annotation_checks_generate_orientation_and_wall_relations() 
     assert annotation_checks["back_against_wall"]["target_ids"] == ["wall_n"]
 
 
+def test_dependency_annotation_checks_keep_wall_relation_beyond_threshold() -> None:
+    bed = _benchmark_obj("bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=180.0)
+    bed["functional_hints"].update(
+        {
+            "functional_categories": ["sleepable"],
+            "attachment_dependencies": [
+                {
+                    "relation_type": "back_against_wall",
+                    "target_kind": "architecture",
+                    "target_category": "wall",
+                    "subject_face": "back",
+                    "max_angle_deg": 45.0,
+                    "max_distance_m": 0.25,
+                }
+            ],
+        }
+    )
+    wall = _benchmark_obj("wall_n", "wall", (2.5, 5.055, 1.5), (5.0, 0.1, 3.0))
+
+    case_pack = _benchmark_case_pack([bed, wall])
+    checks = build_checks(case_pack, metrics=["functional_dependency"])
+
+    wall_check = next(
+        check
+        for check in checks
+        if check.get("relation_type") == "back_against_wall"
+        and check.get("subject_id") == "bed_1"
+    )
+    assert wall_check["target_ids"] == ["wall_n"]
+
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([bed, wall], [wall_check]),
+        metrics=["functional_dependency"],
+    )[0]
+    assert result["label"] == "fail"
+
+
 def test_dependency_annotation_checks_skip_floor_attachment_for_surface_object() -> (
     None
 ):

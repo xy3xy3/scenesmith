@@ -48,6 +48,7 @@ SMALL_SA_SUBJECT_HINTS = (
     "plate",
     "bowl",
 )
+WALL_BACKED_RELATIONS = {"back_against_wall", "side_or_back_against_wall"}
 
 
 def build_checks(
@@ -647,7 +648,7 @@ def _dependency_targets(
 
     max_distance = _float_value(dependency.get("max_distance_m"), 2.4)
     limit = 6 if target_kind == "architecture" else 4
-    return _nearby_targets(
+    nearby_targets = _nearby_targets(
         subject,
         candidates,
         predicate=lambda candidate: _dependency_target_matches(
@@ -656,6 +657,51 @@ def _dependency_targets(
         max_gap_m=max_distance,
         limit=limit,
     )
+    if nearby_targets:
+        return nearby_targets
+
+    relation_type = _normalize_relation_token(
+        dependency.get("relation_type") or dependency.get("type")
+    )
+    if (
+        target_kind == "architecture"
+        and "wall" in target_categories
+        and relation_type in WALL_BACKED_RELATIONS
+    ):
+        nearest_wall = _nearest_dependency_target(
+            subject,
+            candidates,
+            predicate=lambda candidate: _dependency_target_matches(
+                candidate, target_categories, target_kind
+            ),
+        )
+        if nearest_wall is not None:
+            return [nearest_wall]
+    return []
+
+
+def _nearest_dependency_target(
+    subject: dict[str, Any], candidates: Any, *, predicate: Any
+) -> dict[str, Any] | None:
+    subject_id = str(subject.get("id") or "")
+    ranked: list[tuple[float, float, str, dict[str, Any]]] = []
+    for candidate in candidates:
+        target_id = str(candidate.get("id") or "")
+        if not target_id or target_id == subject_id:
+            continue
+        if not predicate(candidate):
+            continue
+        gap = bbox_gap_xy(subject, candidate)
+        if gap is None:
+            continue
+        distance = distance_xy(subject, candidate)
+        ranked.append(
+            (gap, distance if distance is not None else 999.0, target_id, candidate)
+        )
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked[0][3]
 
 
 def _as_dependency_target_id_values(dependency: dict[str, Any]) -> list[Any]:

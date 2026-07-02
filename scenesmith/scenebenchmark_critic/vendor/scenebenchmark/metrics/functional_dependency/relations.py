@@ -783,11 +783,19 @@ def _eval_annotated_dependency_relation(
     dependency = _dependency_payload(check)
     if relation_type == "back_against_wall":
         return _eval_face_against_wall(
-            subject, target, dependency, candidate_faces=("back",)
+            subject,
+            target,
+            dependency,
+            candidate_faces=("back",),
+            allow_distance_degraded=False,
         )
     if relation_type == "side_or_back_against_wall":
         return _eval_face_against_wall(
-            subject, target, dependency, candidate_faces=("back", "left", "right")
+            subject,
+            target,
+            dependency,
+            candidate_faces=("back", "left", "right"),
+            allow_distance_degraded=False,
         )
     if relation_type == "mounted_to_wall":
         return _eval_face_against_wall(
@@ -820,6 +828,7 @@ def _eval_face_against_wall(
     dependency: dict[str, Any],
     *,
     candidate_faces: tuple[str, ...],
+    allow_distance_degraded: bool = True,
 ) -> tuple[str, float, str]:
     if object_category(target) != "wall":
         return "fail", 0.3, "target is not a wall architecture object."
@@ -845,7 +854,17 @@ def _eval_face_against_wall(
             0.9,
             f"{best_face} face is wall-aligned: gap {gap:.2f}m, angle {best_angle:.0f}deg.",
         )
-    if gap <= max_distance * 1.5 and best_angle <= max_angle + 25.0:
+    if gap <= max_distance and best_angle <= max_angle + 25.0:
+        return (
+            "degraded",
+            0.72,
+            f"{best_face} face is near wall but loose: gap {gap:.2f}m, angle {best_angle:.0f}deg.",
+        )
+    if (
+        allow_distance_degraded
+        and gap <= max_distance * 1.5
+        and best_angle <= max_angle + 25.0
+    ):
         return (
             "degraded",
             0.72,
