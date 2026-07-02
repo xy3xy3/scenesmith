@@ -273,10 +273,10 @@ echo
 # 每一项格式：
 #   case_id|主要想刺激的 critic 类型|英文 prompt
 CASES=(
-    "living_room_media_bottleneck|沙发-茶几-TV 功能关系 + 客厅通行瓶颈|A cramped living room with a sofa facing a TV stand and television, a coffee table, two armchairs, and a floor lamp, arranged so tightly that the armchairs and coffee table leave only narrow paths to reach the sofa and TV area."
-    "study_desk_access_crunch|书桌-办公椅-显示器功能关系 + 书房接近空间|A narrow study with a desk, an office chair, a computer monitor, two guest chairs, and a bookshelf, arranged so tightly that the guest chairs and bookshelf leave barely any space to approach or pull out the desk chair."
-    "bedroom_bedside_blockage|床-床头柜-台灯功能关系 + 床侧与衣柜可达性|A compact bedroom with a bed, two nightstands, two table lamps, a dresser, and a wardrobe, arranged so tightly that one side of the bed and the wardrobe have very limited walking and access clearance."
-    "dining_room_service_squeeze|餐桌-餐椅-餐具功能关系 + 用餐区与餐边柜可达性|A small dining room with a dining table, four dining chairs, a sideboard, and table settings for four, arranged so tightly that the chairs and sideboard leave very little space to sit down, move around the table, or access the sideboard."
+    "living_room_media_bottleneck|沙发-茶几-TV 功能关系 + 客厅通行瓶颈|A living room with a sofa against the back wall facing a TV stand and television on the opposite wall, a coffee table centered between the sofa and TV stand, two armchairs flanking the coffee table near each end of the sofa, and a floor lamp beside one armchair. A remote control and a few magazines lie on the coffee table, and a small rug lies between the coffee table and TV stand."
+    "study_desk_access_crunch|书桌-办公椅-显示器功能关系 + 书房接近空间|A study with a desk centered against the back wall, an office chair tucked under the desk, a computer monitor on the desk, two guest chairs against the side wall facing the desk, and a bookshelf on the adjacent wall. A desk lamp and a notebook sit on the desk, a pen holder next to the monitor, and a small trash can beside the desk."
+    "bedroom_bedside_blockage|床-床头柜-台灯功能关系 + 床侧与衣柜可达性|A bedroom with a bed centered on the main wall, a nightstand with a table lamp on each side of the bed, a dresser against the opposite wall directly facing the bed, and a wardrobe placed next to the dresser. An alarm clock sits on one nightstand, a book on the other, and a small wastebasket near the dresser."
+    "dining_room_service_squeeze|餐桌-餐椅-餐具功能关系 + 用餐区与餐边柜可达性|A dining room with a dining table in the center, four dining chairs arranged around it with one on each side, a sideboard against the wall behind the chairs on one side, and table settings for four including plates, cutlery, and glasses. A centerpiece vase with flowers sits in the middle of the table, and a set of coasters sits on the sideboard."
 )
 
 COMMON_ARGS=(
