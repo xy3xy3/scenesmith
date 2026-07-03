@@ -19,6 +19,10 @@ from scenesmith.agent_utils.hssd_retrieval.data_loader import (
     construct_hssd_mesh_path,
     load_preprocessed_data,
 )
+from scenesmith.agent_utils.manipuland_scale import (
+    compute_uniform_scale_fit,
+    match_size_profile,
+)
 
 console_logger = logging.getLogger(__name__)
 
@@ -41,6 +45,9 @@ class RetrievalCandidate:
 
     bbox_score: float
     """Bounding box size difference score (L1 distance)."""
+
+    max_axis_relative_error: float | None = None
+    """Uniform-scale fit error used for manipuland aspect-ratio filtering."""
 
 
 class HssdRetriever:
@@ -120,6 +127,7 @@ class HssdRetriever:
         description: str,
         object_type: str,
         desired_dimensions: np.ndarray | None = None,
+        max_axis_relative_error: float | None = None,
     ) -> tuple[trimesh.Trimesh, str, float, HssdMeshMetadata]:
         """Retrieve best matching HSSD mesh for description.
 
@@ -150,6 +158,7 @@ class HssdRetriever:
             description=description,
             object_type=object_type,
             desired_dimensions=desired_dimensions,
+            max_axis_relative_error=max_axis_relative_error,
             max_candidates=1,
         )
 
@@ -166,6 +175,7 @@ class HssdRetriever:
         description: str,
         object_type: str,
         desired_dimensions: np.ndarray | None = None,
+        max_axis_relative_error: float | None = None,
         max_candidates: int | None = None,
     ) -> list[RetrievalCandidate]:
         """Retrieve multiple matching HSSD meshes for description.
@@ -177,6 +187,8 @@ class HssdRetriever:
             description: Object description text.
             object_type: Object type (e.g., "FURNITURE", "MANIPULAND").
             desired_dimensions: Optional desired dimensions (width, height, depth).
+            max_axis_relative_error: Optional rejection threshold for the actual
+                dimensions produced by uniform scaling.
             max_candidates: Maximum candidates to return. If None, returns all
                 available (up to use_top_k CLIP candidates).
 
@@ -212,6 +224,7 @@ class HssdRetriever:
         console_logger.info(f"Processing {len(top_k_meshes)} CLIP-filtered candidates")
 
         candidates: list[RetrievalCandidate] = []
+        size_profile = match_size_profile(description)
 
         for mesh_id, clip_score in top_k_meshes:
             metadata = self.preprocessed_data.get_metadata(mesh_id)
@@ -232,8 +245,31 @@ class HssdRetriever:
                 bbox_score = self._calculate_bbox_score(
                     target_dimensions=desired_dimensions, mesh_extents=mesh_extents
                 )
+                uniform_fit_error = None
+                if max_axis_relative_error is not None:
+                    # 7.3 fix: reject small-object candidates whose original aspect
+                    # ratio would remain visibly wrong after the required uniform scale.
+                    fit = compute_uniform_scale_fit(
+                        current_dimensions=mesh_extents,
+                        desired_dimensions=desired_dimensions,
+                        footprint_swappable=(
+                            size_profile.footprint_swappable
+                            if size_profile is not None
+                            else False
+                        ),
+                    )
+                    uniform_fit_error = fit.max_axis_relative_error
+                    if uniform_fit_error > max_axis_relative_error:
+                        console_logger.info(
+                            f"Rejecting HSSD candidate {mesh_id[:8]} for "
+                            f"'{description}': uniform fit error "
+                            f"{uniform_fit_error:.3f} exceeds "
+                            f"{max_axis_relative_error:.3f}"
+                        )
+                        continue
             else:
                 bbox_score = 0.0
+                uniform_fit_error = None
 
             candidate = RetrievalCandidate(
                 mesh_id=mesh_id,
@@ -241,6 +277,7 @@ class HssdRetriever:
                 metadata=metadata,
                 clip_score=clip_score,
                 bbox_score=bbox_score,
+                max_axis_relative_error=uniform_fit_error,
             )
             candidates.append(candidate)
 
@@ -253,8 +290,17 @@ class HssdRetriever:
             console_logger.warning("No valid candidates found after mesh loading")
             return []
 
-        # Sort by bbox_score (lower is better).
-        candidates.sort(key=lambda c: c.bbox_score)
+        # Sort by deterministic size fit first when present, then bbox_score.
+        candidates.sort(
+            key=lambda c: (
+                (
+                    c.max_axis_relative_error
+                    if c.max_axis_relative_error is not None
+                    else c.bbox_score
+                ),
+                c.bbox_score,
+            )
+        )
 
         # Limit results if requested.
         if max_candidates is not None and len(candidates) > max_candidates:

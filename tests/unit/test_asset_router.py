@@ -2,8 +2,9 @@
 
 import unittest
 
-from omegaconf import OmegaConf
 from unittest.mock import MagicMock
+
+from omegaconf import OmegaConf
 
 from scenesmith.agent_utils.asset_router import AssetRouter
 from scenesmith.agent_utils.asset_router.dataclasses import AnalysisResult, AssetItem
@@ -149,6 +150,23 @@ class TestAssetRouterItemTypeValidation(unittest.TestCase):
 class TestAnalysisResponseParsing(unittest.TestCase):
     """Test parsing of VLM analysis responses."""
 
+    def _make_router(self, agent_type: AgentType) -> AssetRouter:
+        cfg = OmegaConf.create(
+            {
+                "asset_manager": {
+                    "side_view_elevation_degrees": 15.0,
+                    "validation_taa_samples": 8,
+                    "manipuland_scale": {
+                        "enabled": True,
+                        "normalize_router_dimensions": True,
+                        "reject_bad_uniform_scale_fit": True,
+                        "max_axis_relative_error": 0.75,
+                    },
+                }
+            }
+        )
+        return AssetRouter(agent_type=agent_type, vlm_service=MagicMock(), cfg=cfg)
+
     def test_parse_single_furniture_item(self) -> None:
         """Parse single furniture item response."""
         router = AssetRouter(
@@ -289,6 +307,31 @@ class TestAnalysisResponseParsing(unittest.TestCase):
         result = router._parse_analysis_response(response)
         assert len(result.items) == 1
         assert result.items[0].object_type == ObjectType.FURNITURE
+
+    def test_parse_manipuland_normalizes_known_scale_profile(self) -> None:
+        """Known manipulands keep original request and use clamped dimensions."""
+        router = self._make_router(AgentType.MANIPULAND)
+
+        response = {
+            "items": [
+                {
+                    "description": "spiral notebook",
+                    "short_name": "notebook",
+                    "dimensions": [0.60, 0.04, 0.20],
+                    "object_type": "MANIPULAND",
+                    "strategies": ["generated"],
+                }
+            ],
+            "original_description": None,
+        }
+
+        result = router._parse_analysis_response(response)
+
+        assert len(result.items) == 1
+        item = result.items[0]
+        assert item.requested_dimensions == [0.60, 0.04, 0.20]
+        assert item.dimensions == [0.30, 0.09, 0.06]
+        assert item.scale_profile == "notebook_book"
 
 
 class TestAssetRouterJsonFallback(unittest.TestCase):

@@ -137,6 +137,10 @@ prompt: |
   ## Manipuland Scale Issues (High Priority)
   Each manipuland must have realistic dimensions. Assess scale using BOTH visual observation
   from `observe_scene()` AND bounding box dimensions from `get_current_scene_state()`.
+  If `get_current_scene_state()` includes `scale_diagnostics`, treat it as the primary
+  deterministic signal for known small-object categories: `bad_uniform_scale_fit` or
+  `out_of_profile_range` means the object has a likely hard scale/proportion issue even
+  if one rendered view looks ambiguous.
 
   **Two-Part Scale Assessment:**
 

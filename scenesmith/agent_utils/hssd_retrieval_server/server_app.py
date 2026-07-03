@@ -245,6 +245,7 @@ class HssdRetrievalApp(flask.Flask):
             description=request.object_description,
             object_type=request.object_type,
             desired_dimensions=desired_dimensions,
+            max_axis_relative_error=request.max_axis_relative_error,
             max_candidates=request.num_candidates,
         )
 

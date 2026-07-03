@@ -149,6 +149,8 @@ class SimplifiedManipulandInfo(JSONSerializable):
     """Rotation on surface in degrees."""
     dimensions: BoundingBox3D | None
     """Object dimensions (width, depth, height) in meters."""
+    scale_diagnostics: dict | None = None
+    """Deterministic scale diagnostic for known manipuland profiles."""
     composite_metadata: dict | None = None
     """Metadata for composite objects (stacks, filled containers, piles). None if not composite.
 

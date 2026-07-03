@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import trimesh
@@ -24,6 +25,7 @@ from scenesmith.agent_utils.hssd_retrieval.data_loader import (
     construct_hssd_mesh_path,
     load_preprocessed_data,
 )
+from scenesmith.agent_utils.hssd_retrieval.retrieval import HssdRetriever
 
 
 class TestHssdConfig(unittest.TestCase):
@@ -306,6 +308,65 @@ class TestDataLoader(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             load_preprocessed_data(preprocessed_path)
+
+
+class TestHssdRetrieverScaleFiltering(unittest.TestCase):
+    """Test deterministic manipuland scale filtering in HSSD retrieval."""
+
+    def test_retrieve_multiple_rejects_bad_uniform_scale_fit(self):
+        bad_metadata = HssdMeshMetadata(
+            mesh_id="bad_notebook",
+            name="Tall notebook",
+            up="0,1,0",
+            front="0,0,1",
+            wordnet_key="notebook.n.01",
+        )
+        good_metadata = HssdMeshMetadata(
+            mesh_id="good_notebook",
+            name="Flat notebook",
+            up="0,1,0",
+            front="0,0,1",
+            wordnet_key="notebook.n.01",
+        )
+        preprocessed_data = HssdPreprocessedData(
+            metadata_by_wordnet={"notebook.n.01": [bad_metadata, good_metadata]},
+            clip_embeddings=np.zeros((2, 512)),
+            embedding_index=["bad_notebook", "good_notebook"],
+            object_categories={"small_objects": ["notebook.n.01"]},
+        )
+
+        retriever = object.__new__(HssdRetriever)
+        retriever.config = type(
+            "Config",
+            (),
+            {
+                "object_type_mapping": {"MANIPULAND": "small_objects"},
+                "use_top_k": 2,
+            },
+        )()
+        retriever.clip_device = None
+        retriever.preprocessed_data = preprocessed_data
+
+        meshes = {
+            "bad_notebook": trimesh.creation.box(extents=[0.107, 0.025, 0.143]),
+            "good_notebook": trimesh.creation.box(extents=[0.20, 0.14, 0.02]),
+        }
+        retriever._load_and_process_mesh = lambda mesh_id, metadata: meshes[mesh_id]
+
+        with patch(
+            "scenesmith.agent_utils.hssd_retrieval.retrieval.get_top_k_similar_meshes",
+            return_value=[("bad_notebook", 0.99), ("good_notebook", 0.95)],
+        ):
+            candidates = retriever.retrieve_multiple(
+                description="notebook",
+                object_type="MANIPULAND",
+                desired_dimensions=np.array([0.22, 0.16, 0.03]),
+                max_axis_relative_error=0.75,
+            )
+
+        self.assertEqual(
+            [candidate.mesh_id for candidate in candidates], ["good_notebook"]
+        )
 
 
 if __name__ == "__main__":

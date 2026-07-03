@@ -163,6 +163,37 @@ class TestScaleMeshToDimensions(unittest.TestCase):
             err_msg="Did not scale by average factor",
         )
 
+    def test_uniform_scaling_rejects_bad_axis_fit_when_threshold_set(self):
+        """Test optional post-scale axis fit rejection."""
+        mesh = trimesh.creation.box(extents=[0.107, 0.025, 0.143])
+        input_path = self.temp_path / "bad_notebook.glb"
+        mesh.export(input_path)
+
+        with self.assertRaises(ValueError) as context:
+            scale_mesh_uniformly_to_dimensions(
+                mesh_path=input_path,
+                desired_dimensions=[0.22, 0.16, 0.03],
+                output_path=self.temp_path / "bad_notebook_scaled.glb",
+                max_axis_relative_error=0.75,
+            )
+
+        self.assertIn("Uniform scale fit exceeds", str(context.exception))
+
+    def test_uniform_scaling_keeps_old_behavior_without_axis_fit_threshold(self):
+        """Test optional fit rejection is disabled by default."""
+        mesh = trimesh.creation.box(extents=[0.107, 0.025, 0.143])
+        input_path = self.temp_path / "bad_notebook_legacy.glb"
+        output_path = self.temp_path / "bad_notebook_legacy_scaled.glb"
+        mesh.export(input_path)
+
+        scale_mesh_uniformly_to_dimensions(
+            mesh_path=input_path,
+            desired_dimensions=[0.22, 0.16, 0.03],
+            output_path=output_path,
+        )
+
+        self.assertTrue(output_path.exists())
+
 
 class TestRemoveMeshFloaters(unittest.TestCase):
     """Test the remove_mesh_floaters function."""

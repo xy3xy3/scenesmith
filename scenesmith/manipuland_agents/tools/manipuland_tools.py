@@ -19,6 +19,7 @@ from typing_extensions import TypedDict
 from scenesmith.agent_utils.action_logger import log_scene_action
 from scenesmith.agent_utils.asset_manager import AssetGenerationRequest, AssetManager
 from scenesmith.agent_utils.loop_detector import LoopDetector
+from scenesmith.agent_utils.manipuland_scale import diagnose_manipuland_scale
 from scenesmith.agent_utils.physical_feasibility import apply_surface_projection
 from scenesmith.agent_utils.placement_noise import (
     PlacementNoiseMode,
@@ -1926,12 +1927,23 @@ class ManipulandTools:
             surface_rotation_deg = math.degrees(obj.placement_info.rotation_2d)
 
         dimensions = None
+        scale_diagnostics = None
         if obj.bbox_min is not None and obj.bbox_max is not None:
             bbox_size = obj.bbox_max - obj.bbox_min
             dimensions = BoundingBox3D(
                 width=float(bbox_size[0]),
                 depth=float(bbox_size[1]),
                 height=float(bbox_size[2]),
+            )
+            requested_dimensions = obj.metadata.get(
+                "normalized_dimensions", obj.metadata.get("requested_dimensions")
+            )
+            # 7.3 fix: expose deterministic small-object scale diagnostics so the
+            # manipuland critic does not oscillate purely from visual judgment.
+            scale_diagnostics = diagnose_manipuland_scale(
+                description=obj.description,
+                actual_dimensions=bbox_size,
+                requested_dimensions=requested_dimensions,
             )
 
         # Build composite metadata if this is a composite object.
@@ -1989,6 +2001,7 @@ class ManipulandTools:
             surface_position=surface_position,
             surface_rotation_deg=surface_rotation_deg,
             dimensions=dimensions,
+            scale_diagnostics=scale_diagnostics,
             composite_metadata=composite_metadata,
         )
 
