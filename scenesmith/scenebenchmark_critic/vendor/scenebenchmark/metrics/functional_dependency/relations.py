@@ -39,6 +39,8 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_d
     _is_nightstand_target,
     _is_seating_subject,
     _is_side_surface_target,
+    _is_computer_peripheral_subject,
+    _is_computer_screen_target,
     _is_supported_small_subject,
     _is_work_surface_target,
 )
@@ -207,6 +209,7 @@ def _eval_relation_over_targets(
             "mounted_to_wall",
             "mounted_to_ceiling",
             "object_on_floor",
+            "computer_peripheral_faces_screen",
             "furniture_faces_furniture",
             "display_faces_user",
         }:
@@ -811,6 +814,8 @@ def _eval_annotated_dependency_relation(
         )
     if relation_type == "furniture_faces_furniture":
         return _eval_face_to_target(subject, target, dependency, relation_type)
+    if relation_type == "computer_peripheral_faces_screen":
+        return _eval_face_to_target(subject, target, dependency, relation_type)
     if relation_type == "display_faces_user":
         return _eval_face_to_target(subject, target, dependency, relation_type)
     return _eval_generic_near_relation(subject, target, relation_type)
@@ -1114,6 +1119,10 @@ def _relation_target_is_valid(
         return object_category(target) == "floor"
     if relation_type == "display_faces_user":
         return object_category(target) not in {"wall", "floor", "ceiling"}
+    if relation_type == "computer_peripheral_faces_screen":
+        return _is_computer_peripheral_subject(subject) and _is_computer_screen_target(
+            target
+        )
     if relation_type == "seating_to_work_surface":
         return _is_seating_subject(subject) and _is_work_surface_target(target)
     if relation_type == "seating_to_media":

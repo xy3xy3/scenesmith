@@ -83,6 +83,8 @@ scenebenchmark_critic:
   # Single-room by default; override this to enable combined-house reports.
   house_stage_hooks: []
   inject_into_llm_critic: true
+  agent_prompt_context_filter_enabled: true
+  agent_prompt_context_debug_write: false
   hard_gate: false
   max_issues_for_prompt: 8
   fail_gate_threshold: 1

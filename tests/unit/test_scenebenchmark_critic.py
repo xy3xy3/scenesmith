@@ -48,6 +48,10 @@ from scenesmith.scenebenchmark_critic import (
     write_house_stage_report,
     write_room_stage_report,
 )
+from scenesmith.scenebenchmark_critic.prompt_context import (
+    filter_prompt_results_for_agent,
+    format_agent_prompt_context,
+)
 from scenesmith.scenebenchmark_critic.adapter import (
     house_scene_to_case_pack,
     room_scene_to_case_pack,
@@ -68,6 +72,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency import (
     proposer as fd_proposer,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
+    _relation_target_is_valid,
 )
 
 
@@ -421,6 +428,71 @@ def test_room_scene_adapter_exports_scenebenchmark_geometry_fields(
     assert table["nav_obstacle_class"] == "blocking"
     assert geometry["scene_shell"]["doors"][0]["opening_id"] == "door_main"
     assert geometry["scene_shell"]["doors"][0]["center"] == [0.0, -2.0, 1.0]
+
+
+def test_room_scene_adapter_normalizes_workstation_categories(tmp_path: Path) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    monitor = _box_object(
+        "computer_monitor_0",
+        "computer monitor",
+        ObjectType.MANIPULAND,
+        center=(0.0, 0.0, 0.9),
+        size=(0.45, 0.08, 0.32),
+    )
+    mouse = _box_object(
+        "wireless_mouse_0",
+        "wireless mouse",
+        ObjectType.MANIPULAND,
+        center=(0.3, 0.0, 0.72),
+        size=(0.08, 0.13, 0.04),
+    )
+    tablet = _box_object(
+        "tablet_computer_0",
+        "tablet computer",
+        ObjectType.MANIPULAND,
+        center=(-0.3, 0.0, 0.72),
+        size=(0.22, 0.14, 0.02),
+    )
+    scene.add_object(monitor)
+    scene.add_object(mouse)
+    scene.add_object(tablet)
+
+    case_pack = room_scene_to_case_pack(scene, stage="final_scene")
+    objects = {obj["id"]: obj for obj in case_pack["scene_geometry"]["objects"]}
+
+    assert objects["computer_monitor_0"]["category_norm"] == "monitor"
+    assert objects["computer_monitor_0"]["functional_hints"]["category_group"] == "media"
+    assert objects["wireless_mouse_0"]["category_norm"] == "mouse"
+    assert objects["tablet_computer_0"]["category_norm"] == "tablet_computer"
+
+
+def test_computer_peripheral_faces_screen_accepts_workstation_categories() -> None:
+    monitor = _benchmark_obj(
+        "computer_monitor_0",
+        "monitor",
+        (0.0, 0.0, 0.9),
+        (0.45, 0.08, 0.32),
+    )
+    monitor["functional_hints"]["category_group"] = "media"
+    mouse = _benchmark_obj(
+        "wireless_mouse_0",
+        "mouse",
+        (0.3, 0.0, 0.72),
+        (0.08, 0.13, 0.04),
+    )
+    laptop = _benchmark_obj(
+        "laptop_0",
+        "laptop",
+        (-0.3, 0.0, 0.75),
+        (0.32, 0.22, 0.03),
+    )
+    laptop["functional_hints"]["category_group"] = "small_object"
+
+    assert _relation_target_is_valid(
+        mouse, monitor, "computer_peripheral_faces_screen"
+    )
+    assert _relation_target_is_valid(mouse, laptop, "computer_peripheral_faces_screen")
 
 
 def test_room_scene_adapter_respects_nonfunctional_asset_annotation(
@@ -1591,6 +1663,8 @@ def test_base_experiment_config_defaults_are_report_only_template_mode() -> None
     assert critic_config.room_stage_hooks == ("scene_after_furniture", "final_scene")
     assert critic_config.house_stage_hooks == ()
     assert critic_config.inject_into_llm_critic is True
+    assert critic_config.agent_prompt_context_filter_enabled is True
+    assert critic_config.agent_prompt_context_debug_write is False
     assert critic_config.hard_gate is False
     assert critic_config.extra["fd_relation_proposer_mode"] == "template"
     assert critic_config.extra["max_fd_relation_proposals"] == 8
@@ -4955,6 +5029,168 @@ def test_prompt_context_excludes_ignored_issues() -> None:
     assert "chair_0" in context
     assert "decor_0" not in context
     assert "ignored decorative support issue" not in context
+
+
+def _workstation_payload() -> dict[str, Any]:
+    desk = _benchmark_obj("study_desk_0", "desk", (0.0, 0.0, 0.35), (1.4, 0.7, 0.7))
+    desk["object_type"] = "furniture"
+    desk["functional_hints"]["scene_object_type"] = "furniture"
+    desk["functional_hints"]["category_group"] = "work_surface"
+    desk["support_regions"] = [{"region_id": "desk_top", "support_kind": "top_surface"}]
+    chair = _benchmark_obj(
+        "office_chair_0", "office_chair", (0.0, -0.8, 0.45), (0.6, 0.6, 0.9)
+    )
+    chair["object_type"] = "furniture"
+    chair["functional_hints"]["scene_object_type"] = "furniture"
+    chair["functional_hints"]["category_group"] = "seating"
+    chair["functional_hints"]["functional_categories"] = ["sittable"]
+    monitor = _benchmark_obj(
+        "computer_monitor_0", "monitor", (0.0, 0.12, 0.82), (0.45, 0.08, 0.32)
+    )
+    monitor["object_type"] = "manipuland"
+    monitor["functional_hints"]["scene_object_type"] = "manipuland"
+    monitor["functional_hints"]["category_group"] = "media"
+    monitor["placement_info"] = {"parent_surface_id": "desk_top"}
+    mouse = _benchmark_obj(
+        "wireless_mouse_0", "mouse", (0.35, -0.08, 0.73), (0.08, 0.13, 0.04)
+    )
+    mouse["object_type"] = "manipuland"
+    mouse["functional_hints"]["scene_object_type"] = "manipuland"
+    mouse["placement_info"] = {"parent_surface_id": "desk_top"}
+    book = _benchmark_obj(
+        "hardcover_book_0", "book", (-0.3, -0.08, 0.73), (0.2, 0.3, 0.04)
+    )
+    book["object_type"] = "manipuland"
+    book["functional_hints"]["scene_object_type"] = "manipuland"
+    book["placement_info"] = {"parent_surface_id": "desk_top"}
+    shelf = _benchmark_obj(
+        "shelving_unit_0", "bookshelf", (2.0, 0.0, 0.9), (0.8, 0.35, 1.8)
+    )
+    shelf["object_type"] = "furniture"
+    shelf["functional_hints"]["scene_object_type"] = "furniture"
+    return {
+        "case_pack": _benchmark_case_pack([desk, chair, monitor, mouse, book, shelf]),
+        "results": [
+            {
+                "check_id": "fd_monitor_on_desk",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "computer_monitor_0",
+                "related_objects": ["study_desk_0"],
+                "relation_type": "object_on_support",
+                "reason": "monitor is not on desk",
+            },
+            {
+                "check_id": "fd_mouse_faces_monitor",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "wireless_mouse_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "computer_peripheral_faces_screen",
+                "reason": "mouse does not face monitor",
+            },
+            {
+                "check_id": "fd_chair_faces_monitor",
+                "metric": "functional_dependency",
+                "label": "degraded",
+                "primary_object": "office_chair_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "chair is weakly aligned to monitor",
+            },
+            {
+                "check_id": "fd_book_monitor_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "hardcover_book_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "book is not a seating subject",
+            },
+            {
+                "check_id": "fd_monitor_self_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "computer_monitor_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "self relation",
+            },
+            {
+                "check_id": "fd_shelf_monitor_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "shelving_unit_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "remote furniture is not actionable now",
+            },
+        ],
+    }
+
+
+def test_agent_prompt_context_filters_manipuland_workstation_noise() -> None:
+    payload = _workstation_payload()
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.MANIPULAND,
+        current_furniture_id="study_desk_0",
+    )
+    context = format_agent_prompt_context(
+        payload,
+        agent_type=AgentType.MANIPULAND,
+        current_furniture_id="study_desk_0",
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert {
+        "fd_monitor_on_desk",
+        "fd_mouse_faces_monitor",
+        "fd_chair_faces_monitor",
+    } <= check_ids
+    assert "fd_book_monitor_noise" not in check_ids
+    assert "fd_monitor_self_noise" not in check_ids
+    assert "fd_shelf_monitor_noise" not in check_ids
+    assert "wireless_mouse_0" in context
+    assert "hardcover_book_0" not in context
+    assert "shelving_unit_0" not in context
+
+
+def test_agent_prompt_context_keeps_furniture_layout_issues() -> None:
+    payload = _workstation_payload()
+    payload["results"].extend(
+        [
+            {
+                "check_id": "fd_desk_chair_faces",
+                "metric": "functional_dependency",
+                "label": "degraded",
+                "primary_object": "study_desk_0",
+                "related_objects": ["office_chair_0"],
+                "relation_type": "furniture_faces_furniture",
+                "reason": "desk and chair alignment is weak",
+            },
+            {
+                "check_id": "spatial_desk",
+                "metric": "spatial_accessibility",
+                "label": "fail",
+                "primary_object": "study_desk_0",
+                "related_objects": [],
+                "reason": "desk is blocked",
+            },
+        ]
+    )
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.FURNITURE,
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert "fd_desk_chair_faces" in check_ids
+    assert "spatial_desk" in check_ids
+    assert "fd_monitor_on_desk" not in check_ids
+    assert "fd_mouse_faces_monitor" not in check_ids
 
 
 def test_markdown_report_excludes_ignored_issues() -> None:

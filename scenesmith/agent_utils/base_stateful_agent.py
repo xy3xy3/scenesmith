@@ -52,6 +52,7 @@ from scenesmith.agent_utils.turn_trimming_session import TurnTrimmingSession
 from scenesmith.prompts import prompt_registry
 from scenesmith.scenebenchmark_critic import evaluate_room_scene, format_prompt_context
 from scenesmith.scenebenchmark_critic.config import critic_config_from_any
+from scenesmith.scenebenchmark_critic.prompt_context import format_agent_prompt_context
 from scenesmith.utils.logging import BaseLogger
 from scenesmith.utils.openai import create_openai_run_config, encode_image_to_base64
 
@@ -1134,6 +1135,24 @@ class BaseStatefulAgent(ABC):
             config=self.cfg,
             stage=f"llm_critic_{self.agent_type.value}",
         )
+        if critic_config.agent_prompt_context_filter_enabled:
+            debug_dir = None
+            if critic_config.agent_prompt_context_debug_write:
+                scene_dir = getattr(scene, "scene_dir", None)
+                if scene_dir:
+                    debug_dir = (
+                        Path(scene_dir)
+                        / "scenebenchmark_prompt_context"
+                        / self.agent_type.value
+                    )
+            return format_agent_prompt_context(
+                payload,
+                scene=scene,
+                agent_type=self.agent_type,
+                current_furniture_id=getattr(self, "current_furniture_id", None),
+                max_issues=critic_config.max_issues_for_prompt,
+                debug_output_dir=debug_dir,
+            )
         return format_prompt_context(
             payload, max_issues=critic_config.max_issues_for_prompt
         )

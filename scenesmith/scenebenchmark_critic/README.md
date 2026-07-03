@@ -293,7 +293,8 @@ scenebenchmark_critic:
 ## 集成说明
 
 - 评测器默认仅生成报告。`hard_gate` 元数据会被记录，但 v1 不会回滚或重写 SceneSmith 场景。
-- LLM 评测器提示注入仅对家具和 manipuland 代理运行。
+- LLM 评测器提示注入仅对家具和 manipuland 代理运行。报告始终保留全量规则结果；注入到 LLM critic 的摘要默认经过 `agent_prompt_context_filter_enabled` 过滤，只保留当前代理可执行的局部问题。
+- `agent_prompt_context_debug_write` 可写出原始/过滤后的 issue id 摘要，用于排查 critic-on 生成差异；默认关闭。
 - 组合房屋报告仍可通过 `write_house_stage_report` 或非空 `house_stage_hooks` 使用，但默认集成仅限房间。
 - 组合房屋家具 stage 报告会过滤掉 manipuland，使 stage 级检查仅包含实际已放置的对象。
 - `vendor/rules.py` 是 vendored SceneBenchmark 模块的桥接，有意避免在运行时导入外部 SceneBenchmark 仓库。

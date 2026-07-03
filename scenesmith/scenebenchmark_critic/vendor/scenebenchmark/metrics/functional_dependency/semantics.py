@@ -65,15 +65,50 @@ def _is_media_target(target: dict[str, Any]) -> bool:
     if profile.source == "explicit" and profile.is_media_target:
         return True
     category = object_category(target)
-    if is_small_object(target):
-        return False
     if _raw_text_has_any(target, MEDIA_TARGET_REJECT_HINTS):
         return False
     if _text_has_any(target, ("remote", "controller", "device")):
         return False
     if category in MEDIA:
         return True
+    if is_small_object(target):
+        return False
     return _text_has_any(target, MEDIA_TEXT_HINTS + ("tv_stand",))
+
+
+def _is_computer_peripheral_subject(subject: dict[str, Any]) -> bool:
+    category = object_category(subject)
+    return category in {
+        "keyboard",
+        "mouse",
+        "trackpad",
+        "touchpad",
+    } or _text_has_any(subject, ("keyboard", "mouse", "trackpad", "touchpad"))
+
+
+def _is_computer_screen_target(target: dict[str, Any]) -> bool:
+    category = object_category(target)
+    return category in {
+        "display",
+        "laptop",
+        "monitor",
+        "notebook_computer",
+        "projection_screen",
+        "screen",
+        "tablet",
+        "tablet_computer",
+    } or _text_has_any(
+        target,
+        (
+            "computer_monitor",
+            "display",
+            "laptop",
+            "monitor",
+            "notebook_computer",
+            "screen",
+            "tablet_computer",
+        ),
+    )
 
 
 def _is_nightstand_target(target: dict[str, Any]) -> bool:
