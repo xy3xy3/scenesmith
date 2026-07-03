@@ -60,8 +60,10 @@ CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-true}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
 CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE:-vlm}"
 CRITIC_MAX_FD_RELATION_PROPOSALS="${CRITIC_MAX_FD_RELATION_PROPOSALS:-8}"
+CRITIC_PROBE_PARALLEL="${CRITIC_PROBE_PARALLEL:-false}"
 CRITIC_REPORT_STAGE_LABEL=""
 BRANCH_START_STAGE=""
+PORT_ARGS=()
 
 normalize_bool() {
     case "${1,,}" in
@@ -150,6 +152,11 @@ esac
 
 if [ "$CRITIC_MAX_FD_RELATION_PROPOSALS" -lt 1 ]; then
     echo "错误：CRITIC_MAX_FD_RELATION_PROPOSALS 至少为 1"
+    exit 1
+fi
+
+if ! CRITIC_PROBE_PARALLEL="$(normalize_bool "$CRITIC_PROBE_PARALLEL")"; then
+    echo "错误：CRITIC_PROBE_PARALLEL 必须是 true/false"
     exit 1
 fi
 
@@ -261,6 +268,7 @@ echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
 echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
 echo "CRITIC_FD_RELATION_PROPOSER_MODE: $CRITIC_FD_RELATION_PROPOSER_MODE"
 echo "CRITIC_MAX_FD_RELATION_PROPOSALS: $CRITIC_MAX_FD_RELATION_PROPOSALS"
+echo "CRITIC_PROBE_PARALLEL: $CRITIC_PROBE_PARALLEL"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
 echo
@@ -306,6 +314,42 @@ COMMON_ARGS=(
     "experiment.scenebenchmark_critic.fd_relation_proposer_mode=${CRITIC_FD_RELATION_PROPOSER_MODE}"
     "experiment.scenebenchmark_critic.max_fd_relation_proposals=${CRITIC_MAX_FD_RELATION_PROPOSALS}"
 )
+
+build_port_args() {
+    local run_kind="$1"
+
+    case "$run_kind" in
+        critic_off)
+            PORT_ARGS=(
+                "floor_plan_agent.rendering.blender_server_port_range=[8000,8025]"
+                "furniture_agent.rendering.blender_server_port_range=[8000,8175]"
+                "wall_agent.rendering.blender_server_port_range=[8000,8125]"
+                "ceiling_agent.rendering.blender_server_port_range=[8000,8125]"
+                "manipuland_agent.rendering.blender_server_port_range=[8000,8125]"
+                "furniture_agent.collision_geometry.server_port_range=[7100,7275]"
+                "wall_agent.collision_geometry.server_port_range=[7100,7225]"
+                "ceiling_agent.collision_geometry.server_port_range=[7100,7225]"
+                "manipuland_agent.collision_geometry.server_port_range=[7100,7225]"
+            )
+            ;;
+        critic_on)
+            PORT_ARGS=(
+                "floor_plan_agent.rendering.blender_server_port_range=[8026,8050]"
+                "furniture_agent.rendering.blender_server_port_range=[8176,8350]"
+                "wall_agent.rendering.blender_server_port_range=[8126,8250]"
+                "ceiling_agent.rendering.blender_server_port_range=[8126,8250]"
+                "manipuland_agent.rendering.blender_server_port_range=[8126,8250]"
+                "furniture_agent.collision_geometry.server_port_range=[7276,7450]"
+                "wall_agent.collision_geometry.server_port_range=[7226,7350]"
+                "ceiling_agent.collision_geometry.server_port_range=[7226,7350]"
+                "manipuland_agent.collision_geometry.server_port_range=[7226,7350]"
+            )
+            ;;
+        shared_base|*)
+            PORT_ARGS=()
+            ;;
+    esac
+}
 
 csv_quote() {
     local value="$1"
@@ -364,6 +408,8 @@ run_batch() {
     local batch_csv="$hydra_dir/batch_cases.csv"
     local case_summary=()
 
+    build_port_args "$run_kind"
+
     mkdir -p "$hydra_dir"
 
     printf 'scene_index,prompt,case_id,critic_goal\n' > "$batch_csv"
@@ -388,6 +434,11 @@ run_batch() {
     echo "critic 开关: $critic_enabled"
     echo "tasks: $tasks_override"
     echo "stop_stage: $stop_stage_override"
+    if [ "${#PORT_ARGS[@]}" -gt 0 ]; then
+        echo "port overrides: ${PORT_ARGS[*]}"
+    else
+        echo "port overrides: <default config>"
+    fi
     if [ -n "$start_stage_override" ]; then
         echo "start_stage: $start_stage_override"
         echo "resume_from_path: $resume_from_path"
@@ -398,6 +449,7 @@ run_batch() {
         python main.py
         "+name=${exp_name}"
         "${COMMON_ARGS[@]}"
+        "${PORT_ARGS[@]}"
         "experiment.tasks=${tasks_override}"
         "experiment.pipeline.stop_stage=${stop_stage_override}"
         "experiment.scenebenchmark_critic.enabled=${critic_enabled}"
@@ -478,13 +530,60 @@ if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
     fi
 fi
 
-if [ "$MODE" = "both" ] || [ "$MODE" = "off" ]; then
+run_both_parallel() {
+    local off_log="$OUTPUT_ROOT/critic_off.log"
+    local on_log="$OUTPUT_ROOT/critic_on.log"
+
+    echo "========== 并行运行 critic_off / critic_on =========="
+    echo "critic_off 日志: $off_log"
+    echo "critic_on  日志: $on_log"
+    echo
+
+    (
+        echo "========== 第一部分：关闭 critic =========="
+        echo
+        run_mode "critic_off"
+    ) > "$off_log" 2>&1 &
+    local pid_off=$!
+
+    (
+        echo "========== 第二部分：开启 critic =========="
+        echo
+        run_mode "critic_on"
+    ) > "$on_log" 2>&1 &
+    local pid_on=$!
+
+    local rc_off=0
+    local rc_on=0
+    wait $pid_off || rc_off=$?
+    wait $pid_on  || rc_on=$?
+
+    echo
+    echo "critic_off 返回码: $rc_off"
+    echo "critic_on  返回码: $rc_on"
+
+    if [ "$rc_off" -ne 0 ] || [ "$rc_on" -ne 0 ]; then
+        echo "错误：并行运行 critic_off / critic_on 时至少一个失败"
+        exit 1
+    fi
+}
+
+if [ "$MODE" = "both" ]; then
+    if [ "$CRITIC_PROBE_PARALLEL" = "true" ]; then
+        run_both_parallel
+    else
+        echo "========== 第一部分：关闭 critic =========="
+        echo
+        run_mode "critic_off"
+        echo "========== 第二部分：开启 critic =========="
+        echo
+        run_mode "critic_on"
+    fi
+elif [ "$MODE" = "off" ]; then
     echo "========== 第一部分：关闭 critic =========="
     echo
     run_mode "critic_off"
-fi
-
-if [ "$MODE" = "both" ] || [ "$MODE" = "on" ]; then
+elif [ "$MODE" = "on" ]; then
     echo "========== 第二部分：开启 critic =========="
     echo
     run_mode "critic_on"
