@@ -321,6 +321,11 @@ build_port_args() {
     case "$run_kind" in
         critic_off)
             PORT_ARGS=(
+                "experiment.geometry_generation_server.port=7005"
+                "experiment.hssd_retrieval_server.port=7006"
+                "experiment.articulated_retrieval_server.port=7007"
+                "experiment.materials_retrieval_server.port=7008"
+                "experiment.objaverse_retrieval_server.port=7009"
                 "floor_plan_agent.rendering.blender_server_port_range=[8000,8025]"
                 "furniture_agent.rendering.blender_server_port_range=[8000,8175]"
                 "wall_agent.rendering.blender_server_port_range=[8000,8125]"
@@ -334,6 +339,11 @@ build_port_args() {
             ;;
         critic_on)
             PORT_ARGS=(
+                "experiment.geometry_generation_server.port=7015"
+                "experiment.hssd_retrieval_server.port=7016"
+                "experiment.articulated_retrieval_server.port=7017"
+                "experiment.materials_retrieval_server.port=7018"
+                "experiment.objaverse_retrieval_server.port=7019"
                 "floor_plan_agent.rendering.blender_server_port_range=[8026,8050]"
                 "furniture_agent.rendering.blender_server_port_range=[8176,8350]"
                 "wall_agent.rendering.blender_server_port_range=[8126,8250]"
