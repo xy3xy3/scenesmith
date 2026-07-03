@@ -31,6 +31,9 @@ from scenesmith.agent_utils.workflow_tools import WorkflowTools
 from scenesmith.prompts.registry import WallAgentPrompts
 from scenesmith.utils.logging import BaseLogger
 from scenesmith.wall_agents.base_wall_agent import BaseWallAgent
+from scenesmith.wall_agents.prompt_constraints import (
+    build_required_wall_object_constraints,
+)
 from scenesmith.wall_agents.tools.vision_tools import WallVisionTools
 from scenesmith.wall_agents.tools.wall_surface import WallSurface
 from scenesmith.wall_agents.tools.wall_tools import WallTools
@@ -130,6 +133,10 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
 
         # Wall tools will be set when adding wall objects.
         self.wall_tools: WallTools | None = None
+        self.required_wall_object_constraints = (
+            "- No explicit wall-object obligations were extracted from the prompt. "
+            "Decorate walls contextually."
+        )
 
     def _create_designer_tools(
         self, wall_surfaces: list[WallSurface]
@@ -183,6 +190,7 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
             prompt_enum=designer_prompt_enum,
             room_description=room_description,
             wall_count=len(self.wall_surfaces),
+            required_wall_objects=self.required_wall_object_constraints,
         )
 
     def _create_critic_tools(self) -> list[FunctionTool]:
@@ -228,6 +236,7 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
             output_type=WallCritiqueWithScores,
             room_description=room_description,
             wall_count=len(self.wall_surfaces),
+            required_wall_objects=self.required_wall_object_constraints,
         )
 
     def _create_planner_agent(
@@ -252,6 +261,7 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
             prompt_enum=planner_prompt_enum,
             room_description=room_description,
             wall_count=len(self.wall_surfaces),
+            required_wall_objects=self.required_wall_object_constraints,
             max_critique_rounds=self.cfg.max_critique_rounds,
             reset_single_category_threshold=single_threshold,
             reset_total_sum_threshold=total_threshold,
@@ -286,7 +296,10 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
                 f"{surface.bounding_box_max[2]:.1f}m tall{exclusion_note}"
             )
 
-        return {"wall_summary": "\n".join(wall_summary)}
+        return {
+            "wall_summary": "\n".join(wall_summary),
+            "required_wall_objects": self.required_wall_object_constraints,
+        }
 
     def _get_design_change_prompt_enum(self) -> Any:
         """Get the prompt enum for design change instruction.
@@ -327,6 +340,10 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
         Args:
             room_description: Human-readable room description.
         """
+        self.required_wall_object_constraints = build_required_wall_object_constraints(
+            room_description
+        )
+
         # Create designer tools first.
         designer_tools = self._create_designer_tools(
             wall_surfaces=self.wall_surfaces,
