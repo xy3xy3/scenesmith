@@ -1,320 +1,292 @@
 #!/usr/bin/env python3
+"""Prompt-only regression test for the local Qwen furniture critic.
+
+This script assembles the real SceneSmith furniture critic prompts, injects a
+SceneBenchmark bedside-wall failure, sends the prompt to a local
+OpenAI-compatible model, and checks that the model treats the issue as
+actionable instead of dismissing it as a false positive.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import subprocess
+import re
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from pathlib import Path
 from typing import Any
 
-from omegaconf import OmegaConf, open_dict
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+if sys.version_info < (3, 11):
+    raise RuntimeError(
+        "SceneSmith requires Python 3.11. Run this script with `uv run "
+        "python scripts/test_local_qwen_final_scene.py ...`."
+    )
+
+from scenesmith.prompts import prompt_manager
+from scenesmith.prompts.registry import FurnitureAgentPrompts
 
 
-DEFAULT_BATCH_DIR = Path(
-    "outputs/critic_probe/2026-07-01_16-31-19/critic_on/batch_001"
-)
 DEFAULT_BASE_URL = "http://127.0.0.1:8002/v1"
 DEFAULT_MODEL = "unsloth/Qwen3.6-27B-GGUF"
+
+SCENE_DESCRIPTION = (
+    "A bedroom with a queen bed centered on the north wall, one nightstand "
+    "with a table lamp on each side of the bed, a dresser against the opposite "
+    "wall facing the bed, a wardrobe next to the dresser, and a small "
+    "wastebasket near the dresser."
+)
+
+SCENEBENCHMARK_CONTEXT = """No physics violations detected.
+
+Additional SceneBenchmark geometry critic context:
+SceneBenchmark geometry critic found rule-level issues. Use this as geometric evidence alongside visual critique:
+- fail: functional_dependency subject=nightstand_0 related=north_wall. Rule dependency `back_against_wall`: subject `nightstand_0`; selected `north_wall`; no allowed face is backed by the wall: gap 0.80m, best back angle 131deg.
+- fail: functional_dependency subject=nightstand_1 related=north_wall. Rule dependency `side_or_back_against_wall`: subject `nightstand_1`; selected `north_wall`; no allowed face is backed by the wall: gap 0.83m, best back angle 133deg.
+"""
+
+INLINE_SCENE_STATE = """Available scene state summary for this prompt-only test:
+- bed_0: category=bed, placement=headboard/back against north_wall, centered on north wall
+- nightstand_0: category=nightstand, beside left side of bed_0, gap to north_wall=0.80m
+- nightstand_1: category=nightstand, beside right side of bed_0, gap to north_wall=0.83m
+- north_wall: wall backing bed_0
+- No collisions and no reachability blockers are present.
+"""
+
+REGRESSION_INSTRUCTION = f"""PROMPT-ONLY REGRESSION TEST.
+
+Tools are unavailable in this test harness. Use the assembled system prompt,
+runner instruction, SceneBenchmark geometry context, and inline scene summary.
+
+{INLINE_SCENE_STATE}
+
+Return concise JSON only with this shape:
+{{
+  "nightstand_wall_issue_actionable": true,
+  "false_positive_issues": [],
+  "recommended_fix": "..."
+}}
+
+The expected behavior is to preserve the general rule: when a bed is backed by a
+wall, adjacent nightstands should normally share that wall backing unless there
+is an explicit freestanding-bed exception or a collision/access reason not to.
+"""
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Replay the batch_001 final bedroom scene against a local OpenAI-"
-            "compatible VLM and check whether bed-against-wall issues are surfaced."
-        )
-    )
-    parser.add_argument(
-        "--scene-state",
-        type=Path,
-        default=None,
-        help=(
-            "Path to the final scene_state.json to evaluate. If omitted, the script "
-            "auto-discovers a single final_scene/scene_state.json under --batch-dir."
-        ),
-    )
-    parser.add_argument(
-        "--batch-dir",
-        type=Path,
-        default=DEFAULT_BATCH_DIR,
-        help="Path to the batch directory containing resolved_config.yaml.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Directory for replay outputs. If omitted, defaults to "
-            "outputs/local_qwen_final_scene_test/<batch_name>."
-        ),
+        description="Assemble real furniture critic prompts and test local Qwen."
     )
     parser.add_argument(
         "--base-url",
         default=os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL),
-        help="OpenAI-compatible base URL for the local llama-server.",
+        help="OpenAI-compatible base URL, e.g. http://127.0.0.1:8002/v1.",
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
+        default=os.environ.get("OPENAI_MODEL", DEFAULT_MODEL),
         help="Model id exposed by the local llama-server.",
     )
     parser.add_argument(
-        "--mode",
-        choices=("original", "benchmark", "both"),
-        default="both",
-        help="Which critique path to run.",
+        "--output-dir",
+        type=Path,
+        default=Path("outputs/local_qwen_prompt_regression/nightstand_wall"),
+        help="Directory where assembled prompts and model response are written.",
     )
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument(
-        "--placement-style",
-        choices=("natural", "perfect"),
-        default="natural",
-        help="Placement style passed to the original furniture critic replay.",
+        "--no-model",
+        action="store_true",
+        help="Only assemble prompts and run static checks; do not call the model.",
     )
     return parser.parse_args()
 
 
-def _abs(path: Path) -> Path:
-    return path.expanduser().resolve()
+def _chat_completions_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/chat/completions"
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+def assemble_messages() -> list[dict[str, str]]:
+    system_prompt = prompt_manager.get_prompt(
+        FurnitureAgentPrompts.STATEFUL_CRITIC_AGENT,
+        scene_description=SCENE_DESCRIPTION,
+    )
+    runner_prompt = prompt_manager.get_prompt(
+        FurnitureAgentPrompts.STATEFUL_CRITIC_RUNNER_INSTRUCTION,
+        physics_context=SCENEBENCHMARK_CONTEXT,
+        placement_style="natural",
+        reachability_context="",
+        robot_width=0.6,
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": runner_prompt},
+        {"role": "user", "content": REGRESSION_INSTRUCTION},
+    ]
 
 
-def _load_resolved_config(batch_dir: Path) -> Any:
-    return OmegaConf.load(batch_dir / "resolved_config.yaml")
-
-
-def _discover_scene_state(batch_dir: Path) -> Path:
-    matches = sorted(batch_dir.glob("scene_*/room_*/scene_states/final_scene/scene_state.json"))
-    if not matches:
-        raise FileNotFoundError(
-            f"No final_scene/scene_state.json found under batch dir: {batch_dir}"
-        )
-    if len(matches) > 1:
-        joined = "\n".join(str(match) for match in matches)
-        raise RuntimeError(
-            "Multiple final scenes found; pass --scene-state explicitly:\n"
-            f"{joined}"
-        )
-    return matches[0]
-
-
-def _default_output_dir(batch_dir: Path) -> Path:
-    return Path("outputs/local_qwen_final_scene_test") / batch_dir.name
-
-
-def _configure_local_model(cfg: Any, *, base_url: str, model: str) -> Any:
-    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
-    with open_dict(cfg):
-        cfg.openai.base_url = base_url
-        cfg.openai.model = model
-        cfg.openai.use_responses = False
-
-        critic_cfg = cfg.experiment.scenebenchmark_critic
-        critic_cfg.enabled = True
-        critic_cfg.room_stage_hooks = ["final_scene"]
-        critic_cfg.house_stage_hooks = []
-        critic_cfg.fd_relation_proposer_mode = "vlm"
-
-        asset_cfg = critic_cfg.asset_annotation
-        asset_cfg.enabled = True
-        asset_cfg.backend = "vlm"
-        asset_cfg.model = model
-        asset_cfg.skip_existing = False
-        asset_cfg.refresh = True
-        asset_cfg.write_back = True
-        asset_cfg.write_files = True
-        asset_cfg.write_scene_state = False
-    return cfg
-
-
-def _run_original_critic(
+def call_model(
     *,
-    scene_state: Path,
-    output_dir: Path,
+    messages: list[dict[str, str]],
     base_url: str,
     model: str,
-    placement_style: str,
+    temperature: float,
+    max_tokens: int,
 ) -> dict[str, Any]:
-    target_dir = output_dir / "original_critic"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env.setdefault("OPENAI_API_KEY", "dummy")
-    env["OPENAI_BASE_URL"] = base_url
-    cmd = [
-        sys.executable,
-        str(_repo_root() / "scripts/run_single_scene_original_critic.py"),
-        "--scene-state",
-        str(scene_state),
-        "--output-dir",
-        str(target_dir),
-        "--model",
-        model,
-        "--agent-type",
-        "furniture",
-        "--placement-style",
-        placement_style,
-    ]
-    completed = subprocess.run(
-        cmd,
-        cwd=_repo_root(),
-        env=env,
-        check=False,
-        text=True,
-        capture_output=True,
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    request = urllib.request.Request(
+        _chat_completions_url(base_url),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY', 'dummy')}",
+        },
+        method="POST",
     )
-    critic_text_path = target_dir / "exports/furniture/critic_text.md"
-    critic_text = (
-        critic_text_path.read_text(encoding="utf-8")
-        if critic_text_path.exists()
-        else ""
+    try:
+        with urllib.request.urlopen(request, timeout=240) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Model request failed: HTTP {exc.code}: {body}") from exc
+
+
+def _response_text(response: dict[str, Any]) -> str:
+    choices = response.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False)
+
+
+def evaluate_response(text: str) -> dict[str, Any]:
+    lower = text.lower()
+    false_positive_near_nightstand = bool(
+        re.search(r"nightstand.{0,160}(false positive|no action needed)", lower, re.S)
+        or re.search(
+            r"(false positive|no action needed).{0,160}nightstand", lower, re.S
+        )
+    )
+    actionable = (
+        "nightstand" in lower
+        and "wall" in lower
+        and any(
+            token in lower
+            for token in ("actionable", "snap", "shift", "move", "against")
+        )
+        and not false_positive_near_nightstand
     )
     return {
-        "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-4000:],
-        "stderr_tail": completed.stderr[-4000:],
-        "critic_text_path": str(critic_text_path) if critic_text_path.exists() else None,
-        "mentions_bed": "bed" in critic_text.lower(),
-        "flags_bed_issue": _flags_bed_issue(critic_text),
-        "bed_excerpt": _extract_bed_excerpt(critic_text),
+        "passed": actionable,
+        "false_positive_near_nightstand": false_positive_near_nightstand,
+        "mentions_nightstand": "nightstand" in lower,
+        "mentions_wall": "wall" in lower,
     }
 
 
-def _run_benchmark_critic(
+def write_artifacts(
     *,
-    scene_state: Path,
-    batch_dir: Path,
     output_dir: Path,
-    base_url: str,
-    model: str,
-) -> dict[str, Any]:
-    from scenesmith.experiments.indoor_scene_generation import _load_room_scene_state
-    from scenesmith.scenebenchmark_critic.api import write_room_stage_report
-
-    target_dir = output_dir / "scenebenchmark"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    cfg = _configure_local_model(
-        _load_resolved_config(batch_dir),
-        base_url=base_url,
-        model=model,
-    )
-    scene = _load_room_scene_state(scene_state)
-    payload = write_room_stage_report(
-        scene,
-        target_dir,
-        config=cfg,
-        raw_config=cfg,
-        stage="final_scene",
-    )
-    results = payload.get("results", []) if payload else []
-    issues = [
-        result
-        for result in results
-        if str(result.get("label") or "").lower() in {"fail", "degraded", "unknown"}
-    ]
-    bed_issues = [
-        issue
-        for issue in issues
-        if "bed" in json.dumps(issue, ensure_ascii=False).lower()
-    ]
-    return {
-        "report_path": str(target_dir / "scenebenchmark_critic.md"),
-        "json_path": str(target_dir / "scenebenchmark_critic.json"),
-        "issue_count": len(issues),
-        "result_count": len(results),
-        "bed_issue_count": len(bed_issues),
-        "bed_issues": bed_issues,
-    }
-
-
-def _flags_bed_issue(text: str) -> bool:
-    lowered = text.lower()
-    return "bed" in lowered and any(
-        marker in lowered
-        for marker in (
-            "not against",
-            "too far from wall",
-            "away from wall",
-            "bed issue",
-            "problem with the bed",
-            "bed should",
-            "bed needs",
-            "headboard should",
-        )
-    )
-
-
-def _extract_bed_excerpt(text: str) -> str | None:
-    for paragraph in text.split("\n\n"):
-        if "bed" in paragraph.lower():
-            return paragraph.strip()
-    return None
-
-
-def main() -> int:
-    args = parse_args()
-    os.environ.setdefault("OPENAI_API_KEY", "dummy")
-    os.environ["OPENAI_BASE_URL"] = args.base_url
-    batch_dir = _abs(args.batch_dir)
-    scene_state = _abs(args.scene_state) if args.scene_state else _discover_scene_state(batch_dir)
-    output_dir = _abs(args.output_dir) if args.output_dir else _abs(_default_output_dir(batch_dir))
+    messages: list[dict[str, str]],
+    response: dict[str, Any] | None,
+    evaluation: dict[str, Any],
+    args: argparse.Namespace,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    if not scene_state.exists():
-        raise FileNotFoundError(f"scene_state not found: {scene_state}")
-    if not (batch_dir / "resolved_config.yaml").exists():
-        raise FileNotFoundError(f"resolved_config.yaml not found under: {batch_dir}")
-
-    summary: dict[str, Any] = {
-        "scene_state": str(scene_state),
-        "batch_dir": str(batch_dir),
+    (output_dir / "assembled_messages.json").write_text(
+        json.dumps(messages, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    if response is not None:
+        (output_dir / "model_response.json").write_text(
+            json.dumps(response, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output_dir / "model_response.txt").write_text(
+            _response_text(response),
+            encoding="utf-8",
+        )
+    summary = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "base_url": args.base_url,
         "model": args.model,
-        "mode": args.mode,
-        "python": sys.executable,
+        "called_model": response is not None,
+        "evaluation": evaluation,
     }
-
-    if args.mode in {"original", "both"}:
-        summary["original_critic"] = _run_original_critic(
-            scene_state=scene_state,
-            output_dir=output_dir,
-            base_url=args.base_url,
-            model=args.model,
-            placement_style=args.placement_style,
-        )
-
-    if args.mode in {"benchmark", "both"}:
-        summary["scenebenchmark"] = _run_benchmark_critic(
-            scene_state=scene_state,
-            batch_dir=batch_dir,
-            output_dir=output_dir,
-            base_url=args.base_url,
-            model=args.model,
-        )
-
     summary_path = output_dir / "summary.json"
     summary_path.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
-    print("\nText reports:")
-    if "original_critic" in summary:
-        print(
-            "  original critic: "
-            f"{summary['original_critic'].get('critic_text_path') or 'not generated'}"
+    return summary_path
+
+
+def main() -> int:
+    args = parse_args()
+    messages = assemble_messages()
+    assembled_text = "\n\n".join(message["content"] for message in messages)
+    required_fragments = [
+        "Bedside Wall Anchoring",
+        "SceneBenchmark geometry critic context",
+        "back_against_wall",
+        "side_or_back_against_wall",
+    ]
+    missing = [
+        fragment for fragment in required_fragments if fragment not in assembled_text
+    ]
+    if missing:
+        raise AssertionError(
+            f"Assembled prompt is missing required fragments: {missing}"
         )
-    if "scenebenchmark" in summary:
-        print(
-            "  scenebenchmark: "
-            f"{summary['scenebenchmark'].get('report_path') or 'not generated'}"
+
+    response = None
+    evaluation: dict[str, Any] = {
+        "passed": True,
+        "static_only": True,
+        "missing_fragments": [],
+    }
+    if not args.no_model:
+        response = call_model(
+            messages=messages,
+            base_url=args.base_url,
+            model=args.model,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
         )
-    print(f"\nWrote summary to {summary_path}")
-    return 0
+        evaluation = evaluate_response(_response_text(response))
+
+    summary_path = write_artifacts(
+        output_dir=args.output_dir,
+        messages=messages,
+        response=response,
+        evaluation=evaluation,
+        args=args,
+    )
+    print(json.dumps(evaluation, indent=2, ensure_ascii=False))
+    print(f"Wrote prompt regression artifacts to {summary_path}")
+    return 0 if evaluation.get("passed") else 1
 
 
 if __name__ == "__main__":

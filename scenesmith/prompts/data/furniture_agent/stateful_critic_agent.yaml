@@ -129,6 +129,16 @@ prompt: |
     wardrobes, bookcases, and shelving units should typically be placed AGAINST WALLS,
     not free-standing in the middle of rooms. If you see storage furniture floating
     in room centers, flag this as a placement issue and recommend snapping to a wall.
+  - **Bedside Wall Anchoring** - If a bed's headboard/back is against a wall,
+    nightstands, bedside tables, and similar bedside storage flanking that headboard
+    should usually share that same wall backing while remaining beside the bed.
+    Treat SceneBenchmark `back_against_wall` or `side_or_back_against_wall` failures
+    for these bedside objects as real actionable issues unless the prompt explicitly
+    requests a freestanding/island bed, the room has no usable wall behind the bed,
+    or wall backing would create collisions or block access. Do NOT dismiss the issue
+    merely because "nightstands serve the bed"; they can serve the bed and still need
+    to sit against the headboard wall. Recommend snapping or shifting the nightstand
+    to the bed's wall while preserving bedside adjacency.
   - **Physics-validated collisions** (check provided physics validation data, not
     visual bounding box overlap - chairs under tables are valid functional
     overlaps)
@@ -237,6 +247,10 @@ prompt: |
   # Evaluation Method
   - Assess images of the current scene only
   - Prioritize practical, functional improvements
+  - Treat injected SceneBenchmark geometry failures as measured evidence. You may
+    mark one as irrelevant only when its semantic precondition is clearly false for
+    this scene. Do not override exact gap/angle wall-backing failures with generic
+    interior-design assumptions.
   - Respect placement style:
     * "Natural" scenes: SUBTLE imperfections only (barely noticeable rotation)
     * "Perfect" scenes: expect precise alignment and spacing

@@ -13,6 +13,7 @@ import logging
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import trimesh
@@ -163,6 +164,7 @@ def _filter_surfaces_by_layer_spacing(
     surfaces: list[SupportSurface],
     min_spacing: float,
     top_clearance: float,
+    height_tolerance: float = 1e-4,
 ) -> list[SupportSurface]:
     """Filter surfaces by layer spacing to match HSM's behavior.
 
@@ -190,20 +192,35 @@ def _filter_surfaces_by_layer_spacing(
     ]
     surfaces_with_heights.sort(key=lambda x: x[1])
 
-    # Compute spacing to next layer above for each surface.
-    # Build dict: height -> spacing_to_next_layer.
-    layer_heights = {}
-    for i in range(len(surfaces_with_heights) - 1):
-        current_height = surfaces_with_heights[i][1]
-        next_height = surfaces_with_heights[i + 1][1]
-        spacing = next_height - current_height
-        layer_heights[current_height] = spacing
+    # Compute spacing to next layer above for each surface. Multiple support
+    # patches can be coplanar; treat them as one layer so equal-height patches
+    # do not overwrite each other's spacing with zero.
+    layers: list[dict[str, Any]] = []
+    for surface, height in surfaces_with_heights:
+        if layers and abs(height - layers[-1]["height"]) <= height_tolerance:
+            layer_surfaces = layers[-1]["surfaces"]
+            layer_surfaces.append((surface, height))
+            layers[-1]["height"] = float(
+                sum(item_height for _item_surface, item_height in layer_surfaces)
+                / len(layer_surfaces)
+            )
+        else:
+            layers.append({"height": height, "surfaces": [(surface, height)]})
+
+    space_above_by_surface_id = {}
+    for i, layer in enumerate(layers):
+        if i == len(layers) - 1:
+            space_above = top_clearance
+        else:
+            space_above = layers[i + 1]["height"] - layer["height"]
+        for surface, _height in layer["surfaces"]:
+            space_above_by_surface_id[surface.surface_id] = space_above
 
     # Filter surfaces by spacing.
     filtered = []
     for surface, height in surfaces_with_heights:
         # Get spacing to layer above (use top_clearance if no layer above).
-        space_above = layer_heights.get(height, top_clearance)
+        space_above = space_above_by_surface_id.get(surface.surface_id, top_clearance)
 
         if space_above >= min_spacing:
             filtered.append(surface)

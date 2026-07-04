@@ -267,6 +267,33 @@ class TestPromptSystem(unittest.TestCase):
 
         self.assertIn("modern living room", rendered_prompt)
 
+    def test_furniture_prompts_include_bedside_wall_anchoring_rule(self):
+        """Furniture prompts should keep bed-backed nightstand wall constraints."""
+        designer_prompt = prompt_manager.get_prompt(
+            prompt_name=FurnitureAgentPrompts.DESIGNER_AGENT,
+            has_reference_image=False,
+        )
+        critic_prompt = prompt_manager.get_prompt(
+            prompt_name=FurnitureAgentPrompts.STATEFUL_CRITIC_AGENT,
+            scene_description="A bedroom with a bed and two nightstands.",
+        )
+        runner_prompt = prompt_manager.get_prompt(
+            prompt_name=FurnitureAgentPrompts.STATEFUL_CRITIC_RUNNER_INSTRUCTION,
+            physics_context="Additional SceneBenchmark geometry critic context",
+            placement_style="natural",
+            reachability_context="",
+            robot_width=0.6,
+        )
+
+        for rendered_prompt in (designer_prompt, critic_prompt, runner_prompt):
+            self.assertIn("nightstand", rendered_prompt.lower())
+            self.assertIn("wall", rendered_prompt.lower())
+
+        self.assertIn("BEDSIDE WALL ANCHORING", designer_prompt)
+        self.assertIn("Bedside Wall Anchoring", critic_prompt)
+        self.assertIn("Do NOT dismiss", critic_prompt)
+        self.assertIn("Do not label that specific bedside wall issue", runner_prompt)
+
     def test_registry_functionality(self):
         """Test registry functionality with actual prompts."""
         # Test getting prompt through registry.

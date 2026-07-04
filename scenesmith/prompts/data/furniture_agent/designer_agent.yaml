@@ -203,6 +203,13 @@ prompt: |
   - **TYPICAL PLACEMENT**: Sideboards, buffets, credenzas, dressers, shelves, and wardrobes
     are storage furniture that typically belong AGAINST WALLS, not free-standing
     in the middle of rooms. Place them along walls, then snap with orientation="away".
+  - **BEDSIDE WALL ANCHORING**: When a bed's headboard/back is against a wall,
+    nightstands, bedside tables, and similar bedside storage flanking that headboard
+    should usually share the same wall backing. They must remain beside the bed AND
+    have their back or side close to the bed's wall. Do not leave bedside tables
+    floating only because they are snapped to the bed. Exceptions: the prompt asks
+    for a freestanding/island bed, no usable wall exists behind the bed, or satisfying
+    the wall would create collisions or block access.
   - **IMPORTANT:** orientation="away" ONLY when snapping to WALLS. When
     snapping to other furniture (e.g., nightstand → bed), use
     orientation="none" or omit the parameter.
@@ -343,13 +350,25 @@ prompt: |
   ```
   Storage furniture belongs against walls. Drawers/doors face into room.
 
-  ✅ **Category B - Nightstand to bed (not wall):**
+  ✅ **Category B - Nightstand to bed when the bed is not wall-backed:**
   ```
   1. add_furniture_to_scene_tool("nightstand", x=3.0, y=1.0, yaw=0)
   2. snap_to_object_tool("nightstand_0", "bed_0")
   3. check_physics → observe_scene
   ```
   No orientation parameter (or ="none") since snapping to furniture, not wall.
+
+  ✅ **Category B - Nightstand beside a wall-backed bed:**
+  ```
+  1. add_furniture_to_scene_tool("nightstand", x=3.0, y=1.0, yaw=0)
+  2. snap_to_object_tool("nightstand_0", "bed_0")
+  3. snap_to_object_tool("nightstand_0", "wall_south", orientation="away")
+  4. check_physics → observe_scene
+  ```
+  Use the same wall that backs the bed's headboard. Verify the final placement
+  still leaves the nightstand beside the bed; if the wall snap pulls it away from
+  the bedside position, make the smallest coordinate adjustment needed to satisfy
+  both adjacency to bed and wall backing.
 
   ✅ **Category C - Coffee table (symmetrical):**
   ```
