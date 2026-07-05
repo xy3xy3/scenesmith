@@ -30,6 +30,15 @@ COMPUTER_SCREEN_CATEGORIES = {
     "tablet",
     "tablet_computer",
 }
+MEDIA_CATEGORIES = {
+    "media_console",
+    "projection_screen",
+    "screen",
+    "television",
+    "tv",
+    "wall_mounted_television",
+    "wall_mounted_tv",
+}
 FURNITURE_RELATIONS = {
     "back_against_wall",
     "furniture_faces_furniture",
@@ -176,12 +185,16 @@ def _furniture_issue_is_relevant(
         return subject_id in scope["object_ids"]
     if relation_type and relation_type not in FURNITURE_RELATIONS:
         return False
-    if relation_type == "seating_to_media" and not _is_seating(objects.get(subject_id)):
-        return False
-    if relation_type == "seating_to_work_surface" and not _is_seating(
-        objects.get(subject_id)
-    ):
-        return False
+    if relation_type == "seating_to_media":
+        if not _is_seating(objects.get(subject_id)) or not any(
+            _is_media(objects.get(target_id)) for target_id in related_ids
+        ):
+            return False
+    if relation_type == "seating_to_work_surface":
+        if not _is_seating(objects.get(subject_id)) or not any(
+            _is_work_surface(objects.get(target_id)) for target_id in related_ids
+        ):
+            return False
     involved = {subject_id, *related_ids}
     if not involved & scope["object_ids"]:
         return False
@@ -350,6 +363,14 @@ def _is_computer_screen(obj: dict[str, Any] | None) -> bool:
     text = _category_text(obj)
     return category in COMPUTER_SCREEN_CATEGORIES or any(
         token in text for token in ("computer_monitor", "display", "screen")
+    )
+
+
+def _is_media(obj: dict[str, Any] | None) -> bool:
+    category = _category(obj)
+    text = _category_text(obj)
+    return category in MEDIA_CATEGORIES or any(
+        token in text for token in ("television", "tv", "projector", "media")
     )
 
 

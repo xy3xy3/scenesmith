@@ -45,6 +45,10 @@ from scenesmith.agent_utils.objaverse_retrieval_server.dataclasses import (
     ObjaverseRetrievalServerRequest,
 )
 from scenesmith.agent_utils.room import AgentType, ObjectType
+from scenesmith.agent_utils.simple_manipuland_primitives import (
+    can_generate_simple_manipuland_primitive,
+    generate_simple_manipuland_primitive,
+)
 from scenesmith.agent_utils.thin_covering_generator import (
     create_circular_thin_covering_glb,
     create_rectangular_thin_covering_glb,
@@ -542,8 +546,32 @@ class AssetRouter:
             if result is not None:
                 return result
 
+        if self._simple_manipuland_fallback_enabled(item):
+            console_logger.warning(
+                f"All configured strategies exhausted for '{item.description}'; "
+                "trying procedural primitive fallback"
+            )
+            fallback_path = generate_simple_manipuland_primitive(item, geometry_dir)
+            if fallback_path is not None:
+                return GeneratedGeometry(
+                    geometry_path=fallback_path,
+                    item=item,
+                    asset_source="procedural_primitive",
+                )
+
         console_logger.warning(f"All strategies exhausted for '{item.description}'")
         return None
+
+    def _simple_manipuland_fallback_enabled(self, item: AssetItem) -> bool:
+        """Whether simple procedural fallback should run for this item."""
+        if self.agent_type != AgentType.MANIPULAND:
+            return False
+        if not can_generate_simple_manipuland_primitive(item):
+            return False
+        asset_manager_cfg = self.cfg.get("asset_manager", {}) or {}
+        router_cfg = asset_manager_cfg.get("router", {}) or {}
+        fallback_cfg = router_cfg.get("simple_manipuland_fallback", {}) or {}
+        return bool(fallback_cfg.get("enabled", True))
 
     def _try_articulated_strategy(
         self,

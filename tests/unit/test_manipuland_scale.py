@@ -17,6 +17,18 @@ class TestManipulandScale(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertEqual(profile.name, "desk_lamp")
 
+    def test_match_new_small_object_profiles(self) -> None:
+        self.assertEqual(
+            match_size_profile("round drink coasters", "coasters").name, "coaster"
+        )
+        self.assertEqual(
+            match_size_profile("television remote control", "remote").name,
+            "remote_control",
+        )
+        self.assertEqual(
+            match_size_profile("forks and spoons", "cutlery").name, "cutlery"
+        )
+
     def test_normalize_known_manipuland_dimensions(self) -> None:
         dimensions, profile = normalize_manipuland_dimensions(
             description="spiral notebook",

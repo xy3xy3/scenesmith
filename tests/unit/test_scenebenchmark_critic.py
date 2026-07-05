@@ -5193,6 +5193,59 @@ def test_agent_prompt_context_keeps_furniture_layout_issues() -> None:
     assert "fd_mouse_faces_monitor" not in check_ids
 
 
+def test_agent_prompt_context_filters_invalid_seating_relation_targets() -> None:
+    payload = _workstation_payload()
+    payload["results"] = [
+        {
+            "check_id": "fd_chair_desk",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "office_chair_0",
+            "related_objects": ["study_desk_0"],
+            "relation_type": "seating_to_work_surface",
+            "reason": "chair should face the desk",
+        },
+        {
+            "check_id": "fd_shelf_desk_noise",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "shelving_unit_0",
+            "related_objects": ["study_desk_0"],
+            "relation_type": "seating_to_work_surface",
+            "reason": "storage furniture is not a seating subject",
+        },
+        {
+            "check_id": "fd_chair_shelf_noise",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "office_chair_0",
+            "related_objects": ["shelving_unit_0"],
+            "relation_type": "seating_to_work_surface",
+            "reason": "bookshelf is not a work surface target",
+        },
+        {
+            "check_id": "fd_chair_shelf_media_noise",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "office_chair_0",
+            "related_objects": ["shelving_unit_0"],
+            "relation_type": "seating_to_media",
+            "reason": "bookshelf is not media",
+        },
+    ]
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.FURNITURE,
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert "fd_chair_desk" in check_ids
+    assert "fd_shelf_desk_noise" not in check_ids
+    assert "fd_chair_shelf_noise" not in check_ids
+    assert "fd_chair_shelf_media_noise" not in check_ids
+
+
 def test_markdown_report_excludes_ignored_issues() -> None:
     payload = {
         "scope": "room:main",
