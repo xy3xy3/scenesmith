@@ -31,11 +31,16 @@ COMPUTER_SCREEN_CATEGORIES = {
     "tablet_computer",
 }
 MEDIA_CATEGORIES = {
+    "entertainment_center",
+    "entertainment_center_entertainment",
     "media_console",
+    "media_center",
     "projection_screen",
     "screen",
     "television",
     "tv",
+    "tv_console",
+    "tv_stand",
     "wall_mounted_television",
     "wall_mounted_tv",
 }
@@ -192,7 +197,8 @@ def _furniture_issue_is_relevant(
             return False
     if relation_type == "seating_to_work_surface":
         if not _is_seating(objects.get(subject_id)) or not any(
-            _is_work_surface(objects.get(target_id)) for target_id in related_ids
+            _is_seating_work_surface_target(objects.get(target_id))
+            for target_id in related_ids
         ):
             return False
     involved = {subject_id, *related_ids}
@@ -327,15 +333,8 @@ def _category_text(obj: dict[str, Any] | None) -> str:
 
 def _is_seating(obj: dict[str, Any] | None) -> bool:
     hints = (obj or {}).get("functional_hints") or {}
-    affordances = {
-        str(item).strip().lower()
-        for item in (
-            hints.get("functional_categories")
-            or hints.get("candidate_affordances")
-            or []
-        )
-    }
-    return "sittable" in affordances or _category(obj) in {
+    category_group = str(hints.get("category_group") or "").strip().lower()
+    return category_group == "seating" or _category(obj) in {
         "armchair",
         "bench",
         "chair",
@@ -354,6 +353,30 @@ def _is_work_surface(obj: dict[str, Any] | None) -> bool:
     } or _category(obj) in {"desk", "table", "counter", "island"}
 
 
+def _is_seating_work_surface_target(obj: dict[str, Any] | None) -> bool:
+    hints = (obj or {}).get("functional_hints") or {}
+    category_group = str(hints.get("category_group") or "").strip().lower()
+    category = _category(obj)
+    text = _category_text(obj)
+    if category_group == "work_surface":
+        return True
+    if category in {
+        "coffee_table",
+        "counter",
+        "desk",
+        "dining_table",
+        "island",
+        "table",
+        "work_table",
+        "writing_desk",
+    }:
+        return True
+    return any(
+        token in text
+        for token in ("desk", "dining_table", "work_table", "writing_desk")
+    )
+
+
 def _is_workstation_object(obj: dict[str, Any] | None) -> bool:
     return _is_computer_screen(obj) or _is_computer_peripheral(obj)
 
@@ -370,7 +393,15 @@ def _is_media(obj: dict[str, Any] | None) -> bool:
     category = _category(obj)
     text = _category_text(obj)
     return category in MEDIA_CATEGORIES or any(
-        token in text for token in ("television", "tv", "projector", "media")
+        token in text
+        for token in (
+            "entertainment_center",
+            "media",
+            "projector",
+            "television",
+            "tv",
+            "tv_stand",
+        )
     )
 
 

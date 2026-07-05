@@ -5068,8 +5068,22 @@ def _workstation_payload() -> dict[str, Any]:
     )
     shelf["object_type"] = "furniture"
     shelf["functional_hints"]["scene_object_type"] = "furniture"
+    sideboard = _benchmark_obj(
+        "sideboard_0", "sideboard", (2.0, 1.0, 0.45), (1.2, 0.45, 0.9)
+    )
+    sideboard["object_type"] = "furniture"
+    sideboard["functional_hints"]["scene_object_type"] = "furniture"
+    sideboard["functional_hints"]["category_group"] = "storage_surface"
+    sideboard["functional_hints"]["functional_categories"] = [
+        "openable",
+        "sittable",
+        "storage",
+        "supportable",
+    ]
     return {
-        "case_pack": _benchmark_case_pack([desk, chair, monitor, mouse, book, shelf]),
+        "case_pack": _benchmark_case_pack(
+            [desk, chair, monitor, mouse, book, shelf, sideboard]
+        ),
         "results": [
             {
                 "check_id": "fd_monitor_on_desk",
@@ -5219,18 +5233,18 @@ def test_agent_prompt_context_filters_invalid_seating_relation_targets() -> None
             "metric": "functional_dependency",
             "label": "fail",
             "primary_object": "office_chair_0",
-            "related_objects": ["shelving_unit_0"],
+            "related_objects": ["sideboard_0"],
             "relation_type": "seating_to_work_surface",
-            "reason": "bookshelf is not a work surface target",
+            "reason": "storage furniture is not a work surface target",
         },
         {
             "check_id": "fd_chair_shelf_media_noise",
             "metric": "functional_dependency",
             "label": "fail",
             "primary_object": "office_chair_0",
-            "related_objects": ["shelving_unit_0"],
+            "related_objects": ["sideboard_0"],
             "relation_type": "seating_to_media",
-            "reason": "bookshelf is not media",
+            "reason": "sideboard is not media",
         },
     ]
 
@@ -5244,6 +5258,60 @@ def test_agent_prompt_context_filters_invalid_seating_relation_targets() -> None
     assert "fd_shelf_desk_noise" not in check_ids
     assert "fd_chair_shelf_noise" not in check_ids
     assert "fd_chair_shelf_media_noise" not in check_ids
+
+
+def test_agent_prompt_context_keeps_furniture_media_targets() -> None:
+    sofa = _benchmark_obj("sofa_0", "sofa", (0.0, 0.0, 0.45), (1.8, 0.8, 0.9))
+    sofa["object_type"] = "furniture"
+    sofa["functional_hints"]["scene_object_type"] = "furniture"
+    sofa["functional_hints"]["category_group"] = "seating"
+    media = _benchmark_obj(
+        "entertainment_center_0",
+        "entertainment_center_entertainment",
+        (0.0, 2.0, 0.45),
+        (1.8, 0.45, 0.9),
+    )
+    media["object_type"] = "furniture"
+    media["functional_hints"]["scene_object_type"] = "furniture"
+    media["functional_hints"]["category_group"] = "storage_surface"
+    sideboard = _benchmark_obj(
+        "sideboard_0", "sideboard", (2.0, 2.0, 0.45), (1.2, 0.45, 0.9)
+    )
+    sideboard["object_type"] = "furniture"
+    sideboard["functional_hints"]["scene_object_type"] = "furniture"
+    sideboard["functional_hints"]["category_group"] = "storage_surface"
+    payload = {
+        "case_pack": _benchmark_case_pack([sofa, media, sideboard]),
+        "results": [
+            {
+                "check_id": "fd_sofa_media",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "sofa_0",
+                "related_objects": ["entertainment_center_0"],
+                "relation_type": "seating_to_media",
+                "reason": "sofa should face the media furniture",
+            },
+            {
+                "check_id": "fd_sofa_sideboard_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "sofa_0",
+                "related_objects": ["sideboard_0"],
+                "relation_type": "seating_to_media",
+                "reason": "sideboard is not media",
+            },
+        ],
+    }
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.FURNITURE,
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert "fd_sofa_media" in check_ids
+    assert "fd_sofa_sideboard_noise" not in check_ids
 
 
 def test_markdown_report_excludes_ignored_issues() -> None:
