@@ -24,6 +24,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import
     FunctionalDependencyProposalSet,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import *
+from scenesmith.scenebenchmark_critic.orientation_contracts import (
+    orientation_contract_subjects,
+)
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.profiles import (
     object_function_profile,
 )
@@ -115,6 +118,7 @@ def propose_dependency_relations(
     max_proposals = int(
         getattr(getattr(config, "run", config), "max_fd_relation_proposals", 8) or 8
     )
+    contracted_orientation_subjects = orientation_contract_subjects(case_pack)
     proposer_mode = (
         str(
             getattr(
@@ -138,6 +142,9 @@ def propose_dependency_relations(
     normalized = _normalize_proposals(
         case_pack, vlm_proposals, store, max_proposals=max_proposals
     )
+    normalized = _without_contracted_orientation_subjects(
+        normalized, contracted_orientation_subjects
+    )
     if len(normalized) >= max_proposals:
         return normalized
 
@@ -146,6 +153,9 @@ def propose_dependency_relations(
         _template_proposals(store, max_proposals=max_proposals * 2),
         store,
         max_proposals=max_proposals * 2,
+    )
+    template_proposals = _without_contracted_orientation_subjects(
+        template_proposals, contracted_orientation_subjects
     )
     seen = {_proposal_key(proposal) for proposal in normalized}
     for proposal in template_proposals:
@@ -160,6 +170,23 @@ def propose_dependency_relations(
         key=lambda item: (-item.priority, item.subject_id, ",".join(item.target_ids))
     )
     return normalized[:max_proposals]
+
+
+def _without_contracted_orientation_subjects(
+    proposals: list[FunctionalDependencyProposal],
+    contracted_subjects: set[str],
+) -> list[FunctionalDependencyProposal]:
+    if not contracted_subjects:
+        return proposals
+    return [
+        proposal
+        for proposal in proposals
+        if not (
+            proposal.subject_id in contracted_subjects
+            and proposal.relation_type
+            in {"seating_to_media", "seating_to_work_surface"}
+        )
+    ]
 
 
 def _propose_via_vlm(

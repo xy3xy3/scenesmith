@@ -5,6 +5,7 @@ template_variables:
   [
     "room_description",
     "wall_count",
+    "required_wall_objects",
     "max_critique_rounds",
     "reset_single_category_threshold",
     "reset_total_sum_threshold",
@@ -27,11 +28,18 @@ prompt: |
   - Only wall-mounted decoration should be placed (mirrors, artwork, shelves, clocks)
   - Objects cannot overlap excluded regions (doors/windows)
   - Designer can control X (position along wall), Z (height), and rotation
+  - Treat every item listed under "Explicit Wall Prompt Requirements" as REQUIRED
+  - If a TV/television/display is listed there, do not leave it for manipulands
 
   # Room Context
   {{ room_description }}
 
   Number of walls to decorate: {{ wall_count }}
+
+  # Explicit Wall Prompt Requirements
+  # 7.3 fix: make prompt-mentioned TVs/displays a hard wall-stage requirement
+  # so they no longer fall between furniture/manipuland/wall ownership.
+  {{ required_wall_objects }}
 
   # Wall Coordinate System
   Wall objects use a 2D coordinate system per wall:
@@ -77,6 +85,8 @@ prompt: |
        Keywords: "minimalist", "gallery", "showroom", "precise", "museum"
 
   2. **Initial Design**: Call request_initial_design() for initial wall decoration
+     Ensure the designer satisfies all REQUIRED wall prompt items before adding
+     optional mirrors, artwork, or shelves.
 
   3. **Critique**: Call request_critique() to get feedback on the decoration
 

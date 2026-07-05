@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import math
+
 from typing import Any
 
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
     GeometryStore,
     angle_to_target_deg,
+    bbox_center_xy,
     bbox_gap_xy,
+    bbox_height_span,
     distance_xy,
+    front_vector,
     object_category,
     seating_angle_to_target_deg,
+    side_vector,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import *
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.profiles import (
@@ -33,6 +39,8 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_d
     _is_nightstand_target,
     _is_seating_subject,
     _is_side_surface_target,
+    _is_computer_peripheral_subject,
+    _is_computer_screen_target,
     _is_supported_small_subject,
     _is_work_surface_target,
 )
@@ -73,7 +81,7 @@ def evaluate_functional_dependency(
         )
     )
     label, confidence, reason, diagnostics = _eval_relation_over_targets(
-        store, subject, targets, relation_type
+        store, subject, targets, relation_type, check=check
     )
     selected_related_objects = [
         str(item)
@@ -124,7 +132,12 @@ def _infer_relation_type(subject: dict[str, Any], target: dict[str, Any]) -> str
 
 def _normalize_relation_type(relation_type: str) -> str:
     return {
+        "back_to_wall": "back_against_wall",
+        "face_to": "furniture_faces_furniture",
+        "faces": "furniture_faces_furniture",
+        "facing": "furniture_faces_furniture",
         "media_viewing": "seating_to_media",
+        "seat_faces_table": "seat_faces_surface",
         "bedside": "bedside_pair",
         "bed_to_nightstands": "bedside_pair",
         "near": "generic_near_relation",
@@ -137,6 +150,8 @@ def _eval_relation_over_targets(
     subject: dict[str, Any],
     targets: list[dict[str, Any]],
     relation_type: str,
+    *,
+    check: dict[str, Any] | None = None,
 ) -> tuple[str, float, str, dict[str, Any]]:
     if relation_type == "dining_set":
         return _eval_dining_set(subject, targets)
@@ -182,12 +197,29 @@ def _eval_relation_over_targets(
                 continue
         evaluator = {
             "seating_to_work_surface": _eval_seating_to_surface,
+            "seat_faces_surface": _eval_seating_to_surface,
             "seating_to_media": _eval_facing_relation,
             "bed_to_nightstand": _eval_bed_to_nightstand,
             "object_on_support": _eval_object_on_support,
             "lamp_to_surface": _eval_object_on_support,
         }.get(target_relation, _eval_generic_near_relation)
-        if evaluator is _eval_object_on_support:
+        if target_relation in {
+            "back_against_wall",
+            "side_or_back_against_wall",
+            "mounted_to_wall",
+            "mounted_to_ceiling",
+            "object_on_floor",
+            "computer_peripheral_faces_screen",
+            "furniture_faces_furniture",
+            "display_faces_user",
+        }:
+            label, confidence, reason = _eval_annotated_dependency_relation(
+                subject, target, target_relation, check
+            )
+            scored.append(
+                _target_eval_payload(target, label, confidence, reason, target_relation)
+            )
+        elif evaluator is _eval_object_on_support:
             support_result = evaluate_support_relation(
                 eval_subject, eval_target, target_relation, store=store
             )
@@ -745,6 +777,238 @@ def _eval_bed_to_nightstand(
     return "fail", 0.85, f"nightstand is too far from the bed: {gap:.2f}m gap."
 
 
+def _eval_annotated_dependency_relation(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    relation_type: str,
+    check: dict[str, Any] | None,
+) -> tuple[str, float, str]:
+    dependency = _dependency_payload(check)
+    if relation_type == "back_against_wall":
+        return _eval_face_against_wall(
+            subject,
+            target,
+            dependency,
+            candidate_faces=("back",),
+            allow_distance_degraded=False,
+        )
+    if relation_type == "side_or_back_against_wall":
+        return _eval_face_against_wall(
+            subject,
+            target,
+            dependency,
+            candidate_faces=("back", "left", "right"),
+            allow_distance_degraded=False,
+        )
+    if relation_type == "mounted_to_wall":
+        return _eval_face_against_wall(
+            subject, target, dependency, candidate_faces=("back", "front")
+        )
+    if relation_type == "mounted_to_ceiling":
+        return _eval_vertical_attachment(
+            subject, target, dependency, relation_type=relation_type
+        )
+    if relation_type == "object_on_floor":
+        return _eval_vertical_attachment(
+            subject, target, dependency, relation_type=relation_type
+        )
+    if relation_type == "furniture_faces_furniture":
+        return _eval_face_to_target(subject, target, dependency, relation_type)
+    if relation_type == "computer_peripheral_faces_screen":
+        return _eval_face_to_target(subject, target, dependency, relation_type)
+    if relation_type == "display_faces_user":
+        return _eval_face_to_target(subject, target, dependency, relation_type)
+    return _eval_generic_near_relation(subject, target, relation_type)
+
+
+def _dependency_payload(check: dict[str, Any] | None) -> dict[str, Any]:
+    evidence = (check or {}).get("evidence") or {}
+    dependency = evidence.get("dependency") if isinstance(evidence, dict) else None
+    return dict(dependency) if isinstance(dependency, dict) else {}
+
+
+def _eval_face_against_wall(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    dependency: dict[str, Any],
+    *,
+    candidate_faces: tuple[str, ...],
+    allow_distance_degraded: bool = True,
+) -> tuple[str, float, str]:
+    if object_category(target) != "wall":
+        return "fail", 0.3, "target is not a wall architecture object."
+    gap = bbox_gap_xy(subject, target)
+    if gap is None:
+        return "unknown", 0.0, "missing wall distance geometry."
+    max_distance = _dependency_float(dependency, "max_distance_m", 0.25)
+    max_angle = _dependency_float(dependency, "max_angle_deg", 45.0)
+    requested_face = str(dependency.get("subject_face") or "").strip().lower()
+    faces = (requested_face,) if requested_face in candidate_faces else candidate_faces
+
+    scored: list[tuple[float, str]] = []
+    for face in faces:
+        angle = _face_angle_to_target_deg(subject, target, face)
+        if angle is not None:
+            scored.append((angle, face))
+    if not scored:
+        return "unknown", 0.0, "missing wall orientation geometry."
+    best_angle, best_face = min(scored, key=lambda item: item[0])
+    if gap <= max_distance and best_angle <= max_angle:
+        return (
+            "pass",
+            0.9,
+            f"{best_face} face is wall-aligned: gap {gap:.2f}m, angle {best_angle:.0f}deg.",
+        )
+    if gap <= max_distance and best_angle <= max_angle + 25.0:
+        return (
+            "degraded",
+            0.72,
+            f"{best_face} face is near wall but loose: gap {gap:.2f}m, angle {best_angle:.0f}deg.",
+        )
+    if (
+        allow_distance_degraded
+        and gap <= max_distance * 1.5
+        and best_angle <= max_angle + 25.0
+    ):
+        return (
+            "degraded",
+            0.72,
+            f"{best_face} face is near wall but loose: gap {gap:.2f}m, angle {best_angle:.0f}deg.",
+        )
+    return (
+        "fail",
+        0.84,
+        f"no allowed face is backed by the wall: gap {gap:.2f}m, best {best_face} angle {best_angle:.0f}deg.",
+    )
+
+
+def _eval_face_to_target(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    dependency: dict[str, Any],
+    relation_type: str,
+) -> tuple[str, float, str]:
+    gap = bbox_gap_xy(subject, target)
+    if gap is None:
+        return "unknown", 0.0, "missing distance geometry."
+    max_distance = _dependency_float(dependency, "max_distance_m", 1.8)
+    max_angle = _dependency_float(dependency, "max_angle_deg", 60.0)
+    subject_face = str(dependency.get("subject_face") or "front").strip().lower()
+    target_face = str(dependency.get("target_face") or "any").strip().lower()
+    subject_angle = _face_angle_to_target_deg(subject, target, subject_face)
+    if subject_angle is None:
+        return "unknown", 0.0, "missing subject orientation geometry."
+
+    target_angle: float | None = None
+    if target_face not in {"", "any", "none", "null"}:
+        target_angle = _face_angle_to_target_deg(target, subject, target_face)
+
+    target_clause = ""
+    target_ok = True
+    if target_angle is not None:
+        target_ok = target_angle <= max_angle
+        target_clause = f", target {target_face} angle {target_angle:.0f}deg"
+
+    if gap <= max_distance and subject_angle <= max_angle and target_ok:
+        return (
+            "pass",
+            0.88,
+            f"`{relation_type}` holds: gap {gap:.2f}m, subject {subject_face} angle {subject_angle:.0f}deg{target_clause}.",
+        )
+    if gap <= max_distance * 1.25 and subject_angle <= max_angle + 30.0:
+        return (
+            "degraded",
+            0.72,
+            f"`{relation_type}` is weak: gap {gap:.2f}m, subject {subject_face} angle {subject_angle:.0f}deg{target_clause}.",
+        )
+    return (
+        "fail",
+        0.84,
+        f"`{relation_type}` fails: gap {gap:.2f}m, subject {subject_face} angle {subject_angle:.0f}deg{target_clause}.",
+    )
+
+
+def _eval_vertical_attachment(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    dependency: dict[str, Any],
+    *,
+    relation_type: str,
+) -> tuple[str, float, str]:
+    subject_span = bbox_height_span(subject)
+    target_span = bbox_height_span(target)
+    if subject_span is None or target_span is None:
+        return "unknown", 0.0, "missing vertical attachment geometry."
+    max_distance = _dependency_float(dependency, "max_distance_m", 0.12)
+    if relation_type == "object_on_floor":
+        if object_category(target) != "floor":
+            return "fail", 0.3, "target is not a floor architecture object."
+        vertical_gap = abs(subject_span[0] - target_span[1])
+        label_target = "floor"
+    else:
+        if object_category(target) != "ceiling":
+            return "fail", 0.3, "target is not a ceiling architecture object."
+        vertical_gap = abs(target_span[0] - subject_span[1])
+        label_target = "ceiling"
+    if vertical_gap <= max_distance:
+        return (
+            "pass",
+            0.88,
+            f"object is attached to {label_target}: vertical gap {vertical_gap:.2f}m.",
+        )
+    if vertical_gap <= max_distance * 2.0:
+        return (
+            "degraded",
+            0.7,
+            f"object is close to {label_target} but not tight: vertical gap {vertical_gap:.2f}m.",
+        )
+    return (
+        "fail",
+        0.84,
+        f"object is not attached to {label_target}: vertical gap {vertical_gap:.2f}m.",
+    )
+
+
+def _face_angle_to_target_deg(
+    subject: dict[str, Any], target: dict[str, Any], face: str
+) -> float | None:
+    sc = bbox_center_xy(subject)
+    tc = bbox_center_xy(target)
+    if sc is None or tc is None:
+        return None
+    axis = _face_axis(subject, face)
+    if axis is None:
+        return None
+    tx, ty = tc[0] - sc[0], tc[1] - sc[1]
+    norm = (tx * tx + ty * ty) ** 0.5
+    if norm <= 1e-6:
+        return 0.0
+    dot = max(-1.0, min(1.0, (axis[0] * tx + axis[1] * ty) / norm))
+    return abs(math.degrees(math.acos(dot)))
+
+
+def _face_axis(obj: dict[str, Any], face: str) -> tuple[float, float] | None:
+    face = str(face or "").strip().lower()
+    fx, fy = front_vector(obj)
+    sx, sy = side_vector(obj)
+    if face == "front":
+        return fx, fy
+    if face == "back":
+        return -fx, -fy
+    if face == "left":
+        return sx, sy
+    if face == "right":
+        return -sx, -sy
+    return None
+
+
+def _dependency_float(dependency: dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(dependency.get(key))
+    except (TypeError, ValueError):
+        return default
+
+
 def _eval_generic_near_relation(
     subject: dict[str, Any], target: dict[str, Any], relation_type: str
 ) -> tuple[str, float, str]:
@@ -839,6 +1103,26 @@ def _relation_target_is_valid(
     subject: dict[str, Any], target: dict[str, Any], relation_type: str
 ) -> bool:
     relation_type = _normalize_relation_type(relation_type)
+    if relation_type == "seat_faces_surface":
+        return _is_seating_subject(subject) and _is_work_surface_target(target)
+    if relation_type == "furniture_faces_furniture":
+        return object_category(target) not in {"wall", "floor", "ceiling"}
+    if relation_type in {
+        "back_against_wall",
+        "side_or_back_against_wall",
+        "mounted_to_wall",
+    }:
+        return object_category(target) == "wall"
+    if relation_type == "mounted_to_ceiling":
+        return object_category(target) == "ceiling"
+    if relation_type == "object_on_floor":
+        return object_category(target) == "floor"
+    if relation_type == "display_faces_user":
+        return object_category(target) not in {"wall", "floor", "ceiling"}
+    if relation_type == "computer_peripheral_faces_screen":
+        return _is_computer_peripheral_subject(subject) and _is_computer_screen_target(
+            target
+        )
     if relation_type == "seating_to_work_surface":
         return _is_seating_subject(subject) and _is_work_surface_target(target)
     if relation_type == "seating_to_media":

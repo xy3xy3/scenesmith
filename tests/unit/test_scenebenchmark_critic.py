@@ -48,12 +48,20 @@ from scenesmith.scenebenchmark_critic import (
     write_house_stage_report,
     write_room_stage_report,
 )
+from scenesmith.scenebenchmark_critic.prompt_context import (
+    filter_prompt_results_for_agent,
+    format_agent_prompt_context,
+)
 from scenesmith.scenebenchmark_critic.adapter import (
     house_scene_to_case_pack,
     room_scene_to_case_pack,
 )
 from scenesmith.scenebenchmark_critic.checks import build_checks
 from scenesmith.scenebenchmark_critic.config import critic_config_from_any
+from scenesmith.scenebenchmark_critic.orientation_contracts import (
+    CONTRACT_CHECK_SOURCE,
+    stabilize_orientation_contracts,
+)
 from scenesmith.scenebenchmark_critic.reports import format_markdown_report
 from scenesmith.scenebenchmark_critic.vendor.rules import (
     aggregate_results,
@@ -64,6 +72,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency import (
     proposer as fd_proposer,
+)
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
+    _relation_target_is_valid,
 )
 
 
@@ -311,6 +322,8 @@ def test_room_scene_adapter_uses_scenebenchmark_demo_category_aliases(
     assert beanbag_hints["front_hint"] == "front"
     assert beanbag_hints["target_relation"] == ["desk", "table"]
     assert beanbag_hints["metric_relevance"]["spatial_accessibility"] == 0.8
+    assert beanbag_hints["mobility_class"] == "movable"
+    assert beanbag_hints["accessibility_policy"] == "optional"
 
     fridge_hints = objects["fridge_0"]["functional_hints"]
     assert objects["fridge_0"]["category_norm"] == "refrigerator"
@@ -334,7 +347,55 @@ def test_room_scene_adapter_uses_scenebenchmark_demo_category_aliases(
         for check in case_pack["checks"]
         if check["metric"] == "spatial_accessibility"
     }
-    assert {"beanbag_0", "fridge_0", "bedroom_nightstand_1_f0_c"} <= checked_subjects
+    assert "beanbag_0" not in checked_subjects
+    assert {"fridge_0", "bedroom_nightstand_1_f0_c"} <= checked_subjects
+
+
+def test_room_scene_adapter_preserves_external_dependency_annotations(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    chair = _box_object(
+        "chair_0",
+        "desk chair",
+        ObjectType.FURNITURE,
+        center=(0.0, 0.0, 0.45),
+        size=(0.6, 0.6, 0.9),
+    )
+    chair.metadata["functional_hints"] = {
+        "mobility_class": "movable",
+        "accessibility_policy": "optional",
+        "access_sides": ["front"],
+        "orientation_dependencies": [
+            {
+                "relation_type": "seat_faces_surface",
+                "target_kind": "object",
+                "target_category": ["desk", "table"],
+            }
+        ],
+    }
+    scene.add_object(chair)
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="final_scene",
+        metrics=["spatial_accessibility", "functional_dependency"],
+    )
+    chair_record = next(
+        obj for obj in case_pack["scene_geometry"]["objects"] if obj["id"] == "chair_0"
+    )
+
+    hints = chair_record["functional_hints"]
+    assert hints["mobility_class"] == "movable"
+    assert hints["accessibility_policy"] == "optional"
+    assert hints["access_sides"] == ["front"]
+    assert hints["orientation_dependencies"][0]["relation_type"] == "seat_faces_surface"
+    assert all(
+        check["subject_id"] != "chair_0"
+        for check in case_pack["checks"]
+        if check["metric"] == "spatial_accessibility"
+    )
 
 
 def test_room_scene_adapter_exports_scenebenchmark_geometry_fields(
@@ -367,6 +428,71 @@ def test_room_scene_adapter_exports_scenebenchmark_geometry_fields(
     assert table["nav_obstacle_class"] == "blocking"
     assert geometry["scene_shell"]["doors"][0]["opening_id"] == "door_main"
     assert geometry["scene_shell"]["doors"][0]["center"] == [0.0, -2.0, 1.0]
+
+
+def test_room_scene_adapter_normalizes_workstation_categories(tmp_path: Path) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    monitor = _box_object(
+        "computer_monitor_0",
+        "computer monitor",
+        ObjectType.MANIPULAND,
+        center=(0.0, 0.0, 0.9),
+        size=(0.45, 0.08, 0.32),
+    )
+    mouse = _box_object(
+        "wireless_mouse_0",
+        "wireless mouse",
+        ObjectType.MANIPULAND,
+        center=(0.3, 0.0, 0.72),
+        size=(0.08, 0.13, 0.04),
+    )
+    tablet = _box_object(
+        "tablet_computer_0",
+        "tablet computer",
+        ObjectType.MANIPULAND,
+        center=(-0.3, 0.0, 0.72),
+        size=(0.22, 0.14, 0.02),
+    )
+    scene.add_object(monitor)
+    scene.add_object(mouse)
+    scene.add_object(tablet)
+
+    case_pack = room_scene_to_case_pack(scene, stage="final_scene")
+    objects = {obj["id"]: obj for obj in case_pack["scene_geometry"]["objects"]}
+
+    assert objects["computer_monitor_0"]["category_norm"] == "monitor"
+    assert objects["computer_monitor_0"]["functional_hints"]["category_group"] == "media"
+    assert objects["wireless_mouse_0"]["category_norm"] == "mouse"
+    assert objects["tablet_computer_0"]["category_norm"] == "tablet_computer"
+
+
+def test_computer_peripheral_faces_screen_accepts_workstation_categories() -> None:
+    monitor = _benchmark_obj(
+        "computer_monitor_0",
+        "monitor",
+        (0.0, 0.0, 0.9),
+        (0.45, 0.08, 0.32),
+    )
+    monitor["functional_hints"]["category_group"] = "media"
+    mouse = _benchmark_obj(
+        "wireless_mouse_0",
+        "mouse",
+        (0.3, 0.0, 0.72),
+        (0.08, 0.13, 0.04),
+    )
+    laptop = _benchmark_obj(
+        "laptop_0",
+        "laptop",
+        (-0.3, 0.0, 0.75),
+        (0.32, 0.22, 0.03),
+    )
+    laptop["functional_hints"]["category_group"] = "small_object"
+
+    assert _relation_target_is_valid(
+        mouse, monitor, "computer_peripheral_faces_screen"
+    )
+    assert _relation_target_is_valid(mouse, laptop, "computer_peripheral_faces_screen")
 
 
 def test_room_scene_adapter_respects_nonfunctional_asset_annotation(
@@ -957,6 +1083,32 @@ def test_spatial_accessibility_checks_keep_nearby_blocker_targets() -> None:
     assert sofa_check["target_ids"] == ["coffee_table_1"]
 
 
+def test_spatial_accessibility_policy_skips_movable_seating() -> None:
+    chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
+    chair["functional_hints"] = {
+        "functional_categories": ["sittable"],
+        "mobility_class": "movable",
+        "accessibility_policy": "optional",
+    }
+    refrigerator = _benchmark_obj(
+        "fridge_1", "refrigerator", (3.0, 2.0, 0.9), (0.7, 0.7, 1.8)
+    )
+    refrigerator["functional_hints"] = {
+        "functional_categories": ["containable", "openable"],
+        "mobility_class": "fixed",
+        "accessibility_policy": "required",
+    }
+
+    checks = build_checks(
+        _benchmark_case_pack([chair, refrigerator]),
+        metrics=["spatial_accessibility"],
+    )
+    checked_subjects = {check["subject_id"] for check in checks}
+
+    assert "chair_1" not in checked_subjects
+    assert "fridge_1" in checked_subjects
+
+
 def test_spatial_accessibility_skips_ceiling_mounted_lamps() -> None:
     table = _benchmark_obj("table_1", "table", (2.0, 2.0, 0.4), (1.0, 0.8, 0.8))
     table["functional_hints"]["functional_categories"] = ["supportable"]
@@ -1072,13 +1224,21 @@ def test_asset_annotation_mock_writes_effective_hints_and_files(
     assert table_hints["classification_source"] == "asset_annotation"
     assert table_hints["asset_annotation_source"] == ("scenesmith_vlm_asset_annotator")
     assert "supportable" in table_hints["functional_categories"]
+    assert table_hints["mobility_class"] == "semi_movable"
+    assert table_hints["accessibility_policy"] == "required"
+    assert "top" in table_hints["access_sides"]
+    assert table_hints["attachment_dependencies"][0]["relation_type"] == (
+        "object_on_floor"
+    )
     table_annotation = yaml.safe_load(
         (stage_dir / "asset_annotations" / "table_0.yaml").read_text(encoding="utf-8")
     )
     assert table_annotation["object_function_profile"]["can_support_top"] is True
+    assert table_annotation["effective_annotation"]["mobility_class"] == "semi_movable"
     saved_state = json.loads((stage_dir / "scene_state.json").read_text())
     saved_hints = saved_state["objects"]["table_0"]["metadata"]["functional_hints"]
     assert saved_hints["classification_source"] == "asset_annotation"
+    assert saved_hints["accessibility_policy"] == "required"
 
 
 def test_asset_annotation_reuses_saved_object_function_profile(
@@ -1315,6 +1475,71 @@ def test_evaluate_room_scene_returns_rule_results(tmp_path: Path) -> None:
     assert payload["summary"]["scene_summary"]["total_checks"] >= 1
 
 
+def test_orientation_contract_keeps_living_room_seat_target_stable(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.room_type = "living_room"
+    scene.text_description = (
+        "A living room with an armchair near a coffee table facing a TV stand."
+    )
+    scene.add_object(
+        _box_object(
+            "armchair_0",
+            "comfortable armchair",
+            ObjectType.FURNITURE,
+            center=(1.2, 0.4, 0.4),
+            size=(0.8, 0.8, 0.8),
+            yaw_deg=90.0,
+        )
+    )
+    scene.add_object(
+        _box_object(
+            "coffee_table_0",
+            "coffee table",
+            ObjectType.FURNITURE,
+            center=(0.0, 0.0, 0.25),
+            size=(1.1, 0.55, 0.5),
+        )
+    )
+    scene.add_object(
+        _box_object(
+            "tv_stand_0",
+            "tv stand media console",
+            ObjectType.FURNITURE,
+            center=(0.0, -1.7, 0.3),
+            size=(1.4, 0.35, 0.6),
+        )
+    )
+
+    config = CriticConfig(
+        enabled=True,
+        metrics=("functional_dependency",),
+        extra={"stable_orientation_contracts": True},
+    )
+    first = room_scene_to_case_pack(scene, stage="scene_after_furniture")
+    stabilize_orientation_contracts(first, scene, config, stage="scene_after_furniture")
+    second = room_scene_to_case_pack(scene, stage="final_scene")
+    stabilize_orientation_contracts(second, scene, config, stage="final_scene")
+
+    first_check = _contract_check_for(first, "armchair_0")
+    second_check = _contract_check_for(second, "armchair_0")
+
+    assert first_check["relation_type"] == "seating_to_media"
+    assert first_check["target_ids"] == ["tv_stand_0"]
+    assert second_check["relation_type"] == "seating_to_media"
+    assert second_check["target_ids"] == ["tv_stand_0"]
+
+
+def _contract_check_for(case_pack: dict[str, Any], subject_id: str) -> dict[str, Any]:
+    return next(
+        check
+        for check in case_pack["checks"]
+        if check.get("check_source") == CONTRACT_CHECK_SOURCE
+        and check.get("subject_id") == subject_id
+    )
+
+
 def test_direct_evaluate_room_scene_runs_with_default_config(tmp_path: Path) -> None:
     payload = evaluate_room_scene(_scene(tmp_path), stage="final_scene")
 
@@ -1385,9 +1610,9 @@ def test_hard_gate_records_blocked_metadata_without_rewriting_scene() -> None:
     chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     chair["functional_hints"]["functional_categories"] = ["sittable"]
     blockers = [
-        _benchmark_obj("front_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
-        _benchmark_obj("left_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
-        _benchmark_obj("right_block", "cabinet", (2.0, 1.15, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("front_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("left_block", "cabinet", (1.15, 2.0, 0.5), (0.8, 1.2, 1.0)),
+        _benchmark_obj("right_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
     ]
     case_pack = _benchmark_case_pack(
         [chair, *blockers],
@@ -1438,6 +1663,8 @@ def test_base_experiment_config_defaults_are_report_only_template_mode() -> None
     assert critic_config.room_stage_hooks == ("scene_after_furniture", "final_scene")
     assert critic_config.house_stage_hooks == ()
     assert critic_config.inject_into_llm_critic is True
+    assert critic_config.agent_prompt_context_filter_enabled is True
+    assert critic_config.agent_prompt_context_debug_write is False
     assert critic_config.hard_gate is False
     assert critic_config.extra["fd_relation_proposer_mode"] == "template"
     assert critic_config.extra["max_fd_relation_proposals"] == 8
@@ -1660,6 +1887,8 @@ def test_vendored_scenebenchmark_rule_bodies_match_upstream_when_available() -> 
         pytest.skip("SceneBenchmark source checkout is not available")
 
     vendor_root = Path("scenesmith/scenebenchmark_critic/vendor/scenebenchmark")
+    # relations.py carries SceneSmith-only asset dependency evaluators, so it is
+    # covered by local behavioral tests instead of upstream AST parity.
     parity_files = {
         "critic/accessibility.py",
         "critic/config.py",
@@ -1674,7 +1903,6 @@ def test_vendored_scenebenchmark_rule_bodies_match_upstream_when_available() -> 
         "metrics/functional_dependency/plugin.py",
         "metrics/functional_dependency/profiles.py",
         "metrics/functional_dependency/proposer.py",
-        "metrics/functional_dependency/relations.py",
         "metrics/functional_dependency/results.py",
         "metrics/functional_dependency/semantics.py",
         "metrics/functional_dependency/support.py",
@@ -1744,6 +1972,74 @@ def test_vendored_scenebenchmark_modules_import_cleanly() -> None:
     assert modules
     for module_name in modules:
         importlib.import_module(module_name)
+
+
+def test_vendored_structured_agent_uses_project_vlm_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic import (
+        agent as agent_module,
+    )
+    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.agent import (
+        build_structured_agent,
+    )
+    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import (
+        FunctionalDependencyProposalSet,
+    )
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeVLMService:
+        def __init__(self, cfg: Any) -> None:
+            self.cfg = cfg
+
+        def create_completion(self, **kwargs: Any) -> str:
+            calls.append({"cfg": self.cfg, "kwargs": kwargs})
+            return json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "subject_id": "chair_1",
+                            "target_ids": ["desk_1"],
+                            "relation_type": "seating_to_work_surface",
+                            "expected_use": "sit at and use the work surface",
+                            "priority": 0.9,
+                            "reason": "unit test",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(agent_module, "VLMService", FakeVLMService)
+
+    cfg = OmegaConf.create({"provider": {"model": "local-model"}})
+    agent = build_structured_agent(
+        cfg,
+        output_type=FunctionalDependencyProposalSet,
+        system_prompt="system",
+        name="unit_test_agent",
+    )
+
+    result = agent.run_sync('{"subjects": [], "targets": []}')
+
+    assert result.output.proposals[0].subject_id == "chair_1"
+    assert calls[0]["cfg"] is cfg
+    assert calls[0]["kwargs"]["model"] == "local-model"
+    assert calls[0]["kwargs"]["messages"][0]["role"] == "system"
+    assert calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
+
+
+def test_rule_config_forwards_asset_annotation_model_to_vlm_proposer() -> None:
+    from scenesmith.scenebenchmark_critic.vendor.rules import _to_rule_config
+
+    rule_config = _to_rule_config(
+        CriticConfig(
+            enabled=True,
+            asset_annotation={"enabled": True, "backend": "vlm", "model": "qwen-local"},
+        )
+    )
+
+    assert rule_config.provider == {"model": "qwen-local"}
 
 
 def test_vendored_critic_wrappers_evaluate_rules_without_external_repo() -> None:
@@ -2092,7 +2388,9 @@ def test_single_room_offline_smoke_runs_fd_sa_and_template_proposer(
     )
 
 
-def test_spatial_accessibility_skips_small_placeable_objects(tmp_path: Path) -> None:
+def test_spatial_accessibility_checks_manipuland_placeable_objects(
+    tmp_path: Path,
+) -> None:
     payload = evaluate_room_scene(
         _scene(tmp_path),
         config={
@@ -2109,7 +2407,36 @@ def test_spatial_accessibility_skips_small_placeable_objects(tmp_path: Path) -> 
         for result in payload["results"]
         if result["metric"] == "spatial_accessibility"
     }
-    assert "mug_0" not in subjects
+    assert "mug_0" in subjects
+
+
+def test_spatial_accessibility_promotes_cached_ignored_manipuland_policy(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    mug = scene.objects[UniqueID("mug_0")]
+    mug.metadata["functional_hints"] = {
+        "functional_categories": ["graspable"],
+        "scene_object_type": "manipuland",
+        "accessibility_policy": "ignored",
+    }
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="final_scene",
+        metrics=["spatial_accessibility"],
+    )
+    mug_record = next(
+        obj for obj in case_pack["scene_geometry"]["objects"] if obj["id"] == "mug_0"
+    )
+    checked_subjects = {
+        check["subject_id"]
+        for check in case_pack["checks"]
+        if check["metric"] == "spatial_accessibility"
+    }
+
+    assert mug_record["functional_hints"]["accessibility_policy"] == "required"
+    assert "mug_0" in checked_subjects
 
 
 def test_spatial_accessibility_uses_grid_reach_diagnostics(tmp_path: Path) -> None:
@@ -2177,9 +2504,9 @@ def test_rule_spatial_accessibility_blocked_access_zone_fails() -> None:
     chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     chair["functional_hints"]["functional_categories"] = ["sittable"]
     blockers = [
-        _benchmark_obj("front_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
-        _benchmark_obj("left_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
-        _benchmark_obj("right_block", "cabinet", (2.0, 1.15, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("front_block", "cabinet", (2.0, 2.85, 0.5), (1.2, 0.8, 1.0)),
+        _benchmark_obj("left_block", "cabinet", (1.15, 2.0, 0.5), (0.8, 1.2, 1.0)),
+        _benchmark_obj("right_block", "cabinet", (2.85, 2.0, 0.5), (0.8, 1.2, 1.0)),
     ]
     check = {
         "check_id": "sa_blocked",
@@ -2202,7 +2529,7 @@ def test_rule_spatial_accessibility_partially_blocked_zone_is_degraded() -> None
     cabinet = _benchmark_obj("cabinet_1", "cabinet", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     cabinet["functional_hints"]["functional_categories"] = ["openable"]
     blocker = _benchmark_obj(
-        "partial_block", "cabinet", (2.85, 2.35, 0.5), (0.8, 0.2, 1.0)
+        "partial_block", "cabinet", (1.45, 2.45, 0.5), (0.8, 0.2, 1.0)
     )
     check = {
         "check_id": "sa_partial",
@@ -2397,6 +2724,34 @@ def test_rule_spatial_accessibility_crouch_posture_reaches_low_support() -> None
     assert "crouch/lean" in crouch_result["reason"]
 
 
+def test_rule_spatial_accessibility_fails_unreachable_manipuland() -> None:
+    island = _benchmark_obj("island_1", "table", (2.5, 2.5, 0.4), (3.0, 3.0, 0.8))
+    island["functional_hints"]["functional_categories"] = ["supportable"]
+    mug = _benchmark_obj("mug_1", "mug", (2.5, 2.5, 0.9), (0.12, 0.12, 0.18))
+    mug["object_type"] = "manipuland"
+    mug["functional_hints"] = {
+        "functional_categories": ["graspable"],
+        "scene_object_type": "manipuland",
+        "accessibility_policy": "required",
+    }
+    check = {
+        "check_id": "sa_manipuland_reach",
+        "metric": "spatial_accessibility",
+        "subject_id": "mug_1",
+        "affordance": "graspable",
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([island, mug], [check]),
+        metrics=["spatial_accessibility"],
+    )
+
+    result = next(item for item in results if item["check_id"] == check["check_id"])
+    assert result["label"] == "fail"
+    assert result["diagnostics"]["access_side"] == "connected_floor"
+    assert result["diagnostics"]["min_reach_distance_m"] > 0.75
+
+
 def test_rule_functional_dependency_fails_when_chair_back_faces_desk() -> None:
     chair = _benchmark_obj(
         "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=180.0
@@ -2417,6 +2772,320 @@ def test_rule_functional_dependency_fails_when_chair_back_faces_desk() -> None:
 
     result = next(item for item in results if item["check_id"] == "fd_back_facing")
     assert result["label"] == "fail"
+
+
+def test_dependency_annotation_checks_generate_orientation_and_wall_relations() -> None:
+    chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
+    chair["functional_hints"].update(
+        {
+            "functional_categories": ["sittable"],
+            "orientation_dependencies": [
+                {
+                    "relation_type": "seat_faces_surface",
+                    "target_kind": "object",
+                    "target_category": ["desk", "table"],
+                    "max_distance_m": 1.5,
+                }
+            ],
+        }
+    )
+    desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
+    bed = _benchmark_obj("bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7))
+    bed["functional_hints"].update(
+        {
+            "functional_categories": ["sleepable"],
+            "attachment_dependencies": [
+                {
+                    "relation_type": "back_against_wall",
+                    "target_kind": "architecture",
+                    "target_category": "wall",
+                    "subject_face": "back",
+                    "max_distance_m": 0.25,
+                }
+            ],
+        }
+    )
+    wall = _benchmark_obj("wall_n", "wall", (2.5, 4.95, 1.5), (5.0, 0.1, 3.0))
+
+    checks = build_checks(
+        _benchmark_case_pack([chair, desk, bed, wall]),
+        metrics=["functional_dependency"],
+    )
+
+    annotation_checks = {
+        check["relation_type"]: check
+        for check in checks
+        if str(check.get("check_source", "")).startswith("asset_")
+    }
+    assert annotation_checks["seat_faces_surface"]["target_ids"] == ["desk_1"]
+    assert annotation_checks["back_against_wall"]["target_ids"] == ["wall_n"]
+
+
+def test_dependency_annotation_checks_keep_wall_relation_beyond_threshold() -> None:
+    bed = _benchmark_obj("bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=180.0)
+    bed["functional_hints"].update(
+        {
+            "functional_categories": ["sleepable"],
+            "attachment_dependencies": [
+                {
+                    "relation_type": "back_against_wall",
+                    "target_kind": "architecture",
+                    "target_category": "wall",
+                    "subject_face": "back",
+                    "max_angle_deg": 45.0,
+                    "max_distance_m": 0.25,
+                }
+            ],
+        }
+    )
+    wall = _benchmark_obj("wall_n", "wall", (2.5, 5.055, 1.5), (5.0, 0.1, 3.0))
+
+    case_pack = _benchmark_case_pack([bed, wall])
+    checks = build_checks(case_pack, metrics=["functional_dependency"])
+
+    wall_check = next(
+        check
+        for check in checks
+        if check.get("relation_type") == "back_against_wall"
+        and check.get("subject_id") == "bed_1"
+    )
+    assert wall_check["target_ids"] == ["wall_n"]
+
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([bed, wall], [wall_check]),
+        metrics=["functional_dependency"],
+    )[0]
+    assert result["label"] == "fail"
+
+
+def test_dependency_annotation_checks_skip_floor_attachment_for_surface_object() -> (
+    None
+):
+    table = _benchmark_obj("table_1", "dining_table", (2.0, 2.0, 0.35), (1.2, 0.8, 0.7))
+    table["functional_hints"]["functional_categories"] = ["supportable"]
+    table["support_regions"] = [
+        {
+            "region_id": "S_table",
+            "support_kind": "top_surface",
+            "height_world_z": 0.7,
+            "polygon_world_xy": [
+                [1.4, 1.6],
+                [2.6, 1.6],
+                [2.6, 2.4],
+                [1.4, 2.4],
+            ],
+            "clearance_above_m": 1.0,
+            "access_type": "top",
+        }
+    ]
+    vase = _benchmark_obj("vase_1", "vase", (2.0, 2.0, 0.8), (0.1, 0.1, 0.2))
+    vase["placement_info"] = {
+        "parent_surface_id": "S_table",
+        "placement_method": "surface_placement",
+    }
+    vase["functional_hints"].update(
+        {
+            "scene_object_type": "manipuland",
+            "placement_class": "surface_object",
+            "attachment_dependencies": [
+                {
+                    "relation_type": "object_on_floor",
+                    "target_kind": "architecture",
+                    "target_category": "floor",
+                }
+            ],
+        }
+    )
+    floor = _benchmark_obj("floor_1", "floor", (2.0, 2.0, -0.05), (5.0, 5.0, 0.1))
+
+    checks = build_checks(
+        _benchmark_case_pack([table, vase, floor]),
+        metrics=["functional_dependency"],
+    )
+
+    vase_checks = [check for check in checks if check["subject_id"] == "vase_1"]
+    assert {check["relation_type"] for check in vase_checks} == {"object_on_support"}
+    assert vase_checks[0]["target_ids"] == ["table_1"]
+
+
+def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> None:
+    desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
+    check = {
+        "check_id": "fd_seat_faces_surface",
+        "metric": "functional_dependency",
+        "subject_id": "chair_1",
+        "target_ids": ["desk_1"],
+        "relation_type": "seat_faces_surface",
+    }
+
+    pass_chair = _benchmark_obj(
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=-90.0
+    )
+    fail_chair = _benchmark_obj(
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=90.0
+    )
+
+    pass_result = _run_direct_case_pack(
+        _benchmark_case_pack([pass_chair, desk], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    fail_result = _run_direct_case_pack(
+        _benchmark_case_pack([fail_chair, desk], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert pass_result["relation_type"] == "seat_faces_surface"
+    assert pass_result["label"] == "pass"
+    assert fail_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_display_faces_user_uses_face_orientation() -> None:
+    alarm_clock = _benchmark_obj(
+        "alarm_clock_1", "alarm_clock", (2.0, 2.0, 0.6), (0.2, 0.1, 0.12), yaw=0.0
+    )
+    bed = _benchmark_obj("bed_1", "bed", (2.0, 2.8, 0.45), (1.2, 1.0, 0.9))
+    check = {
+        "check_id": "fd_alarm_display_faces_bed",
+        "metric": "functional_dependency",
+        "subject_id": "alarm_clock_1",
+        "target_ids": ["bed_1"],
+        "relation_type": "display_faces_user",
+        "evidence": {
+            "dependency": {
+                "relation_type": "display_faces_user",
+                "subject_face": "front",
+                "target_face": "any",
+                "max_angle_deg": 45,
+                "max_distance_m": 1.0,
+            }
+        },
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([alarm_clock, bed], [check]),
+        metrics=["functional_dependency"],
+    )
+
+    result = next(item for item in results if item["check_id"] == check["check_id"])
+    assert result["label"] == "pass"
+    assert "`display_faces_user` holds" in result["reason"]
+    assert "support region" not in result["reason"]
+
+
+def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None:
+    wall = _benchmark_obj("wall_n", "wall", (2.5, 4.95, 1.5), (5.0, 0.1, 3.0))
+    check = {
+        "check_id": "fd_back_against_wall",
+        "metric": "functional_dependency",
+        "subject_id": "bed_1",
+        "target_ids": ["wall_n"],
+        "relation_type": "back_against_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 45.0,
+                "max_distance_m": 0.25,
+            }
+        },
+    }
+    pass_bed = _benchmark_obj(
+        "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=180.0
+    )
+    fail_bed = _benchmark_obj(
+        "bed_1", "bed", (2.5, 4.35, 0.35), (1.2, 0.8, 0.7), yaw=90.0
+    )
+
+    pass_result = _run_direct_case_pack(
+        _benchmark_case_pack([pass_bed, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    fail_result = _run_direct_case_pack(
+        _benchmark_case_pack([fail_bed, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert pass_result["label"] == "pass"
+    assert fail_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_sideboard_back_against_north_wall_passes() -> None:
+    wall = _benchmark_obj("north_wall", "wall", (0.0, 2.0, 1.5), (4.0, 0.1, 3.0))
+    check = {
+        "check_id": "fd_sideboard_back_against_wall",
+        "metric": "functional_dependency",
+        "subject_id": "sideboard_1",
+        "target_ids": ["north_wall"],
+        "relation_type": "back_against_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 15.0,
+                "max_distance_m": 0.05,
+            }
+        },
+    }
+    pass_sideboard = _benchmark_obj(
+        "sideboard_1",
+        "sideboard",
+        (1.6, 1.65, 0.35),
+        (1.2, 0.6, 0.7),
+        yaw=-90.0,
+    )
+    fail_sideboard = _benchmark_obj(
+        "sideboard_1",
+        "sideboard",
+        (1.6, 1.65, 0.35),
+        (1.2, 0.6, 0.7),
+        yaw=90.0,
+    )
+
+    pass_result = _run_direct_case_pack(
+        _benchmark_case_pack([pass_sideboard, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    fail_result = _run_direct_case_pack(
+        _benchmark_case_pack([fail_sideboard, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert pass_result["label"] == "pass"
+    assert fail_result["label"] == "fail"
+
+
+def test_adapter_front_vector_uses_y_axis_canonical_convention() -> None:
+    scene = _scene(Path("/tmp/scenesmith_front_vector_test"))
+    scene.objects.clear()
+    sideboard = _box_object(
+        "sideboard_0",
+        "sideboard cabinet",
+        ObjectType.FURNITURE,
+        center=(0.0, 0.0, 0.35),
+        size=(1.2, 0.6, 0.7),
+        yaw_deg=180.0,
+    )
+    sideboard.metadata["functional_hints"] = {
+        "functional_categories": ["openable", "supportable", "storage"],
+        "candidate_affordances": ["openable", "supportable", "storage"],
+        "front_hint": "front",
+    }
+    scene.add_object(sideboard)
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="debug",
+        metrics=["functional_dependency"],
+    )
+    exported = next(
+        obj
+        for obj in case_pack["scene_geometry"]["objects"]
+        if obj["id"] == "sideboard_0"
+    )
+    front_face = next(
+        face for face in exported["interaction_faces"] if face["name"] == "front"
+    )
+
+    assert front_face["normal_xy"][0] == pytest.approx(0.0, abs=1e-6)
+    assert front_face["normal_xy"][1] == pytest.approx(-1.0, abs=1e-6)
 
 
 def test_rule_functional_dependency_front_hint_rotates_seating_orientation() -> None:
@@ -4360,6 +5029,289 @@ def test_prompt_context_excludes_ignored_issues() -> None:
     assert "chair_0" in context
     assert "decor_0" not in context
     assert "ignored decorative support issue" not in context
+
+
+def _workstation_payload() -> dict[str, Any]:
+    desk = _benchmark_obj("study_desk_0", "desk", (0.0, 0.0, 0.35), (1.4, 0.7, 0.7))
+    desk["object_type"] = "furniture"
+    desk["functional_hints"]["scene_object_type"] = "furniture"
+    desk["functional_hints"]["category_group"] = "work_surface"
+    desk["support_regions"] = [{"region_id": "desk_top", "support_kind": "top_surface"}]
+    chair = _benchmark_obj(
+        "office_chair_0", "office_chair", (0.0, -0.8, 0.45), (0.6, 0.6, 0.9)
+    )
+    chair["object_type"] = "furniture"
+    chair["functional_hints"]["scene_object_type"] = "furniture"
+    chair["functional_hints"]["category_group"] = "seating"
+    chair["functional_hints"]["functional_categories"] = ["sittable"]
+    monitor = _benchmark_obj(
+        "computer_monitor_0", "monitor", (0.0, 0.12, 0.82), (0.45, 0.08, 0.32)
+    )
+    monitor["object_type"] = "manipuland"
+    monitor["functional_hints"]["scene_object_type"] = "manipuland"
+    monitor["functional_hints"]["category_group"] = "media"
+    monitor["placement_info"] = {"parent_surface_id": "desk_top"}
+    mouse = _benchmark_obj(
+        "wireless_mouse_0", "mouse", (0.35, -0.08, 0.73), (0.08, 0.13, 0.04)
+    )
+    mouse["object_type"] = "manipuland"
+    mouse["functional_hints"]["scene_object_type"] = "manipuland"
+    mouse["placement_info"] = {"parent_surface_id": "desk_top"}
+    book = _benchmark_obj(
+        "hardcover_book_0", "book", (-0.3, -0.08, 0.73), (0.2, 0.3, 0.04)
+    )
+    book["object_type"] = "manipuland"
+    book["functional_hints"]["scene_object_type"] = "manipuland"
+    book["placement_info"] = {"parent_surface_id": "desk_top"}
+    shelf = _benchmark_obj(
+        "shelving_unit_0", "bookshelf", (2.0, 0.0, 0.9), (0.8, 0.35, 1.8)
+    )
+    shelf["object_type"] = "furniture"
+    shelf["functional_hints"]["scene_object_type"] = "furniture"
+    sideboard = _benchmark_obj(
+        "sideboard_0", "sideboard", (2.0, 1.0, 0.45), (1.2, 0.45, 0.9)
+    )
+    sideboard["object_type"] = "furniture"
+    sideboard["functional_hints"]["scene_object_type"] = "furniture"
+    sideboard["functional_hints"]["category_group"] = "storage_surface"
+    sideboard["functional_hints"]["functional_categories"] = [
+        "openable",
+        "sittable",
+        "storage",
+        "supportable",
+    ]
+    return {
+        "case_pack": _benchmark_case_pack(
+            [desk, chair, monitor, mouse, book, shelf, sideboard]
+        ),
+        "results": [
+            {
+                "check_id": "fd_monitor_on_desk",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "computer_monitor_0",
+                "related_objects": ["study_desk_0"],
+                "relation_type": "object_on_support",
+                "reason": "monitor is not on desk",
+            },
+            {
+                "check_id": "fd_mouse_faces_monitor",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "wireless_mouse_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "computer_peripheral_faces_screen",
+                "reason": "mouse does not face monitor",
+            },
+            {
+                "check_id": "fd_chair_faces_monitor",
+                "metric": "functional_dependency",
+                "label": "degraded",
+                "primary_object": "office_chair_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "chair is weakly aligned to monitor",
+            },
+            {
+                "check_id": "fd_book_monitor_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "hardcover_book_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "book is not a seating subject",
+            },
+            {
+                "check_id": "fd_monitor_self_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "computer_monitor_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "self relation",
+            },
+            {
+                "check_id": "fd_shelf_monitor_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "shelving_unit_0",
+                "related_objects": ["computer_monitor_0"],
+                "relation_type": "seating_to_media",
+                "reason": "remote furniture is not actionable now",
+            },
+        ],
+    }
+
+
+def test_agent_prompt_context_filters_manipuland_workstation_noise() -> None:
+    payload = _workstation_payload()
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.MANIPULAND,
+        current_furniture_id="study_desk_0",
+    )
+    context = format_agent_prompt_context(
+        payload,
+        agent_type=AgentType.MANIPULAND,
+        current_furniture_id="study_desk_0",
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert {
+        "fd_monitor_on_desk",
+        "fd_mouse_faces_monitor",
+        "fd_chair_faces_monitor",
+    } <= check_ids
+    assert "fd_book_monitor_noise" not in check_ids
+    assert "fd_monitor_self_noise" not in check_ids
+    assert "fd_shelf_monitor_noise" not in check_ids
+    assert "wireless_mouse_0" in context
+    assert "hardcover_book_0" not in context
+    assert "shelving_unit_0" not in context
+
+
+def test_agent_prompt_context_keeps_furniture_layout_issues() -> None:
+    payload = _workstation_payload()
+    payload["results"].extend(
+        [
+            {
+                "check_id": "fd_desk_chair_faces",
+                "metric": "functional_dependency",
+                "label": "degraded",
+                "primary_object": "study_desk_0",
+                "related_objects": ["office_chair_0"],
+                "relation_type": "furniture_faces_furniture",
+                "reason": "desk and chair alignment is weak",
+            },
+            {
+                "check_id": "spatial_desk",
+                "metric": "spatial_accessibility",
+                "label": "fail",
+                "primary_object": "study_desk_0",
+                "related_objects": [],
+                "reason": "desk is blocked",
+            },
+        ]
+    )
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.FURNITURE,
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert "fd_desk_chair_faces" in check_ids
+    assert "spatial_desk" in check_ids
+    assert "fd_monitor_on_desk" not in check_ids
+    assert "fd_mouse_faces_monitor" not in check_ids
+
+
+def test_agent_prompt_context_filters_invalid_seating_relation_targets() -> None:
+    payload = _workstation_payload()
+    payload["results"] = [
+        {
+            "check_id": "fd_chair_desk",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "office_chair_0",
+            "related_objects": ["study_desk_0"],
+            "relation_type": "seating_to_work_surface",
+            "reason": "chair should face the desk",
+        },
+        {
+            "check_id": "fd_shelf_desk_noise",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "shelving_unit_0",
+            "related_objects": ["study_desk_0"],
+            "relation_type": "seating_to_work_surface",
+            "reason": "storage furniture is not a seating subject",
+        },
+        {
+            "check_id": "fd_chair_shelf_noise",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "office_chair_0",
+            "related_objects": ["sideboard_0"],
+            "relation_type": "seating_to_work_surface",
+            "reason": "storage furniture is not a work surface target",
+        },
+        {
+            "check_id": "fd_chair_shelf_media_noise",
+            "metric": "functional_dependency",
+            "label": "fail",
+            "primary_object": "office_chair_0",
+            "related_objects": ["sideboard_0"],
+            "relation_type": "seating_to_media",
+            "reason": "sideboard is not media",
+        },
+    ]
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.FURNITURE,
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert "fd_chair_desk" in check_ids
+    assert "fd_shelf_desk_noise" not in check_ids
+    assert "fd_chair_shelf_noise" not in check_ids
+    assert "fd_chair_shelf_media_noise" not in check_ids
+
+
+def test_agent_prompt_context_keeps_furniture_media_targets() -> None:
+    sofa = _benchmark_obj("sofa_0", "sofa", (0.0, 0.0, 0.45), (1.8, 0.8, 0.9))
+    sofa["object_type"] = "furniture"
+    sofa["functional_hints"]["scene_object_type"] = "furniture"
+    sofa["functional_hints"]["category_group"] = "seating"
+    media = _benchmark_obj(
+        "entertainment_center_0",
+        "entertainment_center_entertainment",
+        (0.0, 2.0, 0.45),
+        (1.8, 0.45, 0.9),
+    )
+    media["object_type"] = "furniture"
+    media["functional_hints"]["scene_object_type"] = "furniture"
+    media["functional_hints"]["category_group"] = "storage_surface"
+    sideboard = _benchmark_obj(
+        "sideboard_0", "sideboard", (2.0, 2.0, 0.45), (1.2, 0.45, 0.9)
+    )
+    sideboard["object_type"] = "furniture"
+    sideboard["functional_hints"]["scene_object_type"] = "furniture"
+    sideboard["functional_hints"]["category_group"] = "storage_surface"
+    payload = {
+        "case_pack": _benchmark_case_pack([sofa, media, sideboard]),
+        "results": [
+            {
+                "check_id": "fd_sofa_media",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "sofa_0",
+                "related_objects": ["entertainment_center_0"],
+                "relation_type": "seating_to_media",
+                "reason": "sofa should face the media furniture",
+            },
+            {
+                "check_id": "fd_sofa_sideboard_noise",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "primary_object": "sofa_0",
+                "related_objects": ["sideboard_0"],
+                "relation_type": "seating_to_media",
+                "reason": "sideboard is not media",
+            },
+        ],
+    }
+
+    filtered = filter_prompt_results_for_agent(
+        payload,
+        agent_type=AgentType.FURNITURE,
+    )
+    check_ids = {result["check_id"] for result in filtered}
+
+    assert "fd_sofa_media" in check_ids
+    assert "fd_sofa_sideboard_noise" not in check_ids
 
 
 def test_markdown_report_excludes_ignored_issues() -> None:

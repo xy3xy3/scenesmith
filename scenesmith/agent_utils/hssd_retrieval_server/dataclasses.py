@@ -32,6 +32,9 @@ class HssdRetrievalServerRequest:
     """Optional desired dimensions (width, depth, height) in meters for size-based
     ranking."""
 
+    max_axis_relative_error: float | None = None
+    """Optional uniform-scale fit rejection threshold for each returned candidate."""
+
     scene_id: str | None = None
     """Optional scene identifier for fair round-robin scheduling.
 

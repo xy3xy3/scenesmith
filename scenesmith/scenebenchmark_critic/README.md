@@ -275,7 +275,7 @@ write_room_stage_report(room_scene, stage_dir, config=config, stage="final_scene
 **核心模块** `clearance_source.py`（纯 Python，无 Drake/Blender 依赖，可独立单测）：
 
 - `get_clearance(asset_id)` → 统一净空记录（这是「净空服务」内核，可再包一层 HTTP 当在线服务）。
-- `project_keep_clear(record, bbox_world, yaw_deg)` → 物体局部净空按位姿投影到**世界系 keep-clear AABB**（前向=局部 -Y 经 yaw 旋转后吸附到最近世界轴；「四周」对称件生成环形四面；「上方站立」生成头顶垂直净空；继承门控小件返回空，不占独立盒）。
+- `project_keep_clear(record, bbox_world, yaw_deg)` → 物体局部净空按位姿投影到**世界系 keep-clear AABB**（原始索引 meta 记录 HSSD mesh 帧 `front=-Y`，但 SceneSmith 摆放位姿的消费方正面是局部 `+Y`；因此有向净空按局部 `+Y` 经 yaw 旋转后吸附到最近世界轴；「四周」对称件生成环形四面；「上方站立」生成头顶垂直净空；继承门控小件返回空，不占独立盒）。
 - `build_clearance_checks` / `evaluate_clearance` → 逐物体把 keep-clear 区与其它物体 `bbox_world` 做 AABB 侵入检测，`pass`/`fail` + 侵入物清单 + 置信度（high/med/low→0.9/0.6/0.3）。
 
 **接入点**：`asset_annotation.py` 给 `AssetAnnotation` 加可选 `clearance` 字段并镜像进 `metadata.clearance`；`checks.py::build_checks` 在 `interaction_clearance ∈ metrics` 时生成净空检查；`vendor/rules.py` 按 `metric=="interaction_clearance"` 分派评分。（模块/字段名仍叫 `clearance`，只有 metric dispatch key 用 spec 名 `interaction_clearance`。）
@@ -293,7 +293,8 @@ scenebenchmark_critic:
 ## 集成说明
 
 - 评测器默认仅生成报告。`hard_gate` 元数据会被记录，但 v1 不会回滚或重写 SceneSmith 场景。
-- LLM 评测器提示注入仅对家具和 manipuland 代理运行。
+- LLM 评测器提示注入仅对家具和 manipuland 代理运行。报告始终保留全量规则结果；注入到 LLM critic 的摘要默认经过 `agent_prompt_context_filter_enabled` 过滤，只保留当前代理可执行的局部问题。
+- `agent_prompt_context_debug_write` 可写出原始/过滤后的 issue id 摘要，用于排查 critic-on 生成差异；默认关闭。
 - 组合房屋报告仍可通过 `write_house_stage_report` 或非空 `house_stage_hooks` 使用，但默认集成仅限房间。
 - 组合房屋家具 stage 报告会过滤掉 manipuland，使 stage 级检查仅包含实际已放置的对象。
 - `vendor/rules.py` 是 vendored SceneBenchmark 模块的桥接，有意避免在运行时导入外部 SceneBenchmark 仓库。

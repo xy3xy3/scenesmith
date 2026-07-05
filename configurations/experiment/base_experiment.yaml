@@ -24,15 +24,18 @@ prompts: [
 num_workers: 1
 
 # Pipeline stage control
-# Stages run in order: floor_plan → furniture → wall_mounted → manipuland
+# Stages run in order: floor_plan → furniture → wall_mounted → ceiling_mounted → manipuland
 # Set start_stage to resume from a specific stage (loads previous stage's state)
 # Set stop_stage to stop after a specific stage (saves state for later resumption)
 # Set resume_from_path to branch from a previous experiment's output
 pipeline:
-  start_stage: "floor_plan"  # Options: "floor_plan", "furniture", "wall_mounted", "manipuland"
-  stop_stage: "manipuland"  # Options: "floor_plan", "furniture", "wall_mounted", "manipuland"
+  start_stage: "floor_plan"  # Options: "floor_plan", "furniture", "wall_mounted", "ceiling_mounted", "manipuland"
+  stop_stage: "manipuland"  # Options: "floor_plan", "furniture", "wall_mounted", "ceiling_mounted", "manipuland"
   # Path to source experiment dir (e.g., "outputs/2025-12-21/10-30-45")
   resume_from_path: null
+  # Skip entire stages while still creating pass-through checkpoints for resumability.
+  skip_wall_mounted: false
+  skip_ceiling_mounted: false
   # Parallelize rooms within a house (mutually exclusive with num_workers > 1).
   parallel_rooms: false
   # Max concurrent rooms when parallel_rooms=true.
@@ -80,6 +83,8 @@ scenebenchmark_critic:
   # Single-room by default; override this to enable combined-house reports.
   house_stage_hooks: []
   inject_into_llm_critic: true
+  agent_prompt_context_filter_enabled: true
+  agent_prompt_context_debug_write: false
   hard_gate: false
   max_issues_for_prompt: 8
   fail_gate_threshold: 1
@@ -96,6 +101,11 @@ scenebenchmark_critic:
   # "template" avoids VLM/network calls and mirrors SceneBenchmark's deterministic fallback.
   fd_relation_proposer_mode: "template"
   max_fd_relation_proposals: 8
+  # Keep seating orientation targets stable across SceneBenchmark stages.
+  # This lets a chair use a table as a placement/support anchor while preserving
+  # a chosen media/table facing target until the target disappears or a semantic
+  # focal point is introduced.
+  stable_orientation_contracts: true
   # Optional asset-level semantic annotation before running the rule critic.
   # backend="mock" mirrors SceneBenchmark's deterministic dry-run annotation path.
   # Set backend="vlm" to call the configured OpenAI-compatible vision model.

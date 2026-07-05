@@ -1,13 +1,20 @@
 """Unit tests for the asset router module."""
 
+import tempfile
 import unittest
 
-from omegaconf import OmegaConf
+from pathlib import Path
 from unittest.mock import MagicMock
+
+from omegaconf import OmegaConf
 
 from scenesmith.agent_utils.asset_router import AssetRouter
 from scenesmith.agent_utils.asset_router.dataclasses import AnalysisResult, AssetItem
 from scenesmith.agent_utils.room import AgentType, ObjectType
+from scenesmith.agent_utils.simple_manipuland_primitives import (
+    can_generate_simple_manipuland_primitive,
+    generate_simple_manipuland_primitive,
+)
 
 
 class TestAnalysisResultWasModified(unittest.TestCase):
@@ -146,8 +153,113 @@ class TestAssetRouterItemTypeValidation(unittest.TestCase):
         assert "manipuland" in error.lower()
 
 
+class TestSimpleManipulandPrimitiveFallback(unittest.TestCase):
+    """Test deterministic primitive fallback for simple manipulands."""
+
+    def _make_router(self) -> AssetRouter:
+        cfg = OmegaConf.create(
+            {
+                "asset_manager": {
+                    "general_asset_source": "hssd",
+                    "side_view_elevation_degrees": 15.0,
+                    "validation_taa_samples": 8,
+                    "router": {
+                        "simple_manipuland_fallback": {"enabled": True},
+                        "strategies": {
+                            "generated": {"enabled": True, "max_retries": 1}
+                        },
+                    },
+                    "hssd": {"use_lenient_validation": True},
+                    "objaverse": {"use_lenient_validation": True},
+                }
+            }
+        )
+        return AssetRouter(
+            agent_type=AgentType.MANIPULAND,
+            vlm_service=MagicMock(),
+            cfg=cfg,
+        )
+
+    def test_primitive_classifier_is_conservative(self) -> None:
+        coaster = AssetItem(
+            description="round drink coasters",
+            short_name="coasters",
+            dimensions=[0.09, 0.09, 0.01],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+        sculpture = AssetItem(
+            description="abstract decorative sculpture",
+            short_name="decor_sculpture",
+            dimensions=[0.2, 0.2, 0.4],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+
+        self.assertTrue(can_generate_simple_manipuland_primitive(coaster))
+        self.assertFalse(can_generate_simple_manipuland_primitive(sculpture))
+
+    def test_generate_simple_primitive_glb(self) -> None:
+        item = AssetItem(
+            description="television remote control",
+            short_name="remote_control",
+            dimensions=[0.18, 0.05, 0.015],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = generate_simple_manipuland_primitive(item, Path(tmpdir))
+
+            self.assertIsNotNone(path)
+            self.assertTrue(path.exists())
+            self.assertEqual(path.suffix, ".glb")
+
+    def test_router_uses_primitive_fallback_when_retrieval_fails(self) -> None:
+        router = self._make_router()
+        item = AssetItem(
+            description="round drink coasters",
+            short_name="coasters",
+            dimensions=[0.09, 0.09, 0.01],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = router.generate_with_validation(
+                item=item,
+                geometry_client=None,
+                image_generator=None,
+                images_dir=None,
+                geometry_dir=Path(tmpdir),
+                debug_dir=Path(tmpdir) / "debug",
+                hssd_client=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.asset_source, "procedural_primitive")
+            self.assertTrue(result.geometry_path.exists())
+
+
 class TestAnalysisResponseParsing(unittest.TestCase):
     """Test parsing of VLM analysis responses."""
+
+    def _make_router(self, agent_type: AgentType) -> AssetRouter:
+        cfg = OmegaConf.create(
+            {
+                "asset_manager": {
+                    "side_view_elevation_degrees": 15.0,
+                    "validation_taa_samples": 8,
+                    "manipuland_scale": {
+                        "enabled": True,
+                        "normalize_router_dimensions": True,
+                        "reject_bad_uniform_scale_fit": True,
+                        "max_axis_relative_error": 0.75,
+                    },
+                }
+            }
+        )
+        return AssetRouter(agent_type=agent_type, vlm_service=MagicMock(), cfg=cfg)
 
     def test_parse_single_furniture_item(self) -> None:
         """Parse single furniture item response."""
@@ -289,6 +401,31 @@ class TestAnalysisResponseParsing(unittest.TestCase):
         result = router._parse_analysis_response(response)
         assert len(result.items) == 1
         assert result.items[0].object_type == ObjectType.FURNITURE
+
+    def test_parse_manipuland_normalizes_known_scale_profile(self) -> None:
+        """Known manipulands keep original request and use clamped dimensions."""
+        router = self._make_router(AgentType.MANIPULAND)
+
+        response = {
+            "items": [
+                {
+                    "description": "spiral notebook",
+                    "short_name": "notebook",
+                    "dimensions": [0.60, 0.04, 0.20],
+                    "object_type": "MANIPULAND",
+                    "strategies": ["generated"],
+                }
+            ],
+            "original_description": None,
+        }
+
+        result = router._parse_analysis_response(response)
+
+        assert len(result.items) == 1
+        item = result.items[0]
+        assert item.requested_dimensions == [0.60, 0.04, 0.20]
+        assert item.dimensions == [0.30, 0.09, 0.06]
+        assert item.scale_profile == "notebook_book"
 
 
 class TestAssetRouterJsonFallback(unittest.TestCase):

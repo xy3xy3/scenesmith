@@ -69,6 +69,15 @@ prompt: |
   and is collision-free.
   {% endif %}
 
+  If the physics context includes "Additional SceneBenchmark geometry critic context",
+  treat failed or degraded rule checks as measured geometric evidence. Only call a
+  rule irrelevant when the relation is clearly semantically inapplicable to this scene.
+  In particular, when a bed is wall-backed, a `back_against_wall` or
+  `side_or_back_against_wall` failure for adjacent nightstands/bedside tables is
+  actionable unless the scene explicitly uses a freestanding/island bed or fixing it
+  would block access/cause collisions. Do not label that specific bedside wall issue
+  as a false positive just because the nightstand also serves the bed.
+
   IMPORTANT: Visual bounding box overlap does NOT indicate collision. If you observe
   objects that appear to overlap (such as chairs tucked under tables), but they are not
   listed in the physics violations above, the arrangement is PHYSICALLY VALID. Always

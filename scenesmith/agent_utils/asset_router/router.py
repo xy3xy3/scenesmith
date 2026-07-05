@@ -1,6 +1,5 @@
 """Asset router for LLM-advised asset generation."""
 
-import json
 import logging
 import tempfile
 import time
@@ -31,6 +30,10 @@ from scenesmith.agent_utils.geometry_generation_server.dataclasses import (
 from scenesmith.agent_utils.hssd_retrieval_server.dataclasses import (
     HssdRetrievalServerRequest,
 )
+from scenesmith.agent_utils.manipuland_scale import (
+    DEFAULT_MAX_AXIS_RELATIVE_ERROR,
+    normalize_manipuland_dimensions,
+)
 from scenesmith.agent_utils.material_generator import (
     MaterialGenerator,
     MaterialGeneratorConfig,
@@ -42,6 +45,10 @@ from scenesmith.agent_utils.objaverse_retrieval_server.dataclasses import (
     ObjaverseRetrievalServerRequest,
 )
 from scenesmith.agent_utils.room import AgentType, ObjectType
+from scenesmith.agent_utils.simple_manipuland_primitives import (
+    can_generate_simple_manipuland_primitive,
+    generate_simple_manipuland_primitive,
+)
 from scenesmith.agent_utils.thin_covering_generator import (
     create_circular_thin_covering_glb,
     create_rectangular_thin_covering_glb,
@@ -233,14 +240,38 @@ class AssetRouter:
         for item_data in response.get("items", []):
             try:
                 object_type = ObjectType(item_data["object_type"].lower())
+                requested_dimensions = item_data["dimensions"]
+                dimensions = list(requested_dimensions)
+                scale_profile = None
+                scale_cfg = self.cfg.asset_manager.get("manipuland_scale", {}) or {}
+                scale_enabled = scale_cfg.get("enabled", True)
+                normalize_dimensions = scale_cfg.get(
+                    "normalize_router_dimensions", True
+                )
+                # 7.3 fix: clamp known desktop manipulands before retrieval/generation
+                # so an LLM's outlier size does not get baked into later uniform scaling.
+                if (
+                    self.agent_type == AgentType.MANIPULAND
+                    and scale_enabled
+                    and normalize_dimensions
+                ):
+                    dimensions, profile = normalize_manipuland_dimensions(
+                        description=item_data["description"],
+                        short_name=item_data["short_name"],
+                        dimensions=dimensions,
+                    )
+                    if profile is not None:
+                        scale_profile = profile.name
                 items.append(
                     AssetItem(
                         description=item_data["description"],
                         short_name=item_data["short_name"],
-                        dimensions=item_data["dimensions"],
+                        dimensions=dimensions,
                         object_type=object_type,
                         strategies=item_data["strategies"],
                         thin_covering_type=item_data.get("thin_covering_type"),
+                        requested_dimensions=list(requested_dimensions),
+                        scale_profile=scale_profile,
                     )
                 )
             except (KeyError, ValueError) as e:
@@ -515,8 +546,32 @@ class AssetRouter:
             if result is not None:
                 return result
 
+        if self._simple_manipuland_fallback_enabled(item):
+            console_logger.warning(
+                f"All configured strategies exhausted for '{item.description}'; "
+                "trying procedural primitive fallback"
+            )
+            fallback_path = generate_simple_manipuland_primitive(item, geometry_dir)
+            if fallback_path is not None:
+                return GeneratedGeometry(
+                    geometry_path=fallback_path,
+                    item=item,
+                    asset_source="procedural_primitive",
+                )
+
         console_logger.warning(f"All strategies exhausted for '{item.description}'")
         return None
+
+    def _simple_manipuland_fallback_enabled(self, item: AssetItem) -> bool:
+        """Whether simple procedural fallback should run for this item."""
+        if self.agent_type != AgentType.MANIPULAND:
+            return False
+        if not can_generate_simple_manipuland_primitive(item):
+            return False
+        asset_manager_cfg = self.cfg.get("asset_manager", {}) or {}
+        router_cfg = asset_manager_cfg.get("router", {}) or {}
+        fallback_cfg = router_cfg.get("simple_manipuland_fallback", {}) or {}
+        return bool(fallback_cfg.get("enabled", True))
 
     def _try_articulated_strategy(
         self,
@@ -1543,10 +1598,26 @@ class AssetRouter:
                 f"Mapped 'either' to '{object_type}' for {self.agent_type} agent"
             )
 
+        scale_cfg = self.cfg.asset_manager.get("manipuland_scale", {}) or {}
+        scale_enabled = scale_cfg.get("enabled", True)
+        reject_bad_fit = scale_cfg.get("reject_bad_uniform_scale_fit", True)
+        max_axis_relative_error = scale_cfg.get(
+            "max_axis_relative_error", DEFAULT_MAX_AXIS_RELATIVE_ERROR
+        )
+        # 7.3 fix: for small desktop objects, ask HSSD retrieval to skip candidates
+        # that would still have bad axis proportions after uniform scaling.
+        if (
+            self.agent_type != AgentType.MANIPULAND
+            or not scale_enabled
+            or not reject_bad_fit
+        ):
+            max_axis_relative_error = None
+
         request = HssdRetrievalServerRequest(
             object_description=item.description,
             object_type=object_type,
             desired_dimensions=tuple(item.dimensions) if item.dimensions else None,
+            max_axis_relative_error=max_axis_relative_error,
             output_dir=str(geometry_dir),
             scene_id=scene_id,
             num_candidates=num_candidates,

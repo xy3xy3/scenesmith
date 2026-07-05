@@ -68,6 +68,9 @@ CATEGORY_ALIASES = {
     "ceiling light": "ceiling_light",
     "coffee table": "coffee_table",
     "coffeetable": "coffee_table",
+    "computer display": "monitor",
+    "computer monitor": "monitor",
+    "computer screen": "monitor",
     "couch": "sofa",
     "craft activity table": "table",
     "craft table": "table",
@@ -80,8 +83,11 @@ CATEGORY_ALIASES = {
     "floor lamp": "floor_lamp",
     "floorlamp": "floor_lamp",
     "fridge": "refrigerator",
+    "lcd monitor": "monitor",
     "media console": "media_console",
     "night stand": "nightstand",
+    "notebook computer": "laptop",
+    "notebookcomputer": "laptop",
     "office chair": "office_chair",
     "officechair": "office_chair",
     "pendant light": "pendant_light",
@@ -92,6 +98,8 @@ CATEGORY_ALIASES = {
     "simplebookcase": "bookshelf",
     "table lamp": "table_lamp",
     "tablelamp": "table_lamp",
+    "tablet": "tablet_computer",
+    "tablet computer": "tablet_computer",
     "television": "television",
     "toy chest storage bench": "bench",
     "toy storage bin": "storage_bin",
@@ -129,6 +137,9 @@ HEURISTIC_AFFORDANCE_MAP = {
     "glass": {"graspable"},
     "lamp": {"toggleable"},
     "laptop": {"graspable"},
+    "keyboard": {"graspable"},
+    "monitor": {"graspable"},
+    "mouse": {"graspable"},
     "loveseat": {"sittable"},
     "microwave": {"containable", "openable"},
     "mug": {"graspable"},
@@ -144,6 +155,7 @@ HEURISTIC_AFFORDANCE_MAP = {
     "stool": {"sittable"},
     "table": {"supportable"},
     "table_lamp": {"toggleable"},
+    "tablet_computer": {"graspable"},
     "tray": {"graspable", "supportable"},
     "tv_stand": {"containable", "openable", "supportable"},
     "vase": {"containable", "graspable"},
@@ -191,8 +203,10 @@ CATEGORY_KEYWORDS = {
     "drawer": ["drawer", "pull-out drawer", "storage drawer"],
     "floor_lamp": ["floor lamp", "standing lamp"],
     "laptop": ["laptop", "notebook computer"],
+    "keyboard": ["keyboard", "computer keyboard"],
     "loveseat": ["loveseat", "two-seat sofa", "small couch"],
     "microwave": ["microwave", "microwave oven"],
+    "monitor": ["monitor", "computer monitor", "screen", "display"],
     "mug": ["mug", "coffee mug", "cup"],
     "nightstand": ["nightstand", "bedside table", "side table"],
     "office_chair": ["office chair", "desk chair", "task chair", "swivel chair"],
@@ -204,6 +218,7 @@ CATEGORY_KEYWORDS = {
     "sofa": ["sofa", "couch", "settee", "three-seat sofa"],
     "table": ["table", "dining table", "work table"],
     "table_lamp": ["table lamp", "desk lamp", "reading lamp"],
+    "tablet_computer": ["tablet computer", "tablet", "touchscreen"],
     "tv_stand": ["tv stand", "media console", "television console"],
     "vase": ["vase", "flower vase", "decorative vase"],
     "wall_cabinet": ["wall cabinet", "storage cabinet", "cupboard"],
@@ -227,8 +242,11 @@ CATEGORY_GROUPS = {
     "drawer": "storage",
     "floor_lamp": "lighting",
     "laptop": "small_object",
+    "keyboard": "small_object",
     "loveseat": "seating",
     "microwave": "appliance",
+    "monitor": "media",
+    "mouse": "small_object",
     "mug": "small_object",
     "nightstand": "storage_surface",
     "office_chair": "seating",
@@ -240,6 +258,7 @@ CATEGORY_GROUPS = {
     "sofa": "seating",
     "table": "work_surface",
     "table_lamp": "lighting",
+    "tablet_computer": "small_object",
     "tv_stand": "storage_surface",
     "vase": "decor",
     "wall_cabinet": "storage",
@@ -266,9 +285,12 @@ KNOWN_CATEGORY_TOKENS = (
         "keyboard",
         "monitor",
         "mouse",
+        "notebook_computer",
         "plate",
         "plant",
+        "screen",
         "table_lamp",
+        "tablet_computer",
         "television",
         "tray",
         "wall_cabinet",
@@ -686,7 +708,8 @@ def _normalize_xy(dx: float, dy: float) -> list[float]:
 def _front_vector_from_hint(
     yaw_rad: float, functional_hints: dict[str, Any]
 ) -> tuple[float, float]:
-    fx, fy = math.cos(yaw_rad), math.sin(yaw_rad)
+    # SceneSmith canonical convention uses +Y as front at yaw=0.
+    fx, fy = -math.sin(yaw_rad), math.cos(yaw_rad)
     front_hint = str(functional_hints.get("front_hint") or "").strip().lower()
     if front_hint == "back":
         return -fx, -fy
@@ -941,6 +964,18 @@ def _functional_hints(
         target_relation = _target_relation(category, categories)
         if target_relation:
             hints["target_relation"] = target_relation
+    if not str(hints.get("mobility_class") or "").strip():
+        hints["mobility_class"] = _mobility_class(obj, category)
+    if not str(hints.get("accessibility_policy") or "").strip():
+        hints["accessibility_policy"] = _accessibility_policy(
+            obj, category, categories, str(hints.get("mobility_class") or "")
+        )
+    elif obj.object_type == ObjectType.MANIPULAND and categories:
+        hints["accessibility_policy"] = "required"
+    if not hints.get("access_sides"):
+        hints["access_sides"] = _access_sides(
+            category, categories, hints.get("front_hint")
+        )
     if not isinstance(hints.get("metric_relevance"), dict):
         hints["metric_relevance"] = _metric_relevance(
             categories, _as_string_list(hints.get("explicit_target_relation"))
@@ -984,6 +1019,77 @@ def _target_relation(category: str, categories: set[str]) -> list[str]:
     if "supportable" in categories:
         return ["graspable_object"]
     return []
+
+
+def _mobility_class(obj: SceneObject, category: str) -> str:
+    if obj.object_type in {ObjectType.WALL_MOUNTED, ObjectType.CEILING_MOUNTED}:
+        return "mounted"
+    if category in {
+        "bar_stool",
+        "bean_bag",
+        "beanbag_chair",
+        "chair",
+        "dining_chair",
+        "office_chair",
+        "stool",
+    }:
+        return "movable"
+    if category in {
+        "armchair",
+        "bench",
+        "coffee_table",
+        "desk",
+        "dining_table",
+        "loveseat",
+        "nightstand",
+        "side_table",
+        "sofa",
+        "table",
+        "tv_stand",
+    }:
+        return "semi_movable"
+    if category in {
+        "bed",
+        "bookshelf",
+        "cabinet",
+        "dresser",
+        "refrigerator",
+        "shelf",
+        "wardrobe",
+        "wine_cabinet",
+    }:
+        return "fixed"
+    return "unknown"
+
+
+def _accessibility_policy(
+    obj: SceneObject, category: str, categories: set[str], mobility_class: str
+) -> str:
+    if obj.object_type in {ObjectType.WALL_MOUNTED, ObjectType.CEILING_MOUNTED}:
+        return "ignored"
+    if obj.object_type == ObjectType.MANIPULAND:
+        return "required" if categories else "ignored"
+    if mobility_class == "movable" and "sittable" in categories:
+        return "optional"
+    if category in {"book", "bottle", "bowl", "cup", "mug", "plate", "remote"}:
+        return "ignored"
+    return "required" if categories else "ignored"
+
+
+def _access_sides(category: str, categories: set[str], front_hint: Any) -> list[str]:
+    face = str(front_hint or "").strip().lower()
+    if face not in {"front", "back", "left", "right", "top", "bottom"}:
+        face = "front"
+    sides: list[str] = []
+    if "openable" in categories or "sittable" in categories:
+        sides.append(face)
+    if "supportable" in categories:
+        sides.append("top")
+    if "sleepable" in categories:
+        sides.extend(["left", "right", face])
+    if category in {"bed", "bookshelf", "cabinet", "dresser", "wardrobe"}:
+        sides.append("front")
+    return list(dict.fromkeys(sides))
 
 
 def _metric_relevance(
@@ -1041,6 +1147,9 @@ def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
         "access_directions",
         "anchor_type",
         "asset_annotation_source",
+        "access_sides",
+        "accessibility_policy",
+        "attachment_dependencies",
         "classification_confidence",
         "classification_reason",
         "functional_dependency",
@@ -1048,8 +1157,10 @@ def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
         "explicit_target_relation",
         "low_confidence_candidates",
         "metric_relevance",
+        "mobility_class",
         "operation_space",
         "operation_spaces",
+        "orientation_dependencies",
         "part_of_furniture",
         "part_of_forniture",
         "target_relation",
@@ -1391,9 +1502,14 @@ def _canonical_category(raw: str) -> str:
         "lamp": "lamp",
         "light": "lamp",
         "monitor": "monitor",
+        "notebook": "book",
+        "notebook_computer": "laptop",
         "keyboard": "keyboard",
         "mouse": "mouse",
         "remote": "remote",
+        "screen": "monitor",
+        "display": "monitor",
+        "tablet": "tablet_computer",
         "laptop": "laptop",
         "mug": "mug",
         "cup": "cup",

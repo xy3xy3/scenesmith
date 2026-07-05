@@ -31,6 +31,12 @@ class AssetItem:
     - "tileable": Pattern repeats across surface (rugs, carpets).
     - "single_image": One image spans entire surface (posters, paintings)."""
 
+    requested_dimensions: list[float] | None = None
+    """Original LLM-requested dimensions before deterministic normalization."""
+
+    scale_profile: str | None = None
+    """Matched manipuland scale profile, if deterministic scale normalization applied."""
+
 
 @dataclass
 class AnalysisResult:

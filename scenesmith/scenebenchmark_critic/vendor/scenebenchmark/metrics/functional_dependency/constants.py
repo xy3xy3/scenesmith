@@ -26,7 +26,18 @@ LIVING_ROOM_COFFEE_TABLE_MAX_GAP_M = 1.35
 OPTIONAL_SEATING_SURFACE_MAX_GAP_M = 0.45
 OPTIONAL_SEATING_SURFACE_MAX_ANGLE_DEG = 120.0
 STOOL_COUNTER_MAX_GAP_M = 0.8
-MEDIA = {"television", "tv"}
+MEDIA = {
+    "display",
+    "laptop",
+    "monitor",
+    "notebook_computer",
+    "projection_screen",
+    "screen",
+    "tablet",
+    "tablet_computer",
+    "television",
+    "tv",
+}
 BEDS = {"bed"}
 NIGHTSTANDS = {"nightstand", "side_table"}
 DINING_TABLES = {"dining_table", "table"}
@@ -66,17 +77,22 @@ SUPPORTED_SMALL = {
     "dish",
     "glass",
     "laptop",
+    "keyboard",
     "magazine",
     "mug",
     "newspaper",
+    "notebook_computer",
     "novel",
     "phone",
     "plant",
     "plate",
     "remote",
+    "mouse",
     "smartphone",
     "soap",
     "soap_dispenser",
+    "tablet",
+    "tablet_computer",
     "pen_holder",
     "tray",
     "tumbler",
@@ -151,7 +167,17 @@ SUPPORT_SURFACE_HINTS = (
     "media_console",
     "tv_stand",
 )
-MEDIA_TEXT_HINTS = ("television", "tv", "monitor", "screen")
+MEDIA_TEXT_HINTS = (
+    "display",
+    "laptop",
+    "monitor",
+    "notebook_computer",
+    "projection_screen",
+    "screen",
+    "tablet_computer",
+    "television",
+    "tv",
+)
 WORK_SURFACE_TARGET_REJECT_HINTS = (
     "art",
     "artwork",
@@ -200,8 +226,10 @@ SUPPORT_SUBJECT_TEXT_HINTS = (
     "cup",
     "dish",
     "glass",
+    "keyboard",
     "laptop",
     "magazine",
+    "mouse",
     "mug",
     "newspaper",
     "novel",
@@ -212,6 +240,8 @@ SUPPORT_SUBJECT_TEXT_HINTS = (
     "smartphone",
     "soap",
     "soap_dispenser",
+    "tablet",
+    "tablet_computer",
     "pen_holder",
     "tray",
     "tumbler",
@@ -230,7 +260,15 @@ PROPOSER_SUBJECT_MULTIPLIER = 2
 PROPOSER_TARGET_MULTIPLIER = 3
 PROPOSER_MAX_TARGETS_PER_RELATION = 4
 PROPOSER_MAX_TASK_CHARS = 240
-CORE_SUPPORTED_SMALL = {"laptop", "monitor", "keyboard", "mouse"}
+CORE_SUPPORTED_SMALL = {
+    "keyboard",
+    "laptop",
+    "monitor",
+    "mouse",
+    "notebook_computer",
+    "tablet",
+    "tablet_computer",
+}
 DECORATIVE_SUPPORT_SMALL = {
     "alarm_clock",
     "book",

@@ -48,6 +48,7 @@ SMALL_SA_SUBJECT_HINTS = (
     "plate",
     "bowl",
 )
+WALL_BACKED_RELATIONS = {"back_against_wall", "side_or_back_against_wall"}
 
 
 def build_checks(
@@ -173,6 +174,7 @@ def build_checks(
             seen_check_ids.add(check_id)
 
         checks.extend(_build_explicit_target_relation_checks(objects, seen_check_ids))
+        checks.extend(_build_dependency_annotation_checks(objects, seen_check_ids))
         checks.extend(
             _build_grouped_functional_dependency_checks(objects, seen_check_ids)
         )
@@ -187,6 +189,9 @@ def build_checks(
 
 
 def _spatial_access_affordance(obj: dict[str, Any]) -> str | None:
+    policy = _accessibility_policy(obj)
+    if policy in {"ignored", "optional"}:
+        return None
     if _should_drop_small_spatial_accessibility(obj):
         return None
     if _should_exclude_from_spatial_access_subjects(obj):
@@ -198,6 +203,14 @@ def _spatial_access_affordance(obj: dict[str, Any]) -> str | None:
         if affordance in affordances:
             return affordance
     return sorted(affordances)[0]
+
+
+def _accessibility_policy(obj: dict[str, Any]) -> str:
+    hints = obj.get("functional_hints") or {}
+    policy = _normalize_token(hints.get("accessibility_policy"))
+    if policy in {"required", "optional", "ignored"}:
+        return policy
+    return "required"
 
 
 def _should_exclude_from_spatial_access_subjects(obj: dict[str, Any]) -> bool:
@@ -293,6 +306,8 @@ def _is_spatial_access_target(candidate: dict[str, Any]) -> bool:
 
 
 def _should_drop_small_spatial_accessibility(obj: dict[str, Any]) -> bool:
+    if _scene_object_type(obj) == "manipuland":
+        return False
     if is_small_object(obj):
         return True
     text = " ".join(
@@ -512,6 +527,232 @@ def _build_grouped_functional_dependency_checks(
     return checks
 
 
+def _build_dependency_annotation_checks(
+    objects: dict[str, dict[str, Any]], seen_check_ids: set[str]
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for subject in objects.values():
+        subject_id = str(subject.get("id") or "")
+        for source_key, source_name in (
+            ("attachment_dependencies", "asset_attachment_dependency"),
+            ("orientation_dependencies", "asset_orientation_dependency"),
+        ):
+            for index, dependency in enumerate(
+                _dependency_annotation_items(subject, source_key)
+            ):
+                relation_type = _normalize_relation_token(
+                    dependency.get("relation_type") or dependency.get("type")
+                )
+                if not relation_type:
+                    continue
+                if _dependency_conflicts_with_placement(
+                    subject, relation_type, source_key
+                ):
+                    continue
+                targets = _dependency_targets(subject, objects.values(), dependency)
+                if not targets:
+                    continue
+                target_ids = [
+                    str(target.get("id") or "")
+                    for target in targets
+                    if target.get("id")
+                ]
+                if not target_ids:
+                    continue
+                check_id = (
+                    f"fd_{subject_id}_{'_'.join(target_ids)}_"
+                    f"{relation_type}_{source_key}_{index}"
+                )
+                if check_id in seen_check_ids:
+                    continue
+                checks.append(
+                    {
+                        "check_id": check_id,
+                        "metric": "functional_dependency",
+                        "subject_id": subject_id,
+                        "target_ids": target_ids,
+                        "relation_type": relation_type,
+                        "expected_use": _expected_use(relation_type),
+                        "priority_weight": _priority_weight(
+                            subject, "functional_dependency", 0.8
+                        ),
+                        "question": (
+                            f"Does annotated dependency `{relation_type}` hold for "
+                            f"{subject.get('name') or subject_id}?"
+                        ),
+                        "evidence": {
+                            "dependency": dependency,
+                            "dependency_key": source_key,
+                            "annotation_source": source_name,
+                        },
+                        "evidence_refs": ["scene_geometry", "object_metadata"],
+                        "check_source": source_name,
+                        "scoring_tier": str(dependency.get("scoring_tier") or "core"),
+                    }
+                )
+                seen_check_ids.add(check_id)
+    return checks
+
+
+def _dependency_annotation_items(
+    obj: dict[str, Any], source_key: str
+) -> list[dict[str, Any]]:
+    hints = obj.get("functional_hints") or {}
+    raw = hints.get(source_key)
+    values = raw if isinstance(raw, list) else [raw]
+    return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _dependency_conflicts_with_placement(
+    subject: dict[str, Any], relation_type: str, source_key: str
+) -> bool:
+    if source_key != "attachment_dependencies" or relation_type != "object_on_floor":
+        return False
+    placement = subject.get("placement_info") or {}
+    parent_surface_id = str(placement.get("parent_surface_id") or "").strip()
+    if not parent_surface_id:
+        return False
+    hints = subject.get("functional_hints") or {}
+    placement_class = _normalize_relation_token(hints.get("placement_class"))
+    scene_object_type = _scene_object_type(subject)
+    return scene_object_type == "manipuland" or placement_class in {
+        "surface_object",
+        "tabletop_object",
+        "shelf_object",
+    }
+
+
+def _dependency_targets(
+    subject: dict[str, Any],
+    candidates: Any,
+    dependency: dict[str, Any],
+) -> list[dict[str, Any]]:
+    explicit_ids = {
+        str(value)
+        for value in _as_dependency_target_id_values(dependency)
+        if str(value)
+    }
+    if explicit_ids:
+        explicit_targets = [
+            candidate
+            for candidate in candidates
+            if str(candidate.get("id") or "") in explicit_ids
+        ]
+        if explicit_targets:
+            return explicit_targets
+
+    target_kind = _normalize_relation_token(dependency.get("target_kind") or "object")
+    target_categories = _dependency_target_categories(dependency)
+    if not target_categories:
+        return []
+
+    max_distance = _float_value(dependency.get("max_distance_m"), 2.4)
+    limit = 6 if target_kind == "architecture" else 4
+    nearby_targets = _nearby_targets(
+        subject,
+        candidates,
+        predicate=lambda candidate: _dependency_target_matches(
+            candidate, target_categories, target_kind
+        ),
+        max_gap_m=max_distance,
+        limit=limit,
+    )
+    if nearby_targets:
+        return nearby_targets
+
+    relation_type = _normalize_relation_token(
+        dependency.get("relation_type") or dependency.get("type")
+    )
+    if (
+        target_kind == "architecture"
+        and "wall" in target_categories
+        and relation_type in WALL_BACKED_RELATIONS
+    ):
+        nearest_wall = _nearest_dependency_target(
+            subject,
+            candidates,
+            predicate=lambda candidate: _dependency_target_matches(
+                candidate, target_categories, target_kind
+            ),
+        )
+        if nearest_wall is not None:
+            return [nearest_wall]
+    return []
+
+
+def _nearest_dependency_target(
+    subject: dict[str, Any], candidates: Any, *, predicate: Any
+) -> dict[str, Any] | None:
+    subject_id = str(subject.get("id") or "")
+    ranked: list[tuple[float, float, str, dict[str, Any]]] = []
+    for candidate in candidates:
+        target_id = str(candidate.get("id") or "")
+        if not target_id or target_id == subject_id:
+            continue
+        if not predicate(candidate):
+            continue
+        gap = bbox_gap_xy(subject, candidate)
+        if gap is None:
+            continue
+        distance = distance_xy(subject, candidate)
+        ranked.append(
+            (gap, distance if distance is not None else 999.0, target_id, candidate)
+        )
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked[0][3]
+
+
+def _as_dependency_target_id_values(dependency: dict[str, Any]) -> list[Any]:
+    raw = (
+        dependency.get("target_ids")
+        or dependency.get("targets")
+        or dependency.get("target_id")
+        or dependency.get("target")
+        or dependency.get("object_id")
+    )
+    return raw if isinstance(raw, list) else [raw]
+
+
+def _dependency_target_categories(dependency: dict[str, Any]) -> list[str]:
+    raw = dependency.get("target_category")
+    if raw is None:
+        raw = dependency.get("target_categories")
+    values = raw if isinstance(raw, list) else [raw]
+    categories: list[str] = []
+    for value in values:
+        normalized = _normalize_relation_token(value)
+        if normalized and normalized not in categories:
+            categories.append(normalized)
+    return categories
+
+
+def _dependency_target_matches(
+    candidate: dict[str, Any], target_categories: list[str], target_kind: str
+) -> bool:
+    category = _normalize_relation_token(object_category(candidate))
+    if not category:
+        return False
+    if target_kind == "architecture" and category not in {"wall", "floor", "ceiling"}:
+        return False
+    for target_category in target_categories:
+        if target_category == category:
+            return True
+        if category.startswith(target_category + "_"):
+            return True
+        if category.endswith("_" + target_category):
+            return True
+    return False
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _grouped_dining_checks(
     table: dict[str, Any],
     objects: dict[str, dict[str, Any]],
@@ -678,4 +919,10 @@ def _expected_use(relation_type: str) -> str:
         "lamp_to_surface": "lamp serves a nearby support surface",
         "floor_covering_on_floor": "floor covering rests on the floor",
         "object_on_floor": "object rests on the floor",
+        "back_against_wall": "furniture back is close to and faces a wall",
+        "side_or_back_against_wall": "furniture side or back is close to a wall",
+        "mounted_to_wall": "mounted object is attached to a wall",
+        "mounted_to_ceiling": "mounted object is attached to the ceiling",
+        "seat_faces_surface": "seat faces a usable work or table surface",
+        "furniture_faces_furniture": "furniture face orientation matches its target",
     }.get(relation_type, "nearby objects form a valid use relation")

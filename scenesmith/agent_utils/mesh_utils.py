@@ -7,6 +7,8 @@ import trimesh
 
 from mathutils import Vector
 
+from scenesmith.agent_utils.manipuland_scale import compute_uniform_scale_fit
+
 console_logger = logging.getLogger(__name__)
 
 
@@ -371,6 +373,7 @@ def scale_mesh_uniformly_to_dimensions(
     output_path: Path | None = None,
     min_dimension_meters: float = 0.001,
     relative_threshold: float = 0.01,
+    max_axis_relative_error: float | None = None,
 ) -> tuple[Path, float]:
     """Scale a 3D mesh uniformly to match desired dimensions.
 
@@ -396,6 +399,8 @@ def scale_mesh_uniformly_to_dimensions(
         relative_threshold: Minimum ratio between smallest and largest dimension.
             Meshes where min_dim/max_dim < this threshold are rejected. Default:
             0.01 (1%, meaning aspect ratios worse than 100:1 are rejected).
+        max_axis_relative_error: Optional threshold for rejecting meshes whose
+            actual dimensions after uniform scaling remain too far from the target.
 
     Returns:
         Tuple of (path to scaled mesh file, uniform scale factor applied).
@@ -468,6 +473,24 @@ def scale_mesh_uniformly_to_dimensions(
 
     # Calculate actual resulting dimensions.
     actual_dimensions = current_dimensions * uniform_scale
+
+    if max_axis_relative_error is not None:
+        # 7.3 fix: uniform scaling preserves the retrieved/generated mesh aspect
+        # ratio; reject small-object meshes whose post-scale axes are still wrong.
+        fit = compute_uniform_scale_fit(
+            current_dimensions=current_dimensions,
+            desired_dimensions=desired_dimensions,
+        )
+        if fit.max_axis_relative_error > max_axis_relative_error:
+            raise ValueError(
+                "Uniform scale fit exceeds max_axis_relative_error "
+                f"({fit.max_axis_relative_error:.3f} > "
+                f"{max_axis_relative_error:.3f}). Current dimensions: "
+                f"{current_dimensions}, requested: {desired_dimensions}, "
+                f"actual after uniform scale: {actual_dimensions}. "
+                "Rejecting mesh because preserved proportions would produce a "
+                "visibly incorrect small-object scale."
+            )
 
     console_logger.info(
         f"Uniformly scaling mesh from {current_dimensions} to "

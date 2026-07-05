@@ -27,6 +27,25 @@ from scenesmith.utils.print_utils import cyan
 console_logger = logging.getLogger(__name__)
 
 
+def update_latest_run_symlink(output_dir: Path) -> None:
+    """Atomically update the experiment-level latest-run symlink.
+
+    Parallel experiment launches can race if they unlink and recreate the
+    symlink directly. Create a uniquely named sibling symlink first, then
+    atomically replace the final path.
+    """
+    latest_link = output_dir.parents[1] / "latest-run"
+    tmp_link = latest_link.with_name(
+        f".latest-run.{os.getpid()}.{time.time_ns()}"
+    )
+
+    try:
+        tmp_link.symlink_to(output_dir, target_is_directory=True)
+        tmp_link.replace(latest_link)
+    finally:
+        tmp_link.unlink(missing_ok=True)
+
+
 def apply_scenebenchmark_critic_toggle(cfg: DictConfig) -> None:
     """Apply the top-level critic toggle, if provided."""
     critic_toggle = OmegaConf.select(cfg, "scenebenchmark_critic_enabled")
@@ -104,10 +123,7 @@ def run_local(cfg: DictConfig):
         console_logger.info(f"Outputs will be saved to: {output_dir}")
         print(cyan(f"Outputs will be saved to:"), output_dir)
 
-        (output_dir.parents[1] / "latest-run").unlink(missing_ok=True)
-        (output_dir.parents[1] / "latest-run").symlink_to(
-            output_dir, target_is_directory=True
-        )
+        update_latest_run_symlink(output_dir)
 
         # Log and save resolved configuration.
         resolved_config_yaml = OmegaConf.to_yaml(cfg)

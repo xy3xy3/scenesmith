@@ -41,6 +41,7 @@ from scenesmith.agent_utils.image_generation import (
     AssetOperationType,
     create_image_generator,
 )
+from scenesmith.agent_utils.manipuland_scale import DEFAULT_MAX_AXIS_RELATIVE_ERROR
 from scenesmith.agent_utils.materials_retrieval_server import MaterialsRetrievalClient
 from scenesmith.agent_utils.mesh_canonicalization import canonicalize_mesh
 from scenesmith.agent_utils.mesh_physics_analyzer import (
@@ -487,6 +488,19 @@ class AssetManager:
             f"threshold={threshold})"
         )
 
+    def _manipuland_scale_max_axis_relative_error(
+        self, object_type: ObjectType
+    ) -> float | None:
+        """Return the 7.3 small-object uniform-scale rejection threshold."""
+        scale_cfg = self.cfg.asset_manager.get("manipuland_scale", {}) or {}
+        if object_type != ObjectType.MANIPULAND:
+            return None
+        if not scale_cfg.get("enabled", True):
+            return None
+        if not scale_cfg.get("reject_bad_uniform_scale_fit", True):
+            return None
+        return scale_cfg.get("max_axis_relative_error", DEFAULT_MAX_AXIS_RELATIVE_ERROR)
+
     def _retrieve_hssd_assets(
         self, request: AssetGenerationRequest
     ) -> AssetGenerationResult:
@@ -520,11 +534,16 @@ class AssetManager:
             config.sdf_dir.mkdir(parents=True, exist_ok=True)
 
         # Create batch requests for HSSD server with client-specified output dirs.
+        # 7.3 fix: direct HSSD retrieval also gets the small-object aspect-ratio
+        # guard so bypassing the router cannot accept a bad uniform-scale fit.
         retrieval_requests = [
             HssdRetrievalServerRequest(
                 object_description=desc,
                 object_type=request.object_type.value,
                 desired_dimensions=tuple(dims) if dims else None,
+                max_axis_relative_error=self._manipuland_scale_max_axis_relative_error(
+                    request.object_type
+                ),
                 output_dir=str(config.sdf_dir),
                 scene_id=request.scene_id,
             )
@@ -1435,6 +1454,11 @@ class AssetManager:
 
         # Build additional metadata using explicit asset_source from GeneratedGeometry.
         additional_metadata = {"asset_source": generated.asset_source}
+        if item.requested_dimensions is not None:
+            additional_metadata["requested_dimensions"] = item.requested_dimensions
+            additional_metadata["normalized_dimensions"] = item.dimensions
+        if item.scale_profile is not None:
+            additional_metadata["scale_profile"] = item.scale_profile
         if generated.hssd_id is not None:
             additional_metadata["hssd_mesh_id"] = generated.hssd_id
 
@@ -1925,12 +1949,17 @@ class AssetManager:
                 f"Scaling mesh to desired dimensions: {desired_dimensions}"
             )
             final_gltf_path = config.sdf_dir / f"{config.short_name}.gltf"
+            # 7.3 fix: this is the final defense against tiny manipulands keeping
+            # a retrieved mesh's bad aspect ratio after uniform scaling.
             final_gltf_path, applied_scale = scale_mesh_uniformly_to_dimensions(
                 mesh_path=canonical_path,
                 desired_dimensions=desired_dimensions,
                 output_path=final_gltf_path,
                 min_dimension_meters=self.min_mesh_dimension_meters,
                 relative_threshold=self.mesh_relative_dimension_threshold,
+                max_axis_relative_error=(
+                    self._manipuland_scale_max_axis_relative_error(object_type)
+                ),
             )
             # HSSD pre-computed surfaces are at original mesh dimensions.
             # They need scale_factor to match the physical scaling applied above.

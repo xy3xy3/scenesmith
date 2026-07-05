@@ -266,6 +266,8 @@ class ConvexDecompositionServerApp(flask.Flask):
         console_logger.debug(f"V-HACD params: max_convex_hulls={max_convex_hulls}")
 
         # Run V-HACD via trimesh.
+        import numpy as np
+
         vhacd_result = mesh.convex_decomposition(
             maxConvexHulls=max_convex_hulls,
             resolution=resolution,

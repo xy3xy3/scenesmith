@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 from pydrake.all import RigidTransform, RollPitchYaw, RotationMatrix
 
 from scenesmith.agent_utils.action_logger import log_scene_action
-from scenesmith.agent_utils.room import RoomScene, SceneObject, UniqueID
+from scenesmith.agent_utils.room import ObjectType, RoomScene, SceneObject, UniqueID
 from scenesmith.furniture_agents.tools.response_dataclasses import (
     FacingCheckResult,
     FurnitureErrorType,
@@ -172,6 +172,52 @@ class SceneTools:
         )
         return result.to_json()
 
+    def _get_wall_inward_normal(self, target: SceneObject) -> np.ndarray | None:
+        """Get normalized XY wall normal pointing into the room."""
+        if target.object_type != ObjectType.WALL:
+            return None
+
+        wall_normals = getattr(self.scene.room_geometry, "wall_normals", None)
+        if not wall_normals:
+            return None
+
+        wall_normal = wall_normals.get(target.name)
+        if wall_normal is None:
+            return None
+
+        wall_normal_xy = np.array([wall_normal[0], wall_normal[1]], dtype=float)
+        wall_normal_norm = np.linalg.norm(wall_normal_xy)
+        if wall_normal_norm < 1e-6:
+            console_logger.warning(
+                f"Wall {target.name} has near-zero inward normal; "
+                "falling back to point-based orientation"
+            )
+            return None
+
+        return wall_normal_xy / wall_normal_norm
+
+    def _compute_away_yaw_for_wall(
+        self,
+        obj: SceneObject,
+        target: SceneObject,
+    ) -> float | None:
+        """Compute yaw so object front faces room and back faces the wall."""
+        wall_normal_xy = self._get_wall_inward_normal(target)
+        if wall_normal_xy is None:
+            return None
+
+        # 7.1 modification:
+        # For away+wall, orient using the wall's inward normal instead of a
+        # nearest-point heuristic. This makes the semantic back face align to the
+        # wall, which matches SceneBenchmark's back_against_wall expectation.
+        target_point = obj.transform.translation().copy()
+        target_point[0] += wall_normal_xy[0]
+        target_point[1] += wall_normal_xy[1]
+        return compute_optimal_facing_yaw(
+            origin_a=obj.transform.translation(),
+            target_point=target_point,
+        )
+
     def _check_facing_impl(
         self, object_a_id: str, object_b_id: str, direction: str = "toward"
     ) -> str:
@@ -312,27 +358,31 @@ class SceneTools:
             rect_max_2d=world_bbox_max_b[:2],
         )
 
-        # Determine target point based on object B's shape.
-        # Circular objects (round tables): face CENTER for uniform inward facing.
-        # Rectangular objects: face CLOSEST AABB POINT for nearest-edge alignment.
-        target_point = self._compute_orientation_target_point(obj=obj_a, target=obj_b)
-
-        # Compute optimal yaw rotation.
-        # For "toward": face the target point.
-        # For "away": face away from the target point (add 180°).
-        optimal_rotation_base = compute_optimal_facing_yaw(
-            origin_a=origin_a,
-            target_point=target_point,
-        )
-
         if direction == "away":
-            # Add 180° to point away from target.
-            optimal_rotation_delta = optimal_rotation_base + 180.0
-            # Normalize to [-180, 180] range.
-            if optimal_rotation_delta > 180.0:
-                optimal_rotation_delta -= 360.0
+            wall_away_yaw = self._compute_away_yaw_for_wall(obj=obj_a, target=obj_b)
+            if wall_away_yaw is not None:
+                optimal_rotation_delta = wall_away_yaw
+            else:
+                target_point = self._compute_orientation_target_point(
+                    obj=obj_a, target=obj_b
+                )
+                optimal_rotation_base = compute_optimal_facing_yaw(
+                    origin_a=origin_a,
+                    target_point=target_point,
+                )
+                # Add 180° to point away from target.
+                optimal_rotation_delta = optimal_rotation_base + 180.0
+                # Normalize to [-180, 180] range.
+                if optimal_rotation_delta > 180.0:
+                    optimal_rotation_delta -= 360.0
         else:
-            optimal_rotation_delta = optimal_rotation_base
+            target_point = self._compute_orientation_target_point(
+                obj=obj_a, target=obj_b
+            )
+            optimal_rotation_delta = compute_optimal_facing_yaw(
+                origin_a=origin_a,
+                target_point=target_point,
+            )
 
         console_logger.info(
             f"Facing check result: is_facing={is_facing}, "
@@ -429,20 +479,27 @@ class SceneTools:
         if orientation == "none":
             return (False, original_rpy.yaw_angle())
 
-        # Determine target point based on target's shape.
-        target_point = self._compute_orientation_target_point(obj=obj, target=target)
-
-        # Compute optimal yaw.
-        optimal_yaw_deg = compute_optimal_facing_yaw(
-            origin_a=obj.transform.translation(),
-            target_point=target_point,
-        )
-
-        # For "away", add 180° to face away from target.
         if orientation == "away":
-            optimal_yaw_deg += 180.0
-            if optimal_yaw_deg > 180.0:
-                optimal_yaw_deg -= 360.0
+            wall_away_yaw = self._compute_away_yaw_for_wall(obj=obj, target=target)
+            if wall_away_yaw is not None:
+                optimal_yaw_deg = wall_away_yaw
+            else:
+                target_point = self._compute_orientation_target_point(
+                    obj=obj, target=target
+                )
+                optimal_yaw_deg = compute_optimal_facing_yaw(
+                    origin_a=obj.transform.translation(),
+                    target_point=target_point,
+                )
+                optimal_yaw_deg += 180.0
+                if optimal_yaw_deg > 180.0:
+                    optimal_yaw_deg -= 360.0
+        else:
+            target_point = self._compute_orientation_target_point(obj=obj, target=target)
+            optimal_yaw_deg = compute_optimal_facing_yaw(
+                origin_a=obj.transform.translation(),
+                target_point=target_point,
+            )
 
         new_yaw_rad = math.radians(optimal_yaw_deg)
 

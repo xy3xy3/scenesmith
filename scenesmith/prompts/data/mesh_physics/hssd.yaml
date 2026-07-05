@@ -12,6 +12,10 @@ prompt: |
   side views** taken from different angles around the object at its mid-height.
   Your task is to determine which view shows the **canonical front face**.
 
+  2026-06-30 update: Be strict about choosing the view that looks most directly
+  at the front face. Do not choose a side view merely because a front feature is
+  partially visible from that side.
+
   Your task is to:
   1. Predict the object's **material** from a predefined list
   2. Estimate its physical **mass** as:
@@ -64,13 +68,32 @@ prompt: |
   **Step 2: Identify the front view**
   - Look at each of the 4 side view images and identify which one shows the
     functional front face
+  - First identify the object's semantic front, then pick the image where that
+    face is most perpendicular to the camera and occupies the broadest/clearest
+    frontal area.
+  - Do NOT pick a profile or three-quarter side view just because a drawer,
+    screen, door, label, handle, or keyboard is visible along the edge.
+  - If two images show the same feature, choose the image where the feature is
+    centered and face-on, not the side image where it is foreshortened.
   - Front face criteria by object type:
-    - **Furniture**: the side a user would sit on or face while sitting
+    - **Chairs**: the open seat-front side where the user's knees/legs enter;
+      it is opposite the backrest. Do not choose a left/right side profile.
+    - **Beds**: if a distinct headboard exists, choose the foot/end view. If
+      the bed is mainly accessed from a long side and no foot/head side is
+      visually distinct, choose the clearest long-side access view and mention
+      the ambiguity.
+    - **Tables/desks**: the user-facing side with knee space, drawers, keyboard
+      tray, or chair access. For desks against a wall, the back is the plain
+      wall-facing panel; the front is the opposite user side. Do not choose a
+      narrow side profile.
     - **Containers/products**: the side with a label or branding
-    - **Shelves/cabinets**: the open side for placing/retrieving items
+    - **Shelves/cabinets/nightstands/wardrobes**: the open side, drawer side,
+      door side, or handle side for placing/retrieving items. Choose the view
+      where doors/drawers/open shelves are face-on and centered.
     - **Tools/devices**: the side involved in main functional use
-    - **Tables/desks**: the longer side
-    - **Machines with screens**: the side with the screen
+    - **Machines with screens or displays**: the image where the screen/display
+      is face-on and readable, not a side where the screen is visible at an
+      angle.
   - Simply return the image number (0-3) that shows this front face
 
   ### Examples:
@@ -86,13 +109,24 @@ prompt: |
   - Result: up_axis="z", front_view_image_index=2
 
   **Example 3: Desk**
-  - Observations: Looking at 4 side views, image 0 shows the side users face
-    while sitting (where knees go)
-  - Result: up_axis="z", front_view_image_index=0
+  - Observations: Looking at 4 side views, image 3 shows the drawer/knee-space
+    side face-on. Images 0 and 2 are narrow side profiles, and image 1 is the
+    plain back panel.
+  - Result: up_axis="z", front_view_image_index=3
 
   **Example 4: Monitor/Screen**
   - Observations: Looking at 4 side views, image 3 shows the screen face
     (the side users look at)
+  - Result: up_axis="z", front_view_image_index=3
+
+  **Example 5: Nightstand**
+  - Observations: Image 3 shows the drawer handle and open shelf face-on.
+    Images 0, 1, and 2 are plain side/back panels.
+  - Result: up_axis="z", front_view_image_index=3
+
+  **Example 6: Wardrobe**
+  - Observations: Image 3 shows the doors/handles face-on. Images 0 and 2 are
+    side panels, and image 1 is the plain back.
   - Result: up_axis="z", front_view_image_index=3
 
   ### Output:

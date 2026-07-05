@@ -68,6 +68,15 @@ asset_manager:
   # Asset source: "generated" (Hunyuan3D/SAM3D) or "hssd" (HSSD retrieval)
   general_asset_source: "generated"
 
+  # 7.3 fix: deterministic scale guards for common small desktop objects.
+  # Prevents notebooks, lamps, monitors, etc. from retaining bad retrieved-mesh
+  # aspect ratios after uniform scaling.
+  manipuland_scale:
+    enabled: true
+    normalize_router_dimensions: true
+    reject_bad_uniform_scale_fit: true
+    max_axis_relative_error: 0.75
+
   # 3D generation backend (only used when general_asset_source="generated")
   backend: "sam3d"
 

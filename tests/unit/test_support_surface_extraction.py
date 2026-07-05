@@ -8,14 +8,29 @@ import numpy as np
 import trimesh
 
 from omegaconf import OmegaConf
+from pydrake.all import RigidTransform
 
-from scenesmith.agent_utils.room import SupportSurface
+from scenesmith.agent_utils.room import SupportSurface, UniqueID
+from scenesmith.agent_utils.hssd_retrieval.support_surface_loader import (
+    _filter_surfaces_by_layer_spacing,
+)
 from scenesmith.agent_utils.support_surface_extraction import (
     SupportSurfaceExtractionConfig,
     extract_support_surfaces_from_mesh,
 )
 
 console_logger = logging.getLogger(__name__)
+
+
+def _surface_at_height(surface_id: str, height: float, area: float) -> SupportSurface:
+    width = max(area, 0.01)
+    return SupportSurface(
+        surface_id=UniqueID(surface_id),
+        bounding_box_min=np.array([-width / 2.0, -0.5, 0.0]),
+        bounding_box_max=np.array([width / 2.0, 0.5, 0.1]),
+        transform=RigidTransform(p=[0.0, 0.0, height]),
+        mesh=None,
+    )
 
 
 class TestSupportSurfaceExtraction(unittest.TestCase):
@@ -255,6 +270,51 @@ class TestSupportSurfaceExtraction(unittest.TestCase):
                 msg=f"Surface {i}: Rotation determinant should be 1 "
                 f"(proper rotation)",
             )
+
+    def test_layer_spacing_keeps_coplanar_top_patches(self):
+        """Layer filtering should group same-height patches before spacing."""
+        surfaces = [
+            _surface_at_height("lower_left", 0.7475779, 0.4),
+            _surface_at_height("lower_right", 0.7475779, 0.3),
+            _surface_at_height("top_left", 0.7682721, 0.6),
+            _surface_at_height("top_right", 0.7682721, 0.5),
+        ]
+
+        filtered = _filter_surfaces_by_layer_spacing(
+            surfaces,
+            min_spacing=0.05,
+            top_clearance=0.5,
+        )
+
+        self.assertEqual(
+            {str(surface.surface_id) for surface in filtered},
+            {"top_left", "top_right"},
+        )
+        self.assertEqual(
+            [str(surface.surface_id) for surface in filtered],
+            ["top_left", "top_right"],
+            "Kept surfaces should still be sorted by area, largest first.",
+        )
+
+    def test_layer_spacing_keeps_separated_coplanar_layers(self):
+        """Same-height patches are retained when the next layer is far enough."""
+        surfaces = [
+            _surface_at_height("lower_a", 0.4, 0.2),
+            _surface_at_height("lower_b", 0.4 + 5e-5, 0.5),
+            _surface_at_height("upper", 0.6, 0.4),
+        ]
+
+        filtered = _filter_surfaces_by_layer_spacing(
+            surfaces,
+            min_spacing=0.05,
+            top_clearance=0.5,
+            height_tolerance=1e-4,
+        )
+
+        self.assertEqual(
+            [str(surface.surface_id) for surface in filtered],
+            ["lower_b", "upper", "lower_a"],
+        )
 
     def test_custom_config_applied(self):
         """Custom configuration should be respected."""

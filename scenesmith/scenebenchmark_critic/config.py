@@ -15,6 +15,8 @@ class CriticConfig:
     room_stage_hooks: tuple[str, ...] = ("scene_after_furniture", "final_scene")
     house_stage_hooks: tuple[str, ...] = ()
     inject_into_llm_critic: bool = True
+    agent_prompt_context_filter_enabled: bool = True
+    agent_prompt_context_debug_write: bool = False
     hard_gate: bool = False
     max_issues_for_prompt: int = 8
     fail_gate_threshold: int = 1
@@ -48,6 +50,8 @@ def critic_config_from_any(cfg: Any) -> CriticConfig:
         "room_stage_hooks",
         "house_stage_hooks",
         "inject_into_llm_critic",
+        "agent_prompt_context_filter_enabled",
+        "agent_prompt_context_debug_write",
         "hard_gate",
         "max_issues_for_prompt",
         "fail_gate_threshold",
@@ -64,6 +68,12 @@ def critic_config_from_any(cfg: Any) -> CriticConfig:
         ),
         house_stage_hooks=_as_tuple(data.get("house_stage_hooks", ()), ()),
         inject_into_llm_critic=_as_bool(data.get("inject_into_llm_critic", True)),
+        agent_prompt_context_filter_enabled=_as_bool(
+            data.get("agent_prompt_context_filter_enabled", True)
+        ),
+        agent_prompt_context_debug_write=_as_bool(
+            data.get("agent_prompt_context_debug_write", False)
+        ),
         hard_gate=_as_bool(data.get("hard_gate", False)),
         max_issues_for_prompt=int(data.get("max_issues_for_prompt", 8)),
         fail_gate_threshold=int(data.get("fail_gate_threshold", 1)),
