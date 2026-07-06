@@ -137,6 +137,12 @@ class ManipulandTools:
             enabled=loop_config.enabled,
             default_error_factory=self._create_loop_error_response,
         )
+        self._asset_generation_loop_detection_enabled = bool(loop_config.enabled)
+        self._asset_generation_repeat_limit = max(
+            1, min(int(loop_config.max_repeated_attempts), 3)
+        )
+        self._asset_generation_failure_counts: dict[tuple[Any, ...], int] = {}
+        self._asset_generation_failure_messages: dict[tuple[Any, ...], str] = {}
 
         # Apply loop detection to implementation methods.
         self._place_manipuland_on_surface_impl = loop_detector(
@@ -1625,6 +1631,35 @@ class ManipulandTools:
         )
         return result.to_json()
 
+    def _asset_generation_key(
+        self,
+        description: str,
+        short_name: str,
+        dimensions: list[float],
+        style_context: str | None,
+    ) -> tuple[Any, ...]:
+        """Build a stable key for detecting repeated failed asset requests."""
+        normalized_dims = tuple(round(float(value), 4) for value in dimensions)
+        return (
+            " ".join(description.lower().split()),
+            " ".join(short_name.lower().split()),
+            normalized_dims,
+            " ".join((style_context or "").lower().split()),
+        )
+
+    def _repeated_asset_failure_message(self, key: tuple[Any, ...]) -> str:
+        previous_error = self._asset_generation_failure_messages.get(
+            key, "No viable asset was found."
+        )
+        attempts = self._asset_generation_failure_counts.get(key, 0)
+        return (
+            f"Repeated asset generation blocked after {attempts} failed attempts "
+            f"with the same request. Last failure: {previous_error}. Do not request "
+            f"this exact asset again for this furniture item; use an already "
+            f"available asset, change the object category or dimensions, or skip "
+            f"this optional object."
+        )
+
     def _generate_assets_impl(self, request: AssetGenerationRequest) -> str:
         """Implementation for generating manipuland assets."""
         console_logger.info(
@@ -1632,10 +1667,78 @@ class ManipulandTools:
         )
         start_time = time.time()
 
-        # Generate assets using asset manager.
-        result = self.asset_manager.generate_assets(request)
+        request_keys: list[tuple[Any, ...]] = []
+        allowed_indices: list[int] = []
+        blocked_failures: list[tuple[int, str, str]] = []
+        for idx, description in enumerate(request.object_descriptions):
+            short_name = request.short_names[idx]
+            dimensions = request.desired_dimensions[idx]
+            key = self._asset_generation_key(
+                description=description,
+                short_name=short_name,
+                dimensions=dimensions,
+                style_context=request.style_context,
+            )
+            request_keys.append(key)
+
+            if (
+                self._asset_generation_loop_detection_enabled
+                and self._asset_generation_failure_counts.get(key, 0)
+                >= self._asset_generation_repeat_limit
+            ):
+                blocked_failures.append(
+                    (idx, description, self._repeated_asset_failure_message(key))
+                )
+            else:
+                allowed_indices.append(idx)
+
+        if blocked_failures:
+            for _, description, message in blocked_failures:
+                console_logger.warning(
+                    f"Blocking repeated asset generation for '{description}': "
+                    f"{message}"
+                )
+
+        result = None
+        if allowed_indices:
+            if len(allowed_indices) == len(request.object_descriptions):
+                generation_request = request
+            else:
+                generation_request = AssetGenerationRequest(
+                    object_descriptions=[
+                        request.object_descriptions[idx] for idx in allowed_indices
+                    ],
+                    short_names=[request.short_names[idx] for idx in allowed_indices],
+                    object_type=request.object_type,
+                    desired_dimensions=[
+                        request.desired_dimensions[idx] for idx in allowed_indices
+                    ],
+                    style_context=request.style_context,
+                    operation_type=request.operation_type,
+                    scene_id=request.scene_id,
+                )
+
+            # Generate assets using asset manager.
+            result = self.asset_manager.generate_assets(generation_request)
+
+            failed_original_indices = set()
+            for failed in result.failed_assets:
+                original_idx = allowed_indices[failed.index]
+                failed_original_indices.add(original_idx)
+                key = request_keys[original_idx]
+                self._asset_generation_failure_counts[key] = (
+                    self._asset_generation_failure_counts.get(key, 0) + 1
+                )
+                self._asset_generation_failure_messages[key] = failed.error_message
+
+            for original_idx in allowed_indices:
+                if original_idx not in failed_original_indices:
+                    key = request_keys[original_idx]
+                    self._asset_generation_failure_counts.pop(key, None)
+                    self._asset_generation_failure_messages.pop(key, None)
 
         # Convert successful assets to DTOs.
+        successful_assets = result.successful_assets if result is not None else []
         generated_assets = [
             GeneratedAsset(
                 name=obj.name,
@@ -1657,21 +1760,34 @@ class ManipulandTools:
                     else None
                 ),
             )
-            for obj in result.successful_assets
+            for obj in successful_assets
         ]
 
         elapsed_time = time.time() - start_time
+        failed_assets = result.failed_assets if result is not None else []
+        failure_lines = [
+            f"- {f.description}: {f.error_message}" for f in failed_assets
+        ] + [
+            f"- {description}: {message}"
+            for _, description, message in blocked_failures
+        ]
 
         # Handle partial success (failures exist).
-        if result.has_failures:
-            failures_detail = "\n".join(
-                [f"- {f.description}: {f.error_message}" for f in result.failed_assets]
-            )
+        if failure_lines:
+            failures_detail = "\n".join(failure_lines)
 
-            message = (
-                f"Partially successful: {len(result.successful_assets)} succeeded, "
-                f"{len(result.failed_assets)} failed in {elapsed_time:.1f}s"
-            )
+            if result is None:
+                message = (
+                    "Blocked repeated asset generation loop: 0 succeeded, "
+                    f"{len(failure_lines)} failed in {elapsed_time:.1f}s"
+                )
+                successful_count = 0
+            else:
+                message = (
+                    f"Partially successful: {len(result.successful_assets)} "
+                    f"succeeded, {len(failure_lines)} failed in {elapsed_time:.1f}s"
+                )
+                successful_count = len(result.successful_assets)
 
             console_logger.warning(message)
             console_logger.warning(f"Failures:\n{failures_detail}")
@@ -1680,8 +1796,8 @@ class ManipulandTools:
                 success=False,
                 assets=generated_assets,
                 message=message,
-                successful_count=len(result.successful_assets),
-                failed_count=len(result.failed_assets),
+                successful_count=successful_count,
+                failed_count=len(failure_lines),
                 failures=failures_detail,
             ).to_json()
 

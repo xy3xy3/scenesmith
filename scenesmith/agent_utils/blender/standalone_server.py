@@ -12,12 +12,6 @@ import tempfile
 
 from pathlib import Path
 
-from scenesmith.agent_utils.blender.server_app import BlenderRenderApp
-from scenesmith.agent_utils.blender.server_manager import (
-    find_available_port,
-    is_port_available,
-)
-
 console_logger = logging.getLogger(__name__)
 
 
@@ -105,6 +99,8 @@ def resolve_port(host: str, port: int | None, port_range: str) -> int:
         RuntimeError: If specific port is unavailable or no ports in range.
         ValueError: If port range format is invalid.
     """
+    from scenesmith.utils.network_utils import find_available_port, is_port_available
+
     if port is not None:
         # Use specific port.
         if not is_port_available(host=host, port=port):
@@ -158,6 +154,8 @@ def setup_and_run_server(args: argparse.Namespace, port: int) -> None:
         console_logger.info(f"Using blend file: {args.blend_file}")
     if args.bpy_settings_file:
         console_logger.info(f"Using bpy settings file: {args.bpy_settings_file}")
+
+    from scenesmith.agent_utils.blender.server_app import BlenderRenderApp
 
     # Create and run the Flask app.
     console_logger.info("Initializing Blender render app...")

@@ -45,6 +45,9 @@ rendering:
   retry_count: 10
   retry_delay: 3
   server_startup_delay: 0.1
+  # Slow hosts can spend >60s importing/initializing bpy under load.
+  ready_timeout_s: 180.0
+  poll_interval_s: 1.0
   port_cleanup_delay: 0.1
 
   # Overlay annotations configuration.

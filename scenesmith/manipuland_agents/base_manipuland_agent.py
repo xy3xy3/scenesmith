@@ -51,6 +51,7 @@ class BaseManipulandAgent(ABC):
         hssd_server_port: int = 7001,
         articulated_server_host: str = "127.0.0.1",
         articulated_server_port: int = 7002,
+        materials_server_enabled: bool = True,
         materials_server_host: str = "127.0.0.1",
         materials_server_port: int = 7008,
         num_workers: int = 1,
@@ -67,6 +68,8 @@ class BaseManipulandAgent(ABC):
             hssd_server_port: Port for HSSD retrieval server.
             articulated_server_host: Host for articulated retrieval server.
             articulated_server_port: Port for articulated retrieval server.
+            materials_server_enabled: Whether materials retrieval server-backed
+                thin covering generation is enabled.
             materials_server_host: Host for materials retrieval server.
             materials_server_port: Port for materials retrieval server.
             num_workers: Number of parallel workers (for OMP thread allocation).
@@ -86,15 +89,19 @@ class BaseManipulandAgent(ABC):
             # canonicalization). Required because forked workers cannot safely use
             # embedded bpy - GPU/OpenGL state is corrupted by fork.
             console_logger.info("Starting BlenderServer for parallel asset validation")
+            rendering_cfg = cfg.rendering
             self.blender_server = BlenderServer(
                 port_range=tuple(cfg.rendering.blender_server_port_range),
                 server_startup_delay=cfg.rendering.server_startup_delay,
                 port_cleanup_delay=cfg.rendering.port_cleanup_delay,
                 gpu_id=render_gpu_id,
-                log_file=logger.output_dir / "room.log",
+                log_file=logger.output_dir / "blender_server.log",
             )
             self.blender_server.start()
-            self.blender_server.wait_until_ready()
+            self.blender_server.wait_until_ready(
+                timeout=float(rendering_cfg.get("ready_timeout_s", 180.0)),
+                poll_interval=float(rendering_cfg.get("poll_interval_s", 1.0)),
+            )
 
             # Start ConvexDecompositionServer for collision geometry generation.
             # This isolates OpenMP from ThreadPoolExecutor to prevent deadlocks.
@@ -143,6 +150,7 @@ class BaseManipulandAgent(ABC):
             hssd_server_port=hssd_server_port,
             articulated_server_host=articulated_server_host,
             articulated_server_port=articulated_server_port,
+            materials_server_enabled=materials_server_enabled,
             materials_server_host=materials_server_host,
             materials_server_port=materials_server_port,
         )
