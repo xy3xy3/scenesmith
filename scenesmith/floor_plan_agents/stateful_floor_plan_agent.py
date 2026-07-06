@@ -126,7 +126,10 @@ class StatefulFloorPlanAgent(BaseStatefulAgent, BaseFloorPlanAgent):
             log_file=logger.output_dir / "scene.log",
         )
         self.blender_server.start()
-        self.blender_server.wait_until_ready()
+        self.blender_server.wait_until_ready(
+            timeout=float(cfg.rendering.get("ready_timeout_s", 180.0)),
+            poll_interval=float(cfg.rendering.get("poll_interval_s", 1.0)),
+        )
 
         # Vision tools for floor plan rendering (lazy initialized).
         self._vision_tools: FloorPlanVisionTools | None = None

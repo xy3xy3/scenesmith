@@ -45,6 +45,9 @@ rendering:
   retry_delay: 3
   # Delay after starting server subprocess to allow Blender initialization.
   server_startup_delay: 0.1
+  # Slow hosts can spend >60s importing/initializing bpy under load.
+  ready_timeout_s: 180.0
+  poll_interval_s: 1.0
   # Delay after stopping server to allow OS port cleanup.
   port_cleanup_delay: 0.1
 

@@ -89,15 +89,19 @@ class BaseCeilingAgent(ABC):
             # canonicalization). Required because forked workers cannot safely use
             # embedded bpy - GPU/OpenGL state is corrupted by fork.
             console_logger.info("Starting BlenderServer for parallel asset validation")
+            rendering_cfg = cfg.rendering
             self.blender_server = BlenderServer(
                 port_range=tuple(cfg.rendering.blender_server_port_range),
                 server_startup_delay=cfg.rendering.server_startup_delay,
                 port_cleanup_delay=cfg.rendering.port_cleanup_delay,
                 gpu_id=render_gpu_id,
-                log_file=logger.output_dir / "room.log",
+                log_file=logger.output_dir / "blender_server.log",
             )
             self.blender_server.start()
-            self.blender_server.wait_until_ready()
+            self.blender_server.wait_until_ready(
+                timeout=float(rendering_cfg.get("ready_timeout_s", 180.0)),
+                poll_interval=float(rendering_cfg.get("poll_interval_s", 1.0)),
+            )
 
             # Start ConvexDecompositionServer for collision geometry generation.
             # This isolates OpenMP from ThreadPoolExecutor to prevent deadlocks.

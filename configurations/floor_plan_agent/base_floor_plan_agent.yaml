@@ -28,6 +28,8 @@ session_memory:
 rendering:
   blender_server_host: "127.0.0.1"
   blender_server_port_range: [8000, 8050]
+  ready_timeout_s: 180.0
+  poll_interval_s: 1.0
   render_size: 1024  # Image size in pixels (width=height)
 
 # Materials configuration

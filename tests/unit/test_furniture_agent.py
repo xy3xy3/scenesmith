@@ -92,6 +92,17 @@ class TestBaseFurnitureAgent(unittest.TestCase):
 
         # Verify dependencies were created.
         mock_vlm_service_class.assert_called_once()
+        mock_blender_server_class.assert_called_once_with(
+            port_range=tuple(self.test_config.rendering.blender_server_port_range),
+            server_startup_delay=self.test_config.rendering.server_startup_delay,
+            port_cleanup_delay=self.test_config.rendering.port_cleanup_delay,
+            gpu_id=None,
+            log_file=self.mock_logger.output_dir / "blender_server.log",
+        )
+        mock_blender_server_class.return_value.wait_until_ready.assert_called_once_with(
+            timeout=180.0,
+            poll_interval=1.0,
+        )
         mock_asset_manager_class.assert_called_once_with(
             logger=self.mock_logger,
             vlm_service=mock_vlm_service_class.return_value,
@@ -105,6 +116,7 @@ class TestBaseFurnitureAgent(unittest.TestCase):
             hssd_server_port=7001,
             articulated_server_host="127.0.0.1",
             articulated_server_port=7002,
+            materials_server_enabled=True,
             materials_server_host="127.0.0.1",
             materials_server_port=7008,
         )

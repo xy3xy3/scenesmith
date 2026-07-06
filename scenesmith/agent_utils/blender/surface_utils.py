@@ -6,7 +6,6 @@ import math
 from pathlib import Path
 
 import bpy
-import matplotlib.pyplot as plt
 import numpy as np
 
 from mathutils import Vector
@@ -273,6 +272,8 @@ def generate_surface_colors(surface_ids: list[str]) -> dict[str, tuple[int, int,
     Returns:
         Dict mapping surface_id to RGB color tuple (0-255 range).
     """
+    import matplotlib.pyplot as plt
+
     cmap = plt.get_cmap("tab20")
     colors = {}
     for idx, surface_id in enumerate(surface_ids):
