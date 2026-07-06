@@ -74,7 +74,8 @@ asset_manager:
   manipuland_scale:
     enabled: true
     normalize_router_dimensions: true
-    reject_bad_uniform_scale_fit: true
+    # 暂时不拒绝资产以免找不到
+    reject_bad_uniform_scale_fit: false
     max_axis_relative_error: 0.75
 
   # 3D generation backend (only used when general_asset_source="generated")
