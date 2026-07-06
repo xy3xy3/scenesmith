@@ -219,6 +219,7 @@ class AssetManager:
         hssd_server_port: int = 7001,
         articulated_server_host: str = "127.0.0.1",
         articulated_server_port: int = 7002,
+        materials_server_enabled: bool = True,
         materials_server_host: str = "127.0.0.1",
         materials_server_port: int = 7008,
         objaverse_server_host: str = "127.0.0.1",
@@ -242,6 +243,8 @@ class AssetManager:
             hssd_server_port: Port for HSSD retrieval server.
             articulated_server_host: Host for articulated retrieval server.
             articulated_server_port: Port for articulated retrieval server.
+            materials_server_enabled: Whether materials retrieval server-backed
+                thin covering generation is enabled.
             materials_server_host: Host for materials retrieval server.
             materials_server_port: Port for materials retrieval server.
             objaverse_server_host: Host for Objaverse retrieval server.
@@ -336,10 +339,14 @@ class AssetManager:
         thin_covering_enabled = (
             cfg.asset_manager.router.strategies.thin_covering.enabled
         )
-        if thin_covering_enabled:
+        if thin_covering_enabled and materials_server_enabled:
             console_logger.info("Initializing materials retrieval client")
             self.materials_client = MaterialsRetrievalClient(
                 host=materials_server_host, port=materials_server_port
+            )
+        elif thin_covering_enabled:
+            console_logger.info(
+                "Materials retrieval client disabled by experiment configuration"
             )
 
         # Initialize asset router if enabled in config.

@@ -169,6 +169,27 @@ class TestAssetManager(unittest.TestCase):
         self.assertEqual(self.asset_manager.output_dir, self.output_dir)
         self.assertEqual(self.asset_manager.logger, self.mock_logger)
 
+    @patch("scenesmith.agent_utils.asset_manager.MaterialsRetrievalClient")
+    def test_materials_client_not_created_when_server_disabled(
+        self, mock_materials_client
+    ):
+        """Thin covering router config should not create a client when disabled."""
+        cfg = create_mock_cfg()
+        cfg.asset_manager.router.enabled = True
+        cfg.asset_manager.router.strategies.thin_covering.enabled = True
+
+        AssetManager(
+            logger=self.mock_logger,
+            vlm_service=MagicMock(),
+            blender_server=MagicMock(),
+            collision_client=MagicMock(),
+            cfg=cfg,
+            agent_type=AgentType.FURNITURE,
+            materials_server_enabled=False,
+        )
+
+        mock_materials_client.assert_not_called()
+
     @patch("scenesmith.agent_utils.asset_manager.scale_mesh_uniformly_to_dimensions")
     @patch("pathlib.Path.glob")
     @patch(

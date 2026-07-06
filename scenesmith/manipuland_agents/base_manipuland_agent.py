@@ -51,6 +51,7 @@ class BaseManipulandAgent(ABC):
         hssd_server_port: int = 7001,
         articulated_server_host: str = "127.0.0.1",
         articulated_server_port: int = 7002,
+        materials_server_enabled: bool = True,
         materials_server_host: str = "127.0.0.1",
         materials_server_port: int = 7008,
         num_workers: int = 1,
@@ -67,6 +68,8 @@ class BaseManipulandAgent(ABC):
             hssd_server_port: Port for HSSD retrieval server.
             articulated_server_host: Host for articulated retrieval server.
             articulated_server_port: Port for articulated retrieval server.
+            materials_server_enabled: Whether materials retrieval server-backed
+                thin covering generation is enabled.
             materials_server_host: Host for materials retrieval server.
             materials_server_port: Port for materials retrieval server.
             num_workers: Number of parallel workers (for OMP thread allocation).
@@ -143,6 +146,7 @@ class BaseManipulandAgent(ABC):
             hssd_server_port=hssd_server_port,
             articulated_server_host=articulated_server_host,
             articulated_server_port=articulated_server_port,
+            materials_server_enabled=materials_server_enabled,
             materials_server_host=materials_server_host,
             materials_server_port=materials_server_port,
         )
