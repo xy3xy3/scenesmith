@@ -264,6 +264,12 @@ class AssetLibraryAnnotationStore:
     def get(self, hssd_id: str) -> dict[str, Any] | None:
         normalized = normalize_hssd_id(hssd_id)
         record = self._load().get(normalized)
+        # The bundled lookup now carries inline interaction_clearance and
+        # post_replacement, so the record is self-sufficient for portability.
+        # External layers below are OPTIONAL enrichment: when their absolute
+        # source paths are missing (e.g. on a fresh clone) each getter returns
+        # an ``available: False`` stub rather than failing, and the inline
+        # bundled fields remain authoritative.
         interaction_clearance = self.get_clearance_annotations(normalized)
         ud4_affordance = self.get_unified_affordance_annotations(normalized)
         operation_space = self.get_operation_space_annotations(normalized)
@@ -306,7 +312,15 @@ class AssetLibraryAnnotationStore:
             }
         else:
             out = dict(record)
-        out["interaction_clearance"] = interaction_clearance
+        # Authoritative interaction_clearance/post_replacement are the bundled
+        # inline fields (portable). Only fill from external enrichment when the
+        # bundled record lacks them (e.g. the auxiliary-only branch above).
+        if not out.get("interaction_clearance"):
+            out["interaction_clearance"] = interaction_clearance
+        else:
+            out["interaction_clearance_external"] = interaction_clearance
+        out.setdefault("post_replacement",
+                       {"articulated": False, "realization_kind": "static_only"})
         out["ud4_affordance"] = ud4_affordance
         out["operation_space"] = operation_space
         out["clearance_regions"] = clearance_regions

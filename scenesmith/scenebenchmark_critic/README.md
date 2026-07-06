@@ -298,3 +298,41 @@ scenebenchmark_critic:
 - 组合房屋报告仍可通过 `write_house_stage_report` 或非空 `house_stage_hooks` 使用，但默认集成仅限房间。
 - 组合房屋家具 stage 报告会过滤掉 manipuland，使 stage 级检查仅包含实际已放置的对象。
 - `vendor/rules.py` 是 vendored SceneBenchmark 模块的桥接，有意避免在运行时导入外部 SceneBenchmark 仓库。
+
+## Asset-Library Annotation Lookup (portable)
+
+`asset_library_annotations.py` provides an in-process lookup keyed by HSSD id
+that returns the merged, post-replacement asset-library annotations. The bundled
+`asset_annotation_data/hssd_annotation_lookup.json.gz` (10,963 HSSD assets) is
+**self-contained**: every record carries inline `interaction_clearance`,
+`post_replacement`, `canonical_front` (with geometry-verified `asset_local_front_axis`
+for seating/beds), `relation_priors`, `placement_dof`,
+`clearance_intrusion_whitelist_refs`, and `environment_anchors`. It works on a
+fresh clone with no `/data/...` source tree present.
+
+Post-replacement realization (`post_replacement.realization_kind`):
+- `hssd_official` — 1,321 official HSSD articulated assets (T1)
+- `pm_replacement` — 611 PartNet-Mobility replacements (T2-PM); `pm_ref` is the PM id
+- `static_only` / `unmatched` / `error` — no articulated realization
+
+Heavy layers (NPZ affordance masks, operation-space records, full clearance
+run) remain optional external enrichment; when their absolute paths are absent
+the getters return `available: False` stubs and the inline bundled fields stay
+authoritative.
+
+```bash
+# No pydrake/bpy needed:
+python scripts/query_asset_library_annotations.py <hssd_id>
+python scripts/test_asset_library_annotations.py   # standalone lookup tests
+```
+
+```python
+from scenesmith.scenebenchmark_critic.asset_library_annotations import (
+    get_hssd_asset_annotations,
+)
+rec = get_hssd_asset_annotations("hssd:<id>")
+```
+
+A fully standalone, independently deployable version of this library (core lib +
+CLI + local REST server, with a portable data root) is maintained outside this
+repo at `/data/250010098/hssd_asset_library_20260706/`.
