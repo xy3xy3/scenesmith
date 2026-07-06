@@ -36,6 +36,10 @@ DEFAULT_HSSD_ARTICULATION_CLEARANCE_RUN = Path(
     "/data/250010098/clearance_retrieval_pilot_20260609/"
     "hssd_clearance_run_results.json"
 )
+DEFAULT_HSSD_CLEARANCE_VOXEL_RESULTS = Path(
+    "/data/250010098/clearance_retrieval_pilot_20260609/"
+    "hssd_clearance_voxel_results.json"
+)
 
 
 def normalize_hssd_id(value: str) -> str:
@@ -57,6 +61,7 @@ class AssetLibraryAnnotationStore:
         nonartic_clearance_v2_path: str | Path = DEFAULT_NONARTIC_CLEARANCE_V2,
         official_combined_clearance_path: str | Path = DEFAULT_OFFICIAL_COMBINED_CLEARANCE,
         hssd_articulation_clearance_run_path: str | Path = DEFAULT_HSSD_ARTICULATION_CLEARANCE_RUN,
+        hssd_clearance_voxel_results_path: str | Path = DEFAULT_HSSD_CLEARANCE_VOXEL_RESULTS,
     ) -> None:
         self.lookup_path = Path(lookup_path)
         self.clearance_dir = Path(clearance_dir)
@@ -65,6 +70,7 @@ class AssetLibraryAnnotationStore:
         self.nonartic_clearance_v2_path = Path(nonartic_clearance_v2_path)
         self.official_combined_clearance_path = Path(official_combined_clearance_path)
         self.hssd_articulation_clearance_run_path = Path(hssd_articulation_clearance_run_path)
+        self.hssd_clearance_voxel_results_path = Path(hssd_clearance_voxel_results_path)
         self._records: dict[str, dict[str, Any]] | None = None
         self._nonartic_clearance: dict[str, dict[str, Any]] | None = None
         self._artic_clearance: dict[str, dict[str, Any]] | None = None
@@ -73,6 +79,7 @@ class AssetLibraryAnnotationStore:
         self._nonartic_clearance_v2: dict[str, dict[str, Any]] | None = None
         self._official_combined_clearance: dict[str, dict[str, Any]] | None = None
         self._hssd_articulation_clearance_run: dict[str, dict[str, Any]] | None = None
+        self._hssd_clearance_voxel_results_cache: dict[str, dict[str, Any]] | None = None
 
     def _load(self) -> dict[str, dict[str, Any]]:
         if self._records is None:
@@ -159,6 +166,20 @@ class AssetLibraryAnnotationStore:
             self._hssd_articulation_clearance_run = records
         return self._hssd_articulation_clearance_run
 
+    def _hssd_clearance_voxel_results(self) -> dict[str, dict[str, Any]]:
+        if self._hssd_clearance_voxel_results_cache is None:
+            data = self._load_json_if_present(self.hssd_clearance_voxel_results_path) or []
+            records: dict[str, dict[str, Any]] = {}
+            if isinstance(data, list):
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    asset_id = normalize_hssd_id(item.get("hssd_id", ""))
+                    if asset_id:
+                        records[asset_id] = item
+            self._hssd_clearance_voxel_results_cache = records
+        return self._hssd_clearance_voxel_results_cache
+
     def get_unified_affordance_annotations(self, hssd_id: str) -> dict[str, Any]:
         normalized = normalize_hssd_id(hssd_id)
         record_path = self._unified_index().get(normalized)
@@ -198,10 +219,12 @@ class AssetLibraryAnnotationStore:
             "nonartic_clearance_v2": self._nonartic_v2().get(normalized),
             "official_combined_clearance": self._official_combined().get(normalized),
             "hssd_articulation_clearance_run": self._hssd_articulation_run().get(normalized),
+            "hssd_clearance_voxel_metrics": self._hssd_clearance_voxel_results().get(normalized),
             "sources": {
                 "nonartic_clearance_v2": str(self.nonartic_clearance_v2_path),
                 "official_combined_clearance": str(self.official_combined_clearance_path),
                 "hssd_articulation_clearance_run": str(self.hssd_articulation_clearance_run_path),
+                "hssd_clearance_voxel_metrics": str(self.hssd_clearance_voxel_results_path),
             },
         }
 
@@ -217,20 +240,24 @@ class AssetLibraryAnnotationStore:
         artic = self._artic().get(normalized)
         partners = self._partners().get(normalized)
         articulation_run = self._hssd_articulation_run().get(normalized)
+        voxel_metrics = self._hssd_clearance_voxel_results().get(normalized)
         return {
             "metric": "interaction_clearance",
             "source_session": "clearance-plan-execution-w1-w2",
             "asset_id": normalized,
             "has_keep_clear": nonartic is not None
             or artic is not None
-            or articulation_run is not None,
+            or articulation_run is not None
+            or voxel_metrics is not None,
             "has_nonarticulated_keep_clear": nonartic is not None,
             "has_articulated_swept_volume": artic is not None,
             "has_hssd_articulation_clearance_run": articulation_run is not None,
+            "has_hssd_clearance_voxel_metrics": voxel_metrics is not None,
             "has_functional_partners": partners is not None,
             "nonarticulated_keep_clear": nonartic,
             "articulated_swept_volume": artic,
             "hssd_articulation_clearance_run": articulation_run,
+            "hssd_clearance_voxel_metrics": voxel_metrics,
             "functional_partners": partners,
         }
 
@@ -248,6 +275,7 @@ class AssetLibraryAnnotationStore:
                     "nonartic_clearance_v2",
                     "official_combined_clearance",
                     "hssd_articulation_clearance_run",
+                    "hssd_clearance_voxel_metrics",
                 )
             )
             if (
