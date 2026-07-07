@@ -50,6 +50,7 @@ RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/critic_probe/$RUN_ID}"
 MAX_CASES="${MAX_CASES:-0}"
 SCENE_BATCH_SIZE="${SCENE_BATCH_SIZE:-1}"
+SCENE_WORKERS_PER_PROCESS="${SCENE_WORKERS_PER_PROCESS:-1}"
 PIPELINE_STOP_STAGE="${PIPELINE_STOP_STAGE:-furniture}"
 SKIP_WALL_MOUNTED="${SKIP_WALL_MOUNTED:-false}"
 SKIP_CEILING_MOUNTED="${SKIP_CEILING_MOUNTED:-false}"
@@ -61,6 +62,10 @@ CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
 CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE:-vlm}"
 CRITIC_MAX_FD_RELATION_PROPOSALS="${CRITIC_MAX_FD_RELATION_PROPOSALS:-8}"
 CRITIC_PROBE_PARALLEL="${CRITIC_PROBE_PARALLEL:-false}"
+CRITIC_PROBE_INNER_PARALLELISM="${CRITIC_PROBE_INNER_PARALLELISM:-1}"
+CRITIC_PROBE_PORT_BASE="${CRITIC_PROBE_PORT_BASE:-9000}"
+CRITIC_PROBE_PORT_BLOCK_SIZE="${CRITIC_PROBE_PORT_BLOCK_SIZE:-400}"
+AVOID_FORK_BPY="${AVOID_FORK_BPY:-true}"
 CRITIC_REPORT_STAGE_LABEL=""
 BRANCH_START_STAGE=""
 PORT_ARGS=()
@@ -113,6 +118,49 @@ if [ "$SCENE_BATCH_SIZE" -lt 1 ]; then
     exit 1
 fi
 
+case "$SCENE_WORKERS_PER_PROCESS" in
+    ''|*[!0-9]*)
+        echo "错误：SCENE_WORKERS_PER_PROCESS 必须是正整数，当前为 '$SCENE_WORKERS_PER_PROCESS'"
+        exit 1
+        ;;
+esac
+
+if [ "$SCENE_WORKERS_PER_PROCESS" -lt 1 ]; then
+    echo "错误：SCENE_WORKERS_PER_PROCESS 至少为 1"
+    exit 1
+fi
+
+case "$CRITIC_PROBE_INNER_PARALLELISM" in
+    ''|*[!0-9]*)
+        echo "错误：CRITIC_PROBE_INNER_PARALLELISM 必须是正整数，当前为 '$CRITIC_PROBE_INNER_PARALLELISM'"
+        exit 1
+        ;;
+esac
+
+if [ "$CRITIC_PROBE_INNER_PARALLELISM" -lt 1 ]; then
+    echo "错误：CRITIC_PROBE_INNER_PARALLELISM 至少为 1"
+    exit 1
+fi
+
+case "$CRITIC_PROBE_PORT_BASE" in
+    ''|*[!0-9]*)
+        echo "错误：CRITIC_PROBE_PORT_BASE 必须是正整数，当前为 '$CRITIC_PROBE_PORT_BASE'"
+        exit 1
+        ;;
+esac
+
+case "$CRITIC_PROBE_PORT_BLOCK_SIZE" in
+    ''|*[!0-9]*)
+        echo "错误：CRITIC_PROBE_PORT_BLOCK_SIZE 必须是正整数，当前为 '$CRITIC_PROBE_PORT_BLOCK_SIZE'"
+        exit 1
+        ;;
+esac
+
+if [ "$CRITIC_PROBE_PORT_BLOCK_SIZE" -lt 375 ]; then
+    echo "错误：CRITIC_PROBE_PORT_BLOCK_SIZE 至少为 375，当前为 '$CRITIC_PROBE_PORT_BLOCK_SIZE'"
+    exit 1
+fi
+
 if ! SKIP_WALL_MOUNTED="$(normalize_bool "$SKIP_WALL_MOUNTED")"; then
     echo "错误：SKIP_WALL_MOUNTED 必须是 true/false"
     exit 1
@@ -157,6 +205,16 @@ fi
 
 if ! CRITIC_PROBE_PARALLEL="$(normalize_bool "$CRITIC_PROBE_PARALLEL")"; then
     echo "错误：CRITIC_PROBE_PARALLEL 必须是 true/false"
+    exit 1
+fi
+
+if ! AVOID_FORK_BPY="$(normalize_bool "$AVOID_FORK_BPY")"; then
+    echo "错误：AVOID_FORK_BPY 必须是 true/false"
+    exit 1
+fi
+
+if [ "$AVOID_FORK_BPY" = "true" ] && [ "$SCENE_WORKERS_PER_PROCESS" -ne 1 ]; then
+    echo "错误：AVOID_FORK_BPY=true 时 SCENE_WORKERS_PER_PROCESS 必须为 1，避免 fork 已导入的 bpy。"
     exit 1
 fi
 
@@ -257,6 +315,7 @@ echo "实际运行模式: $MODE"
 echo "模型名: $MODEL_NAME"
 echo "MAX_CASES: $MAX_CASES (0 表示不限制)"
 echo "SCENE_BATCH_SIZE: $SCENE_BATCH_SIZE"
+echo "SCENE_WORKERS_PER_PROCESS: $SCENE_WORKERS_PER_PROCESS"
 echo "PIPELINE_STOP_STAGE: $PIPELINE_STOP_STAGE"
 echo "SKIP_WALL_MOUNTED: $SKIP_WALL_MOUNTED"
 echo "SKIP_CEILING_MOUNTED: $SKIP_CEILING_MOUNTED"
@@ -269,6 +328,10 @@ echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
 echo "CRITIC_FD_RELATION_PROPOSER_MODE: $CRITIC_FD_RELATION_PROPOSER_MODE"
 echo "CRITIC_MAX_FD_RELATION_PROPOSALS: $CRITIC_MAX_FD_RELATION_PROPOSALS"
 echo "CRITIC_PROBE_PARALLEL: $CRITIC_PROBE_PARALLEL"
+echo "CRITIC_PROBE_INNER_PARALLELISM: $CRITIC_PROBE_INNER_PARALLELISM"
+echo "CRITIC_PROBE_PORT_BASE: $CRITIC_PROBE_PORT_BASE"
+echo "CRITIC_PROBE_PORT_BLOCK_SIZE: $CRITIC_PROBE_PORT_BLOCK_SIZE"
+echo "AVOID_FORK_BPY: $AVOID_FORK_BPY"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
 echo
@@ -288,7 +351,9 @@ CASES=(
 )
 
 COMMON_ARGS=(
-    "experiment.num_workers=${SCENE_BATCH_SIZE}"
+    # 2026-07-07: Decouple scene batching from in-process workers so inner
+    # probe parallelism uses independent python processes and avoids fork+bpy.
+    "experiment.num_workers=${SCENE_WORKERS_PER_PROCESS}"
     "experiment.pipeline.parallel_rooms=false"
     "experiment.pipeline.max_parallel_rooms=1"
     "experiment.pipeline.skip_wall_mounted=${SKIP_WALL_MOUNTED}"
@@ -315,44 +380,76 @@ COMMON_ARGS=(
     "experiment.scenebenchmark_critic.max_fd_relation_proposals=${CRITIC_MAX_FD_RELATION_PROPOSALS}"
 )
 
+port_block_base() {
+    local run_kind="$1"
+    local batch_index="$2"
+    local kind_offset=0
+
+    case "$run_kind" in
+        critic_off)
+            kind_offset=0
+            ;;
+        critic_on)
+            kind_offset=10000
+            ;;
+        shared_base)
+            kind_offset=20000
+            ;;
+        *)
+            kind_offset=30000
+            ;;
+    esac
+
+    printf '%d' "$((CRITIC_PROBE_PORT_BASE + kind_offset + (batch_index - 1) * CRITIC_PROBE_PORT_BLOCK_SIZE))"
+}
+
 build_port_args() {
     local run_kind="$1"
+    local batch_index="${2:-1}"
+    local block_base
+    block_base="$(port_block_base "$run_kind" "$batch_index")"
+
+    if [ "$((block_base + 374))" -gt 65535 ]; then
+        echo "错误：$run_kind batch_${batch_index} 的端口块超出 65535，上限端口为 $((block_base + 374))"
+        echo "请调低 CRITIC_PROBE_PORT_BASE / CRITIC_PROBE_PORT_BLOCK_SIZE，或减少 batch 数。"
+        exit 1
+    fi
 
     case "$run_kind" in
         critic_off)
             PORT_ARGS=(
-                "experiment.geometry_generation_server.port=7005"
-                "experiment.hssd_retrieval_server.port=7006"
-                "experiment.articulated_retrieval_server.port=7007"
-                "experiment.materials_retrieval_server.port=7008"
-                "experiment.objaverse_retrieval_server.port=7009"
-                "floor_plan_agent.rendering.blender_server_port_range=[8000,8025]"
-                "furniture_agent.rendering.blender_server_port_range=[8000,8175]"
-                "wall_agent.rendering.blender_server_port_range=[8000,8125]"
-                "ceiling_agent.rendering.blender_server_port_range=[8000,8125]"
-                "manipuland_agent.rendering.blender_server_port_range=[8000,8125]"
-                "furniture_agent.collision_geometry.server_port_range=[7100,7275]"
-                "wall_agent.collision_geometry.server_port_range=[7100,7225]"
-                "ceiling_agent.collision_geometry.server_port_range=[7100,7225]"
-                "manipuland_agent.collision_geometry.server_port_range=[7100,7225]"
+                "experiment.geometry_generation_server.port=$((block_base + 5))"
+                "experiment.hssd_retrieval_server.port=$((block_base + 6))"
+                "experiment.articulated_retrieval_server.port=$((block_base + 7))"
+                "experiment.materials_retrieval_server.port=$((block_base + 8))"
+                "experiment.objaverse_retrieval_server.port=$((block_base + 9))"
+                "floor_plan_agent.rendering.blender_server_port_range=[$((block_base + 100)),$((block_base + 124))]"
+                "furniture_agent.rendering.blender_server_port_range=[$((block_base + 125)),$((block_base + 199))]"
+                "wall_agent.rendering.blender_server_port_range=[$((block_base + 200)),$((block_base + 224))]"
+                "ceiling_agent.rendering.blender_server_port_range=[$((block_base + 225)),$((block_base + 249))]"
+                "manipuland_agent.rendering.blender_server_port_range=[$((block_base + 200)),$((block_base + 249))]"
+                "furniture_agent.collision_geometry.server_port_range=[$((block_base + 250)),$((block_base + 324))]"
+                "wall_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 349))]"
+                "ceiling_agent.collision_geometry.server_port_range=[$((block_base + 350)),$((block_base + 374))]"
+                "manipuland_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 374))]"
             )
             ;;
         critic_on)
             PORT_ARGS=(
-                "experiment.geometry_generation_server.port=7015"
-                "experiment.hssd_retrieval_server.port=7016"
-                "experiment.articulated_retrieval_server.port=7017"
-                "experiment.materials_retrieval_server.port=7018"
-                "experiment.objaverse_retrieval_server.port=7019"
-                "floor_plan_agent.rendering.blender_server_port_range=[8026,8050]"
-                "furniture_agent.rendering.blender_server_port_range=[8176,8350]"
-                "wall_agent.rendering.blender_server_port_range=[8126,8250]"
-                "ceiling_agent.rendering.blender_server_port_range=[8126,8250]"
-                "manipuland_agent.rendering.blender_server_port_range=[8126,8250]"
-                "furniture_agent.collision_geometry.server_port_range=[7276,7450]"
-                "wall_agent.collision_geometry.server_port_range=[7226,7350]"
-                "ceiling_agent.collision_geometry.server_port_range=[7226,7350]"
-                "manipuland_agent.collision_geometry.server_port_range=[7226,7350]"
+                "experiment.geometry_generation_server.port=$((block_base + 5))"
+                "experiment.hssd_retrieval_server.port=$((block_base + 6))"
+                "experiment.articulated_retrieval_server.port=$((block_base + 7))"
+                "experiment.materials_retrieval_server.port=$((block_base + 8))"
+                "experiment.objaverse_retrieval_server.port=$((block_base + 9))"
+                "floor_plan_agent.rendering.blender_server_port_range=[$((block_base + 100)),$((block_base + 124))]"
+                "furniture_agent.rendering.blender_server_port_range=[$((block_base + 125)),$((block_base + 199))]"
+                "wall_agent.rendering.blender_server_port_range=[$((block_base + 200)),$((block_base + 224))]"
+                "ceiling_agent.rendering.blender_server_port_range=[$((block_base + 225)),$((block_base + 249))]"
+                "manipuland_agent.rendering.blender_server_port_range=[$((block_base + 200)),$((block_base + 249))]"
+                "furniture_agent.collision_geometry.server_port_range=[$((block_base + 250)),$((block_base + 324))]"
+                "wall_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 349))]"
+                "ceiling_agent.collision_geometry.server_port_range=[$((block_base + 350)),$((block_base + 374))]"
+                "manipuland_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 374))]"
             )
             ;;
         shared_base|*)
@@ -418,7 +515,7 @@ run_batch() {
     local batch_csv="$hydra_dir/batch_cases.csv"
     local case_summary=()
 
-    build_port_args "$run_kind"
+    build_port_args "$run_kind" "$batch_index"
 
     mkdir -p "$hydra_dir"
 
@@ -493,6 +590,73 @@ run_mode() {
     local count=0
     local batch_index=0
     local batch_entries=()
+    local parallel_batches=false
+    local wave_pids=()
+    local wave_labels=()
+
+    if [ "$run_kind" != "shared_base" ] && [ "$CRITIC_PROBE_INNER_PARALLELISM" -gt 1 ]; then
+        parallel_batches=true
+        mkdir -p "$OUTPUT_ROOT/$run_kind"
+        echo "启用 $run_kind 分支内并发: $CRITIC_PROBE_INNER_PARALLELISM 个独立 batch 进程"
+        echo "每个进程内部 experiment.num_workers=${SCENE_WORKERS_PER_PROCESS}"
+        echo
+    fi
+
+    # 2026-07-07: Run batch waves as independent python processes instead of
+    # increasing experiment.num_workers, avoiding fork-after-bpy-import failures.
+    wait_batch_wave() {
+        local rc=0
+        local i=0
+        local pid=""
+        local label=""
+
+        if [ "${#wave_pids[@]}" -eq 0 ]; then
+            return 0
+        fi
+
+        echo "等待 $run_kind batch wave 完成: ${wave_labels[*]}"
+
+        for i in "${!wave_pids[@]}"; do
+            pid="${wave_pids[$i]}"
+            label="${wave_labels[$i]}"
+            if wait "$pid"; then
+                echo "$run_kind / $label 完成"
+            else
+                rc=$?
+                echo "错误：$run_kind / $label 失败，返回码: $rc"
+            fi
+        done
+
+        wave_pids=()
+        wave_labels=()
+
+        if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+        fi
+    }
+
+    launch_batch() {
+        local batch_label
+        local batch_log
+        batch_label=$(printf "batch_%03d" "$batch_index")
+
+        if [ "$parallel_batches" = "true" ]; then
+            batch_log="$OUTPUT_ROOT/$run_kind/${batch_label}.runner.log"
+            echo "后台启动批次: $run_kind / $batch_label"
+            echo "批次日志: $batch_log"
+            (
+                run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
+            ) > "$batch_log" 2>&1 &
+            wave_pids+=("$!")
+            wave_labels+=("$batch_label")
+
+            if [ "${#wave_pids[@]}" -ge "$CRITIC_PROBE_INNER_PARALLELISM" ]; then
+                wait_batch_wave
+            fi
+        else
+            run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
+        fi
+    }
 
     for case_entry in "${CASES[@]}"; do
         IFS="|" read -r case_id critic_goal prompt <<< "$case_entry"
@@ -508,15 +672,17 @@ run_mode() {
 
         if [ "${#batch_entries[@]}" -ge "$SCENE_BATCH_SIZE" ]; then
             batch_index=$((batch_index + 1))
-            run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
+            launch_batch
             batch_entries=()
         fi
     done
 
     if [ "${#batch_entries[@]}" -gt 0 ]; then
         batch_index=$((batch_index + 1))
-        run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
+        launch_batch
     fi
+
+    wait_batch_wave
 }
 
 echo "本次内置场景列表："
