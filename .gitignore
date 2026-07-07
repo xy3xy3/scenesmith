@@ -17,3 +17,4 @@ latest-run
 local/
 config.yml
 external/checkpoints
+AGENTS.md
