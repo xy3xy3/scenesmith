@@ -49,6 +49,18 @@ def main() -> int:
     cf = chair.get("canonical_front") or {}
     check("chair_has_front_axis", cf.get("asset_local_front_axis") is not None)
     check("chair_front_verified", cf.get("validation_status") == "geometry_axis_verified")
+    check("chair_has_orientation_axis", cf.get("canonical_orientation_axis") is not None)
+    check("chair_orientation_semantic",
+          cf.get("canonical_orientation_is_semantic_front") is True)
+
+    # 2b) every asset has a placement orientation axis; fallback axes are
+    # explicitly marked non-semantic.
+    fallback = store.require("000bbe302b53fd2904e7ae92e1516a18f29de02d")
+    fcf = fallback.get("canonical_front") or {}
+    check("fallback_has_orientation_axis",
+          fcf.get("canonical_orientation_axis") is not None)
+    check("fallback_not_semantic_front",
+          fcf.get("canonical_orientation_is_semantic_front") is False)
 
     # 3) PM replacement realization present in post_replacement
     pm = store.require("0022fa6ee5a44330e765488919803155b1a9e88c")
