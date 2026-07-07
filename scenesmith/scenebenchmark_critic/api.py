@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 
 from scenesmith.agent_utils.house import HouseScene
@@ -25,6 +26,9 @@ from scenesmith.scenebenchmark_critic.reports import (
 )
 from scenesmith.scenebenchmark_critic.vendor.rules import run_case_pack_checks
 
+if TYPE_CHECKING:
+    from scenesmith.agent_utils.blender.server_manager import BlenderServer
+
 console_logger = logging.getLogger(__name__)
 
 
@@ -35,6 +39,7 @@ def evaluate_room_scene(
     stage: str = "adhoc",
     raw_config: Any | None = None,
     annotate_assets: bool = True,
+    blender_server: "BlenderServer | None" = None,
 ) -> dict[str, Any]:
     critic_config = _coerce_config(config)
     if annotate_assets:
@@ -43,6 +48,9 @@ def evaluate_room_scene(
             output_dir=scene.scene_dir,
             config=critic_config,
             raw_config=raw_config or config,
+            # 2026-07-07: Forward BlenderServer so SceneBenchmark asset annotation
+            # can render evidence images instead of silently falling back to [].
+            blender_server=blender_server,
             stage=stage,
         )
     case_pack = room_scene_to_case_pack(
@@ -95,6 +103,7 @@ def write_room_stage_report(
     config: CriticConfig | Any | None = None,
     stage: str,
     raw_config: Any | None = None,
+    blender_server: "BlenderServer | None" = None,
 ) -> dict[str, Any] | None:
     critic_config = _coerce_config(config)
     if not critic_config.enabled or not critic_config.room_stage_enabled(stage):
@@ -104,6 +113,8 @@ def write_room_stage_report(
         output_dir=output_dir,
         config=critic_config,
         raw_config=raw_config or config,
+        # 2026-07-07: Forward BlenderServer for report-time asset renders too.
+        blender_server=blender_server,
         stage=stage,
     )
     payload = evaluate_room_scene(

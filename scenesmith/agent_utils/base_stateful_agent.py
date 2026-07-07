@@ -1168,6 +1168,9 @@ class BaseStatefulAgent(ABC):
             scene,
             config=self.cfg,
             stage=f"llm_critic_{self.agent_type.value}",
+            # 2026-07-07: Pass the live BlenderServer through SceneBenchmark so
+            # asset annotation can attach render evidence instead of image_paths=[].
+            blender_server=getattr(self, "blender_server", None),
         )
         if critic_config.agent_prompt_context_filter_enabled:
             debug_dir = None
