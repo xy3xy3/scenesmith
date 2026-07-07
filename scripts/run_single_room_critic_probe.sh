@@ -591,8 +591,8 @@ run_mode() {
     local batch_index=0
     local batch_entries=()
     local parallel_batches=false
-    local wave_pids=()
-    local wave_labels=()
+    local active_pids=()
+    local active_labels=()
 
     if [ "$run_kind" != "shared_base" ] && [ "$CRITIC_PROBE_INNER_PARALLELISM" -gt 1 ]; then
         parallel_batches=true
@@ -602,37 +602,55 @@ run_mode() {
         echo
     fi
 
-    # 2026-07-07: Run batch waves as independent python processes instead of
+    # 2026-07-07: Run a dynamic pool of independent python processes instead of
     # increasing experiment.num_workers, avoiding fork-after-bpy-import failures.
-    wait_batch_wave() {
+    wait_for_one_batch() {
         local rc=0
         local i=0
-        local pid=""
+        local finished_pid=""
         local label=""
 
-        if [ "${#wave_pids[@]}" -eq 0 ]; then
+        if [ "${#active_pids[@]}" -eq 0 ]; then
             return 0
         fi
 
-        echo "等待 $run_kind batch wave 完成: ${wave_labels[*]}"
+        if wait -n -p finished_pid "${active_pids[@]}"; then
+            rc=0
+        else
+            rc=$?
+        fi
 
-        for i in "${!wave_pids[@]}"; do
-            pid="${wave_pids[$i]}"
-            label="${wave_labels[$i]}"
-            if wait "$pid"; then
-                echo "$run_kind / $label 完成"
-            else
-                rc=$?
-                echo "错误：$run_kind / $label 失败，返回码: $rc"
+        for i in "${!active_pids[@]}"; do
+            if [ "${active_pids[$i]}" = "$finished_pid" ]; then
+                label="${active_labels[$i]}"
+                unset "active_pids[$i]"
+                unset "active_labels[$i]"
+                active_pids=("${active_pids[@]}")
+                active_labels=("${active_labels[@]}")
+                break
             fi
         done
 
-        wave_pids=()
-        wave_labels=()
+        if [ -z "$label" ]; then
+            label="pid_${finished_pid}"
+        fi
 
-        if [ "$rc" -ne 0 ]; then
+        if [ "$rc" -eq 0 ]; then
+            echo "$run_kind / $label 完成"
+        else
+            echo "错误：$run_kind / $label 失败，返回码: $rc"
             exit "$rc"
         fi
+    }
+
+    wait_all_batches() {
+        if [ "${#active_pids[@]}" -gt 0 ]; then
+            echo "等待 $run_kind 剩余批次完成: ${active_labels[*]}"
+        fi
+
+        while [ "${#active_pids[@]}" -gt 0 ]; do
+            wait_for_one_batch
+        done
     }
 
     launch_batch() {
@@ -647,11 +665,11 @@ run_mode() {
             (
                 run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
             ) > "$batch_log" 2>&1 &
-            wave_pids+=("$!")
-            wave_labels+=("$batch_label")
+            active_pids+=("$!")
+            active_labels+=("$batch_label")
 
-            if [ "${#wave_pids[@]}" -ge "$CRITIC_PROBE_INNER_PARALLELISM" ]; then
-                wait_batch_wave
+            if [ "${#active_pids[@]}" -ge "$CRITIC_PROBE_INNER_PARALLELISM" ]; then
+                wait_for_one_batch
             fi
         else
             run_batch "$run_kind" "$batch_index" "${batch_entries[@]}"
@@ -682,7 +700,7 @@ run_mode() {
         launch_batch
     fi
 
-    wait_batch_wave
+    wait_all_batches
 }
 
 echo "本次内置场景列表："
