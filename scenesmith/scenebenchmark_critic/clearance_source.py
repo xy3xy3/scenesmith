@@ -485,13 +485,16 @@ def _object_clearance_record(obj: dict[str, Any]) -> dict[str, Any] | None:
     """Resolve a clearance record for a case_pack object dict.
 
     Prefers the record mirrored into metadata during asset annotation; falls
-    back to a direct provider lookup by ``asset_id``.
+    back to a direct provider lookup by the SceneSmith HSSD metadata key.
     """
     meta = obj.get("metadata") or {}
     record = meta.get("clearance")
     if isinstance(record, dict):
         return record
-    return get_clearance(meta.get("asset_id"))
+    # 2026-07-07: HSSD furniture stores the clearance join key as hssd_mesh_id
+    # in normal SceneSmith scenes; use the shared resolver so direct critic runs
+    # work even when asset_annotation has not mirrored metadata.clearance yet.
+    return get_clearance_for_metadata(meta)
 
 
 def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:

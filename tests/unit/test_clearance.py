@@ -35,6 +35,17 @@ def _obj(oid: str, bmin, bmax, *, yaw=0.0, clearance=None, name=None) -> dict:
     }
 
 
+def _a_key_with_projectable_clearance() -> str:
+    for key, raw in clearance_source._nonartic_index().items():
+        cat = str(raw.get("cat") or "").lower()
+        if cat in clearance_source._SUPPRESS_FLOOR_CLEARANCE_CATS:
+            continue
+        rec = clearance_source.get_clearance(key)
+        if rec and float(rec.get("depth_m") or 0.0) > 0.0:
+            return key
+    raise AssertionError("test fixture requires at least one projectable clearance key")
+
+
 def test_index_loaded():
     s = clearance_source.stats()
     assert clearance_source.available()
@@ -149,6 +160,17 @@ def test_get_clearance_for_metadata_uses_real_join_key():
     rec = clearance_source.get_clearance_for_metadata({"hssd_mesh_id": key})
     assert rec is not None and rec["asset_id"] == key
     assert clearance_source.get_clearance_for_metadata({"unrelated": key}) is None
+
+
+def test_build_clearance_checks_resolves_hssd_mesh_id_without_asset_annotation():
+    # 2026-07-07: Regression for direct critic runs where asset_annotation is
+    # disabled and generated HSSD objects only carry metadata.hssd_mesh_id.
+    key = _a_key_with_projectable_clearance()
+    obj = _obj("hssd_obj", [0, 0, 0], [1, 1, 1])
+    obj["metadata"]["hssd_mesh_id"] = key
+    checks = clearance_source.build_clearance_checks({"hssd_obj": obj})
+    assert len(checks) == 1
+    assert checks[0]["subject_id"] == "hssd_obj"
 
 
 # --- asset-level placement-aware clearance policy ---------------------------
