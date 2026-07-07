@@ -126,6 +126,21 @@ def test_intruding_object_fails_clearance_check():
     assert result["confidence"] == pytest.approx(0.9)  # high
 
 
+def test_structural_floor_is_not_clearance_blocker():
+    # 2026-07-07: Room structure overlaps most keep-clear AABBs at z=0, but it
+    # is the support/constraint frame, not an object intruding into clearance.
+    chair = _obj("chair", [-0.25, -0.25, 0.0], [0.25, 0.25, 0.9],
+                 clearance=_sit_record(), name="armchair")
+    floor = _obj("floor_living_room", [-5.0, -5.0, -0.02], [5.0, 5.0, 0.03])
+    floor["category"] = "floor"
+    floor["object_type"] = "floor"
+    checks = clearance_source.build_clearance_checks({"chair": chair, "floor": floor})
+    assert len(checks) == 1
+    result = clearance_source.evaluate_clearance(checks[0])
+    assert result["label"] == "pass"
+    assert result["blocking_objects"] == []
+
+
 def test_clear_layout_passes():
     chair = _obj("chair", [-0.25, -0.25, 0.0], [0.25, 0.25, 0.9],
                  clearance=_sit_record())

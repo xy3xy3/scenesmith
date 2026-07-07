@@ -46,6 +46,7 @@ _PARTNER_FILE = _DATA_DIR / "functional_partners_index.json"
 _VERTICAL_TYPES = {"上方站立", "above", "overhead"}
 # Symmetric / no-front objects: keep-clear ring on all four horizontal sides.
 _RING_DIRECTIONS = {"四周", "ring", "all"}
+_STRUCTURAL_BLOCKER_CATEGORIES = {"floor", "wall", "ceiling", "door", "window"}
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +498,17 @@ def _object_clearance_record(obj: dict[str, Any]) -> dict[str, Any] | None:
     return get_clearance_for_metadata(meta)
 
 
+def _is_clearance_blocker_candidate(obj: dict[str, Any]) -> bool:
+    """True for scene objects that can physically block an asset clearance zone."""
+    # 2026-07-07: Floor/wall/ceiling are room structure, not movable intruders.
+    # Keeping them as blockers made every floor-touching keep-clear region fail.
+    category = str(obj.get("category_norm") or obj.get("category") or "").lower()
+    object_type = str(obj.get("object_type") or "").lower()
+    if category in _STRUCTURAL_BLOCKER_CATEGORIES:
+        return False
+    return object_type not in _STRUCTURAL_BLOCKER_CATEGORIES
+
+
 def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Build one clearance check per object that reserves a keep-clear region.
 
@@ -513,6 +525,7 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
         }
         for oid, obj in objects.items()
         if isinstance(obj.get("bbox_world"), dict)
+        and _is_clearance_blocker_candidate(obj)
     ]
     checks: list[dict[str, Any]] = []
     for oid, obj in objects.items():
