@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import trimesh
 import yaml
+import zvec
 
 from scenesmith.agent_utils.hssd_retrieval.alignment import (
     apply_hssd_alignment_transform,
@@ -26,6 +27,7 @@ from scenesmith.agent_utils.hssd_retrieval.data_loader import (
     load_preprocessed_data,
 )
 from scenesmith.agent_utils.hssd_retrieval.retrieval import HssdRetriever
+from scenesmith.agent_utils.hssd_retrieval.zvec_similarity import HssdZvecSearcher
 
 
 class TestHssdConfig(unittest.TestCase):
@@ -63,6 +65,21 @@ class TestHssdConfig(unittest.TestCase):
                 preprocessed_path=self.tmp_path / "nonexistent",
             )
         self.assertIn("Preprocessed data path does not exist", str(cm.exception))
+
+    def test_embedding_backend_requires_zvec_config(self):
+        """Embedding backend must declare zvec settings."""
+        data_path = self.tmp_path / "hssd-models"
+        preprocessed_path = self.tmp_path / "preprocessed"
+        data_path.mkdir()
+        preprocessed_path.mkdir()
+
+        with self.assertRaises(ValueError) as cm:
+            HssdConfig(
+                data_path=data_path,
+                preprocessed_path=preprocessed_path,
+                retrieval_backend="embedding",
+            )
+        self.assertIn("requires hssd.zvec config", str(cm.exception))
 
 
 class TestMeshPaths(unittest.TestCase):
@@ -367,6 +384,85 @@ class TestHssdRetrieverScaleFiltering(unittest.TestCase):
         self.assertEqual(
             [candidate.mesh_id for candidate in candidates], ["good_notebook"]
         )
+
+
+class TestHssdZvecSearcher(unittest.TestCase):
+    """Test Zvec-backed filtering logic without touching live services."""
+
+    def test_get_top_k_similar_meshes_filters_by_category(self):
+        preprocessed_data = HssdPreprocessedData(
+            metadata_by_wordnet={
+                "chair.n.01": [
+                    HssdMeshMetadata(
+                        mesh_id="mesh1",
+                        name="Chair 1",
+                        up="0,1,0",
+                        front="0,0,1",
+                        wordnet_key="chair.n.01",
+                    )
+                ],
+                "cup.n.01": [
+                    HssdMeshMetadata(
+                        mesh_id="mesh2",
+                        name="Cup 1",
+                        up="0,1,0",
+                        front="0,0,1",
+                        wordnet_key="cup.n.01",
+                    )
+                ],
+            },
+            clip_embeddings=np.zeros((2, 512)),
+            embedding_index=["mesh1", "mesh2"],
+            object_categories={"large_objects": ["chair.n.01"]},
+        )
+
+        config = type(
+            "ZCfg",
+            (),
+            {
+                "collection_path": Path("/tmp/fake"),
+                "base_url": "http://127.0.0.1:8014",
+                "embedding_dimension": 2048,
+                "embedding_field": "embedding",
+                "top_k_factor": 4,
+                "timeout_seconds": 1.0,
+                "embd_normalize": 2,
+                "request_retries": 0,
+                "retry_sleep_seconds": 0.0,
+            },
+        )()
+        searcher = HssdZvecSearcher(config)
+
+        fake_results = [
+            zvec.Doc(
+                id="mesh2",
+                score=0.99,
+                fields={"asset_id": "mesh2", "wordnet_key": "cup.n.01"},
+            ),
+            zvec.Doc(
+                id="mesh1",
+                score=0.75,
+                fields={"asset_id": "mesh1", "wordnet_key": "chair.n.01"},
+            ),
+        ]
+
+        class FakeCollection:
+            def query(self, **kwargs):
+                return fake_results
+
+        searcher._collection = FakeCollection()
+        searcher._client = type(
+            "FakeClient", (), {"embed_text": lambda self, text: [0.0] * 2048}
+        )()
+
+        results = searcher.get_top_k_similar_meshes(
+            text_description="chair",
+            preprocessed_data=preprocessed_data,
+            category="large_objects",
+            top_k=1,
+        )
+
+        self.assertEqual(results, [("mesh1", 0.75)])
 
 
 if __name__ == "__main__":
