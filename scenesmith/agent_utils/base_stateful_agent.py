@@ -892,39 +892,73 @@ class BaseStatefulAgent(ABC):
         if object_counts:
             context["object_counts"] = object_counts
 
-        relevant_objects: list[dict[str, Any]] = []
-        relevant_object_type = self.agent_type.to_object_type()
-        if relevant_object_type is not None:
-            try:
-                scene_objects = scene.get_objects_by_type(relevant_object_type)
-            except Exception:
-                scene_objects = []
-
-            for obj in scene_objects:
-                obj_summary: dict[str, Any] = {
-                    "object_id": str(obj.object_id),
-                    "name": obj.name,
-                    "description": obj.description,
-                    "position_xyz": [
-                        round(float(value), 4)
-                        for value in obj.transform.translation().tolist()
-                    ],
-                    "scale_factor": round(float(obj.scale_factor), 4),
+        def summarize_object(obj: Any) -> dict[str, Any]:
+            obj_summary: dict[str, Any] = {
+                "object_id": str(obj.object_id),
+                "name": obj.name,
+                "description": obj.description,
+                "position_xyz": [
+                    round(float(value), 4)
+                    for value in obj.transform.translation().tolist()
+                ],
+                "scale_factor": round(float(obj.scale_factor), 4),
+            }
+            if obj.bbox_min is not None and obj.bbox_max is not None:
+                obj_summary["dimensions"] = {
+                    "width": round(float(obj.bbox_max[0] - obj.bbox_min[0]), 4),
+                    "depth": round(float(obj.bbox_max[1] - obj.bbox_min[1]), 4),
+                    "height": round(float(obj.bbox_max[2] - obj.bbox_min[2]), 4),
                 }
-                if obj.bbox_min is not None and obj.bbox_max is not None:
-                    obj_summary["dimensions"] = {
-                        "width": round(float(obj.bbox_max[0] - obj.bbox_min[0]), 4),
-                        "depth": round(float(obj.bbox_max[1] - obj.bbox_min[1]), 4),
-                        "height": round(float(obj.bbox_max[2] - obj.bbox_min[2]), 4),
-                    }
-                world_bounds = obj.compute_world_bounds()
-                if world_bounds is not None:
-                    bbox_min, bbox_max = world_bounds
-                    obj_summary["world_bounds"] = {
-                        "min": [round(float(v), 4) for v in bbox_min.tolist()],
-                        "max": [round(float(v), 4) for v in bbox_max.tolist()],
-                    }
-                relevant_objects.append(obj_summary)
+            world_bounds = obj.compute_world_bounds()
+            if world_bounds is not None:
+                bbox_min, bbox_max = world_bounds
+                obj_summary["world_bounds"] = {
+                    "min": [round(float(v), 4) for v in bbox_min.tolist()],
+                    "max": [round(float(v), 4) for v in bbox_max.tolist()],
+                }
+            return obj_summary
+
+        # 2026-07-07: Added manipuland fallback scoping after critic inline-retry
+        # context was observed mixing sideboard and dining-table objects, causing
+        # sideboard critiques to drift into dining-table evaluation.
+        relevant_objects: list[dict[str, Any]] = []
+        if self.agent_type == AgentType.MANIPULAND:
+            current_furniture_id = getattr(self, "current_furniture_id", None)
+            current_furniture = (
+                scene.get_object(current_furniture_id)
+                if current_furniture_id is not None and hasattr(scene, "get_object")
+                else None
+            )
+            if current_furniture is not None:
+                relevant_objects.append(summarize_object(current_furniture))
+
+                surface_ids = {
+                    surface.surface_id
+                    for surface in getattr(current_furniture, "support_surfaces", [])
+                }
+                try:
+                    scene_manipulands = scene.get_objects_by_type(ObjectType.MANIPULAND)
+                except Exception:
+                    scene_manipulands = []
+
+                for obj in scene_manipulands:
+                    placement_info = getattr(obj, "placement_info", None)
+                    if (
+                        placement_info is None
+                        or placement_info.parent_surface_id not in surface_ids
+                    ):
+                        continue
+                    relevant_objects.append(summarize_object(obj))
+        else:
+            relevant_object_type = self.agent_type.to_object_type()
+            if relevant_object_type is not None:
+                try:
+                    scene_objects = scene.get_objects_by_type(relevant_object_type)
+                except Exception:
+                    scene_objects = []
+
+                for obj in scene_objects:
+                    relevant_objects.append(summarize_object(obj))
         context["relevant_objects"] = relevant_objects
 
         return json.dumps(context, ensure_ascii=True, indent=2)
