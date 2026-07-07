@@ -307,8 +307,10 @@ that returns the merged, post-replacement asset-library annotations. The bundled
 **self-contained**: every record carries inline `interaction_clearance`,
 `post_replacement`, `canonical_front` (with geometry-verified `asset_local_front_axis`
 for seating/beds), `relation_priors`, `placement_dof`,
-`clearance_intrusion_whitelist_refs`, and `environment_anchors`. It works on a
-fresh clone with no `/data/...` source tree present.
+`clearance_intrusion_whitelist_refs`, `environment_anchors`, and
+SceneBenchmark-normalized FD/SA fields under `scenebenchmark_fd_sa` plus the
+convenience alias `scenebenchmark_functional_hints`. It works on a fresh clone
+with no `/data/...` source tree present.
 
 Post-replacement realization (`post_replacement.realization_kind`):
 - `hssd_official` — 1,321 official HSSD articulated assets (T1)
@@ -319,6 +321,11 @@ Heavy layers (NPZ affordance masks, operation-space records, full clearance
 run) remain optional external enrichment; when their absolute paths are absent
 the getters return `available: False` stubs and the inline bundled fields stay
 authoritative.
+
+When a SceneSmith object has `metadata.hssd_mesh_id` (or the fallback keys
+`asset_id` / `object_id`), the adapter now hydrates these bundled HSSD FD/SA
+fields into `functional_hints` before building the case pack. Explicit scene
+metadata still wins over the HSSD defaults.
 
 ```bash
 # No pydrake/bpy needed:

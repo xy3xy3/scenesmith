@@ -52,6 +52,18 @@ def main() -> int:
     check("chair_has_orientation_axis", cf.get("canonical_orientation_axis") is not None)
     check("chair_orientation_semantic",
           cf.get("canonical_orientation_is_semantic_front") is True)
+    chair_hints = chair.get("scenebenchmark_functional_hints") or {}
+    check("chair_fd_sa_hints", bool(chair_hints))
+    check("chair_scenebenchmark_sittable",
+          "sittable" in chair_hints.get("functional_categories", []))
+    check("chair_scenebenchmark_access_required",
+          chair_hints.get("accessibility_policy") == "required")
+    check("chair_scenebenchmark_scene_type",
+          chair_hints.get("scene_object_type") == "furniture")
+    check("chair_scenebenchmark_front_hint",
+          chair_hints.get("front_hint") == "front")
+    check("chair_scenebenchmark_fd_targets",
+          "table" in chair_hints.get("target_relation", []))
 
     # 2b) every asset has a placement orientation axis; fallback axes are
     # explicitly marked non-semantic.
@@ -61,12 +73,30 @@ def main() -> int:
           fcf.get("canonical_orientation_axis") is not None)
     check("fallback_not_semantic_front",
           fcf.get("canonical_orientation_is_semantic_front") is False)
+    fallback_hints = fallback.get("scenebenchmark_functional_hints") or {}
+    check("fallback_scenebenchmark_scene_type",
+          fallback_hints.get("scene_object_type") == "manipuland")
+    check("fallback_scenebenchmark_fd_metric",
+          (fallback_hints.get("metric_relevance") or {}).get("functional_dependency") == 1.0)
 
     # 3) PM replacement realization present in post_replacement
     pm = store.require("0022fa6ee5a44330e765488919803155b1a9e88c")
     pr = pm.get("post_replacement") or {}
     check("pm_realization", pr.get("realization_kind") == "pm_replacement")
     check("pm_match_id", pr.get("match_id") == "102177")
+
+    # 3b) articulated storage/media assets expose FD/SA-normalized open/support
+    # affordances and runtime-friendly relation targets.
+    tv_stand = store.require("0074b6bf5758fd7186157fd3a8d53afe3e200cba")
+    tv_hints = tv_stand.get("scenebenchmark_functional_hints") or {}
+    check("tv_stand_openable_supportable",
+          {"openable", "supportable"}.issubset(tv_hints.get("functional_categories", [])))
+    check("tv_stand_storage_surface",
+          tv_hints.get("category_group") == "storage_surface")
+    check("tv_stand_relation_target",
+          "television_receiver" in tv_hints.get("target_relation", []))
+    check("tv_stand_openable_height",
+          (tv_hints.get("interaction_height_m") or {}).get("openable") == 0.9)
 
     # 4) inline interaction_clearance is authoritative (portable)
     check("inline_clearance", bool(chair.get("interaction_clearance")))
@@ -91,6 +121,19 @@ def main() -> int:
     # 6) category search works
     hits = portable.search_category("chair", limit=5)
     check("search_returns_hits", len(hits) == 5)
+
+    # 7) all bundled assets carry the SceneBenchmark FD/SA normalized envelope.
+    all_records = portable._load()
+    check("all_records_have_fd_sa",
+          all(bool(r.get("scenebenchmark_fd_sa")) for r in all_records.values()))
+    check("all_records_have_functional_hints",
+          all(bool(r.get("scenebenchmark_functional_hints")) for r in all_records.values()))
+    check("all_records_have_scene_object_type",
+          all((r.get("scenebenchmark_functional_hints") or {}).get("scene_object_type")
+              for r in all_records.values()))
+    check("all_records_have_access_policy",
+          all((r.get("scenebenchmark_functional_hints") or {}).get("accessibility_policy")
+              for r in all_records.values()))
 
     print(f"\n{'ALL PASS' if not failures else 'FAILURES: ' + ', '.join(failures)}")
     return 1 if failures else 0
