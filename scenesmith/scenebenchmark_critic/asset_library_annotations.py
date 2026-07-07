@@ -723,21 +723,32 @@ class AssetLibraryAnnotationStore:
     def _load_json_if_present(self, path: Path) -> Any:
         if not path.exists():
             return None
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            # 2026-07-07: Optional external enrichment paths may be missing,
+            # unreadable, or partially mounted; keep bundled annotations usable.
+            return None
 
     def _unified_index(self) -> dict[str, Path]:
         if self._unified_affordance_index is None:
             index_path = self.unified_affordance_dir / "index.jsonl"
             records: dict[str, Path] = {}
             if index_path.exists():
-                with index_path.open("r", encoding="utf-8") as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        row = json.loads(line)
-                        asset_id = normalize_hssd_id(row.get("asset_id", ""))
-                        records[asset_id] = self.unified_affordance_dir / row["record"]
+                try:
+                    with index_path.open("r", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            row = json.loads(line)
+                            asset_id = normalize_hssd_id(row.get("asset_id", ""))
+                            records[asset_id] = self.unified_affordance_dir / row["record"]
+                except OSError:
+                    # 2026-07-07: External UD4 affordance files are optional
+                    # enrichment; permission/mount failures must not break the
+                    # self-contained bundled HSSD lookup.
+                    records = {}
             self._unified_affordance_index = records
         return self._unified_affordance_index
 
