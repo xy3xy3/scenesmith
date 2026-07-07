@@ -18,6 +18,9 @@ from scenesmith.agent_utils.room import (
     SceneObject,
     SupportSurface,
 )
+from scenesmith.scenebenchmark_critic.asset_library_annotations import (
+    get_hssd_asset_annotations,
+)
 from scenesmith.scenebenchmark_critic.checks import build_checks
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import (
     BEDS,
@@ -1123,7 +1126,7 @@ def _as_string_list(raw: Any) -> list[str]:
 
 
 def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
-    hints: dict[str, Any] = {}
+    hints: dict[str, Any] = _hssd_annotation_functional_hints(obj)
     nested = obj.metadata.get("functional_hints")
     if isinstance(nested, dict):
         hints.update(nested)
@@ -1135,12 +1138,17 @@ def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
         "category_group",
         "category_keywords",
         "access_type",
+        "affordance_confidence",
+        "affordance_source",
+        "asset_local_front_axis",
         "interaction_surface_map",
         "interaction_height_m",
         "placement_class",
         "benchmark_relevance",
         "classification_source",
+        "canonical_orientation_is_semantic_front",
         "front_face",
+        "front_confidence",
         "front_hint",
         "scene_object_type",
         "access_direction",
@@ -1169,6 +1177,48 @@ def _metadata_functional_hints(obj: SceneObject) -> dict[str, Any]:
         if key in obj.metadata:
             hints[key] = obj.metadata[key]
     return hints
+
+
+_HSSD_METADATA_ID_KEYS = ("hssd_mesh_id", "asset_id", "object_id")
+
+
+def _hssd_annotation_functional_hints(obj: SceneObject) -> dict[str, Any]:
+    asset_id = _hssd_asset_id_from_metadata(obj.metadata)
+    if not asset_id:
+        return {}
+    try:
+        record = get_hssd_asset_annotations(asset_id)
+    except Exception:
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    hints = record.get("scenebenchmark_functional_hints")
+    if not isinstance(hints, dict):
+        hints = (record.get("scenebenchmark_fd_sa") or {}).get("functional_hints")
+    if not isinstance(hints, dict):
+        return {}
+    out = dict(hints)
+    out.setdefault("asset_annotation_source", "hssd_annotations")
+    out.setdefault("classification_source", "hssd_annotations")
+    out["hssd_annotation_asset_id"] = normalize_hssd_id_for_adapter(asset_id)
+    return out
+
+
+def _hssd_asset_id_from_metadata(metadata: Any) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    for key in _HSSD_METADATA_ID_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def normalize_hssd_id_for_adapter(value: str) -> str:
+    text = str(value or "").strip()
+    if text.lower().startswith("hssd:"):
+        text = text.split(":", 1)[1]
+    return text
 
 
 def _metadata_dependency_relations(

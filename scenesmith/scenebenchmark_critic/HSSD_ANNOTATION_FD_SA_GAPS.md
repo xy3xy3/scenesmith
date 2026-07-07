@@ -360,3 +360,9 @@ fields are:
 5. Inline support/interaction surface summaries, at least
    `interaction_surface_map` and `interaction_height_m`.
 6. Metric relevance / suppression flags for decorative and non-functional assets.
+
+## yz Update
+
+2026-07-07：`yz` branch adds `scenebenchmark_fd_sa` and
+`scenebenchmark_functional_hints` to every bundled HSSD lookup record and
+hydrates those fields into SceneBenchmark adapter functional hints at runtime.

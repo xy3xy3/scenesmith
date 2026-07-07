@@ -49,6 +49,612 @@ def normalize_hssd_id(value: str) -> str:
     return value
 
 
+_SCENEBENCHMARK_AFFORDANCE_VOCAB = {
+    "sittable",
+    "sleepable",
+    "supportable",
+    "openable",
+    "containable",
+    "toggleable",
+    "graspable",
+}
+_AFFORDANCE_CATEGORY_KEYWORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        ("chair", "stool", "sofa", "couch", "bench", "seat", "loveseat"),
+        ("sittable",),
+    ),
+    (("bed", "mattress"), ("sittable", "sleepable", "supportable")),
+    (
+        (
+            "table",
+            "desk",
+            "shelf",
+            "stand",
+            "counter",
+            "cabinet",
+            "dresser",
+            "nightstand",
+            "buffet",
+            "armoire",
+            "cart",
+            "sideboard",
+            "console",
+            "island",
+            "sink",
+            "toilet",
+        ),
+        ("supportable",),
+    ),
+    (
+        (
+            "cabinet",
+            "drawer",
+            "door",
+            "dresser",
+            "wardrobe",
+            "refrigerator",
+            "microwave",
+            "oven",
+            "storage",
+            "tv_stand",
+            "tv stand",
+            "armoire",
+            "buffet",
+            "hamper",
+            "basket",
+            "trunk",
+            "washer",
+            "dryer",
+        ),
+        ("containable", "openable"),
+    ),
+    (("lamp", "light", "switch"), ("toggleable",)),
+    (
+        (
+            "bottle",
+            "bowl",
+            "book",
+            "cup",
+            "glass",
+            "keyboard",
+            "laptop",
+            "monitor",
+            "mouse",
+            "mug",
+            "plate",
+            "remote",
+            "tablet",
+            "vase",
+        ),
+        ("graspable",),
+    ),
+)
+_CATEGORY_GROUP_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("chair", "stool", "sofa", "bench", "seat", "loveseat"), "seating"),
+    (("toilet",), "seating"),
+    (("bed", "mattress"), "sleeping"),
+    (
+        (
+            "wall art",
+            "wall decor",
+            "picture frame",
+            "wall sign",
+            "wall clock",
+            "mirror",
+            "rug",
+            "mat",
+            "throw pillow",
+            "pillow",
+            "sculpture",
+            "plant",
+            "flower",
+            "wreath",
+        ),
+        "decor",
+    ),
+    (
+        ("shelf", "stand", "sideboard", "console", "nightstand", "bookcase", "buffet", "cart"),
+        "storage_surface",
+    ),
+    (("television", "tv", "monitor", "screen", "speaker"), "media"),
+    (("lamp", "light"), "lighting"),
+    (
+        ("table", "desk", "counter", "island"),
+        "work_surface",
+    ),
+    (
+        (
+            "cabinet",
+            "drawer",
+            "dresser",
+            "wardrobe",
+            "armoire",
+            "refrigerator",
+            "microwave",
+            "oven",
+            "storage",
+            "washer",
+            "dryer",
+            "hamper",
+            "basket",
+            "trunk",
+        ),
+        "storage",
+    ),
+    (
+        (
+            "bottle",
+            "bowl",
+            "book",
+            "cup",
+            "glass",
+            "keyboard",
+            "laptop",
+            "mouse",
+            "mug",
+            "plate",
+            "remote",
+            "tablet",
+            "vase",
+        ),
+        "small_object",
+    ),
+)
+_SMALL_OBJECT_HINTS = {
+    "bottle",
+    "bowl",
+    "book",
+    "cup",
+    "glass",
+    "keyboard",
+    "laptop",
+    "mouse",
+    "mug",
+    "plate",
+    "remote",
+    "tablet",
+    "vase",
+}
+_WALL_MOUNTED_HINTS = (
+    "wall art",
+    "wall decor",
+    "wall mirror",
+    "wall sign",
+    "wall clock",
+    "picture frame",
+    "curtain",
+    "shade",
+    "blind",
+    "showerhead",
+    "towel rack",
+    "hook rack",
+)
+
+
+def _category_text(record: dict[str, Any]) -> str:
+    raw = (
+        record.get("category_key")
+        or record.get("category")
+        or record.get("asset_uid")
+        or ""
+    )
+    return str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _category_words(record: dict[str, Any]) -> str:
+    return _category_text(record).replace("_", " ")
+
+
+def _normalize_category_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("-", "_").replace(" ", "_")
+    text = "".join(ch for ch in text if ch.isalnum() or ch == "_")
+    while "__" in text:
+        text = text.replace("__", "_")
+    return text.strip("_")
+
+
+def _category_contains(category_words: str, needles: tuple[str, ...]) -> bool:
+    return any(
+        needle in category_words or needle.replace("_", " ") in category_words
+        for needle in needles
+    )
+
+
+def _scenebenchmark_affordances(record: dict[str, Any]) -> set[str]:
+    category_words = _category_words(record)
+    affordances: set[str] = set()
+    for needles, labels in _AFFORDANCE_CATEGORY_KEYWORDS:
+        if _category_contains(category_words, needles):
+            affordances.update(labels)
+    return affordances & _SCENEBENCHMARK_AFFORDANCE_VOCAB
+
+
+def _scenebenchmark_category_group(
+    record: dict[str, Any], affordances: set[str]
+) -> str:
+    category_words = _category_words(record)
+    for needles, group in _CATEGORY_GROUP_KEYWORDS:
+        if _category_contains(category_words, needles):
+            return group
+    if "supportable" in affordances:
+        return "work_surface"
+    if "graspable" in affordances:
+        return "small_object"
+    return "object"
+
+
+def _scenebenchmark_scene_object_type(record: dict[str, Any], group: str) -> str:
+    policy = record.get("week27_asset_policy") or {}
+    raw = str(policy.get("scene_object_type") or "").strip()
+    if raw and raw != "unknown":
+        return raw
+    category_words = _category_words(record)
+    if "ceiling" in category_words:
+        return "ceiling_mounted"
+    if _category_contains(category_words, _WALL_MOUNTED_HINTS):
+        return "wall_mounted"
+    if group == "small_object" or _category_contains(category_words, tuple(_SMALL_OBJECT_HINTS)):
+        return "manipuland"
+    if group == "decor":
+        return "manipuland"
+    if group in {
+        "seating",
+        "sleeping",
+        "work_surface",
+        "storage",
+        "storage_surface",
+        "media",
+        "lighting",
+    }:
+        return "furniture"
+    placement_dof = record.get("placement_dof") or {}
+    if placement_dof.get("dof") in {1, 2}:
+        return "furniture"
+    return "manipuland"
+
+
+def _scenebenchmark_mobility_class(
+    record: dict[str, Any], group: str, scene_object_type: str
+) -> str:
+    policy = record.get("week27_asset_policy") or {}
+    raw = str(policy.get("mobility_class") or "").strip()
+    if raw and raw != "unknown":
+        return raw
+    if scene_object_type in {"wall_mounted", "ceiling_mounted"}:
+        return "mounted"
+    category_words = _category_words(record)
+    if group == "small_object":
+        return "movable"
+    if group == "seating" and _category_contains(category_words, ("chair", "stool")):
+        return "movable"
+    if group in {"seating", "work_surface", "storage_surface", "media"}:
+        return "semi_movable"
+    if group in {"sleeping", "storage"}:
+        return "fixed"
+    return "unknown"
+
+
+def _scenebenchmark_accessibility_policy(
+    record: dict[str, Any],
+    affordances: set[str],
+    scene_object_type: str,
+    group: str,
+) -> str:
+    policy = record.get("week27_asset_policy") or {}
+    if scene_object_type in {"wall_mounted", "ceiling_mounted"} or group == "decor":
+        return "ignored"
+    raw = str(policy.get("accessibility_policy") or "").strip()
+    if raw in {"required", "optional", "ignored"}:
+        return raw
+    if group == "small_object" or scene_object_type == "manipuland":
+        return "ignored"
+    return "required" if affordances else "ignored"
+
+
+def _scenebenchmark_front_hint(record: dict[str, Any], affordances: set[str]) -> str | None:
+    policy = record.get("week27_asset_policy") or {}
+    for side in policy.get("access_sides") or []:
+        side_text = str(side).strip().lower()
+        if side_text in {"front", "back", "left", "right", "top", "bottom"}:
+            return side_text
+    canonical = record.get("canonical_front") or {}
+    if canonical.get("canonical_orientation_is_semantic_front") is True:
+        return "front"
+    if "openable" in affordances or "sittable" in affordances:
+        return "front"
+    if "supportable" in affordances:
+        return "top"
+    return None
+
+
+def _scenebenchmark_access_sides(
+    record: dict[str, Any], affordances: set[str], front_hint: str | None
+) -> list[str]:
+    policy = record.get("week27_asset_policy") or {}
+    sides = [
+        str(side).strip().lower()
+        for side in policy.get("access_sides") or []
+        if str(side).strip().lower() in {"front", "back", "left", "right", "top", "bottom"}
+    ]
+    face = front_hint if front_hint in {"front", "back", "left", "right"} else "front"
+    if "openable" in affordances or "sittable" in affordances:
+        sides.append(face)
+    if "supportable" in affordances:
+        sides.append("top")
+    if "sleepable" in affordances:
+        sides.extend(["left", "right", face])
+    return list(dict.fromkeys(sides))
+
+
+def _interaction_surface_map(affordances: set[str]) -> dict[str, list[str]]:
+    mapping: dict[str, list[str]] = {}
+    if "sittable" in affordances:
+        mapping["sittable"] = ["top", "front"]
+    if "sleepable" in affordances:
+        mapping["sleepable"] = ["top", "left", "right"]
+    if "supportable" in affordances:
+        mapping["supportable"] = ["top"]
+    if "openable" in affordances:
+        mapping["openable"] = ["front"]
+    if "containable" in affordances:
+        mapping["containable"] = ["front", "inside"]
+    if "toggleable" in affordances:
+        mapping["toggleable"] = ["front"]
+    if "graspable" in affordances:
+        mapping["graspable"] = ["top", "side"]
+    return mapping
+
+
+def _interaction_height_m(record: dict[str, Any], affordances: set[str]) -> dict[str, float]:
+    category_words = _category_words(record)
+    heights: dict[str, float] = {}
+    if "sittable" in affordances:
+        heights["sittable"] = 0.45
+    if "sleepable" in affordances:
+        heights["sleepable"] = 0.55
+    if "supportable" in affordances:
+        if "coffee" in category_words:
+            heights["supportable"] = 0.42
+        elif "counter" in category_words or "island" in category_words:
+            heights["supportable"] = 0.9
+        elif "desk" in category_words or "table" in category_words:
+            heights["supportable"] = 0.74
+        else:
+            heights["supportable"] = 0.8
+    if "openable" in affordances:
+        heights["openable"] = 0.9
+    if "containable" in affordances:
+        heights["containable"] = heights.get("openable", 0.9)
+    if "toggleable" in affordances:
+        heights["toggleable"] = 1.2
+    if "graspable" in affordances:
+        heights["graspable"] = 1.0
+    return heights
+
+
+def _relation_target_categories(record: dict[str, Any]) -> list[str]:
+    targets: list[str] = []
+    for relation in record.get("relation_priors") or []:
+        if not isinstance(relation, dict):
+            continue
+        if relation.get("target_kind") != "asset_category":
+            continue
+        target = _normalize_category_token(relation.get("target_category"))
+        if target and target not in targets:
+            targets.append(target)
+    partners = ((record.get("interaction_clearance") or {}).get("functional_partners") or {})
+    for partner in partners.get("partners") or []:
+        target = _normalize_category_token(partner)
+        if target and target not in targets:
+            targets.append(target)
+    return targets
+
+
+def _functional_dependencies(record: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies: list[dict[str, Any]] = []
+    for relation in record.get("relation_priors") or []:
+        if not isinstance(relation, dict):
+            continue
+        target_kind = relation.get("target_kind")
+        if target_kind != "asset_category":
+            continue
+        target = _normalize_category_token(relation.get("target_category"))
+        if not target:
+            continue
+        relation_type = str(
+            relation.get("functional_dependency_relation")
+            or relation.get("relation_type")
+            or "used_with"
+        )
+        dependencies.append(
+            {
+                "relation_type": relation_type.replace("funeval_", ""),
+                "target_category": target,
+                "target_kind": "object_category",
+                "distance_range_m": relation.get("distance_range_m"),
+                "relative_facing": relation.get("relative_facing"),
+                "relative_position": relation.get("relative_position"),
+                "height_relation": relation.get("height_relation"),
+                "confidence": relation.get("functional_dependency_confidence")
+                or relation.get("confidence"),
+                "reason": relation.get("reason")
+                or f"HSSD relation prior: {relation_type} -> {target}",
+                "source": "hssd_annotations:relation_priors",
+            }
+        )
+    return dependencies
+
+
+def _attachment_dependencies(record: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies: list[dict[str, Any]] = []
+    for relation in record.get("relation_priors") or []:
+        if not isinstance(relation, dict):
+            continue
+        if relation.get("target_kind") != "environment_anchor":
+            continue
+        anchor = _normalize_category_token(relation.get("environment_anchor"))
+        if not anchor:
+            continue
+        dependencies.append(
+            {
+                "relation_type": relation.get("relation_type") or "against",
+                "target_kind": "environment_anchor",
+                "environment_anchor": anchor,
+                "distance_range_m": relation.get("distance_range_m"),
+                "relative_facing": relation.get("relative_facing"),
+                "confidence": relation.get("confidence"),
+                "source": "hssd_annotations:relation_priors",
+            }
+        )
+    for anchor in record.get("environment_anchors") or []:
+        if not isinstance(anchor, dict):
+            continue
+        anchor_name = _normalize_category_token(anchor.get("anchor"))
+        if not anchor_name:
+            continue
+        item = {
+            "relation_type": anchor.get("relation_type") or "supported_by",
+            "target_kind": "environment_anchor",
+            "environment_anchor": anchor_name,
+            "confidence": anchor.get("confidence"),
+            "source": "hssd_annotations:environment_anchors",
+        }
+        if item not in dependencies:
+            dependencies.append(item)
+    return dependencies
+
+
+def _orientation_dependencies(record: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies: list[dict[str, Any]] = []
+    policy = record.get("week27_asset_policy") or {}
+    for item in policy.get("orientation_dependencies") or []:
+        if isinstance(item, dict):
+            dep = dict(item)
+            if dep.get("target_category"):
+                dep["target_category"] = _normalize_category_token(
+                    dep.get("target_category")
+                )
+            dep.setdefault("source", "hssd_annotations:week27_asset_policy")
+            dependencies.append(dep)
+    for relation in record.get("relation_priors") or []:
+        if not isinstance(relation, dict):
+            continue
+        if relation.get("target_kind") != "asset_category":
+            continue
+        facing = str(relation.get("relative_facing") or "")
+        if "front" not in facing and relation.get("relation_type") not in {"faces", "around"}:
+            continue
+        target = _normalize_category_token(relation.get("target_category"))
+        if not target:
+            continue
+        dep = {
+            "relation_type": "front_faces",
+            "target_category": target,
+            "target_kind": "object_category",
+            "max_distance_m": (relation.get("distance_range_m") or [None, None])[-1],
+            "confidence": relation.get("confidence"),
+            "source": "hssd_annotations:relation_priors",
+        }
+        if dep not in dependencies:
+            dependencies.append(dep)
+    return dependencies
+
+
+def _metric_relevance(
+    affordances: set[str],
+    accessibility_policy: str,
+    target_relations: list[str],
+    has_keep_clear: bool,
+) -> dict[str, float]:
+    if accessibility_policy == "ignored":
+        sa = 0.0
+    elif {"openable", "sittable"} & affordances:
+        sa = 1.0
+    elif {"sleepable", "supportable", "graspable"} & affordances:
+        sa = 0.8
+    else:
+        sa = 0.0
+    return {
+        "spatial_accessibility": sa,
+        "functional_dependency": 1.0 if target_relations else 0.0,
+        "interaction_clearance": 0.9 if has_keep_clear else 0.0,
+    }
+
+
+def build_scenebenchmark_annotation(record: dict[str, Any]) -> dict[str, Any]:
+    """Return SceneBenchmark-normalized FD/SA fields for one HSSD record."""
+    affordances = _scenebenchmark_affordances(record)
+    group = _scenebenchmark_category_group(record, affordances)
+    scene_object_type = _scenebenchmark_scene_object_type(record, group)
+    mobility_class = _scenebenchmark_mobility_class(record, group, scene_object_type)
+    accessibility_policy = _scenebenchmark_accessibility_policy(
+        record, affordances, scene_object_type, group
+    )
+    front_hint = _scenebenchmark_front_hint(record, affordances)
+    access_sides = _scenebenchmark_access_sides(record, affordances, front_hint)
+    canonical_front = record.get("canonical_front") or {}
+    target_relations = _relation_target_categories(record)
+    functional_dependencies = _functional_dependencies(record)
+    attachment_dependencies = _attachment_dependencies(record)
+    orientation_dependencies = _orientation_dependencies(record)
+    has_keep_clear = bool((record.get("interaction_clearance") or {}).get("has_keep_clear"))
+    benchmark_relevance = (
+        "functional"
+        if affordances or target_relations or accessibility_policy == "required"
+        else "decorative"
+    )
+
+    hints: dict[str, Any] = {
+        "functional_categories": sorted(affordances),
+        "candidate_affordances": sorted(affordances),
+        "affordance_confidence": 0.78 if affordances else 0.0,
+        "affordance_source": "hssd_annotations:category_policy",
+        "accessibility_policy": accessibility_policy,
+        "scene_object_type": scene_object_type,
+        "mobility_class": mobility_class,
+        "category_group": group,
+        "benchmark_relevance": benchmark_relevance,
+        "access_sides": access_sides,
+        "target_relation": target_relations,
+        "explicit_target_relation": target_relations,
+        "functional_dependencies": functional_dependencies,
+        "attachment_dependencies": attachment_dependencies,
+        "orientation_dependencies": orientation_dependencies,
+        "interaction_surface_map": _interaction_surface_map(affordances),
+        "interaction_height_m": _interaction_height_m(record, affordances),
+        "metric_relevance": _metric_relevance(
+            affordances, accessibility_policy, target_relations, has_keep_clear
+        ),
+        "classification_source": "hssd_annotations",
+        "asset_annotation_source": "hssd_annotations",
+    }
+    if front_hint:
+        hints["front_hint"] = front_hint
+        hints["front_face"] = front_hint
+        hints["access_direction"] = front_hint
+    axis = canonical_front.get("asset_local_front_axis") or canonical_front.get(
+        "canonical_orientation_axis"
+    )
+    if axis is not None:
+        hints["asset_local_front_axis"] = axis
+    if canonical_front:
+        hints["front_confidence"] = canonical_front.get(
+            "canonical_orientation_confidence",
+            canonical_front.get("confidence"),
+        )
+        hints["canonical_orientation_is_semantic_front"] = canonical_front.get(
+            "canonical_orientation_is_semantic_front"
+        )
+
+    return {
+        "schema_version": "scenebenchmark_hssd_fd_sa@0.1",
+        "functional_hints": hints,
+        "functional_dependencies": functional_dependencies,
+        "support_regions": [],
+    }
+
+
 class AssetLibraryAnnotationStore:
     """In-process search library for asset-library and clearance annotations."""
 
@@ -324,6 +930,19 @@ class AssetLibraryAnnotationStore:
         out["ud4_affordance"] = ud4_affordance
         out["operation_space"] = operation_space
         out["clearance_regions"] = clearance_regions
+        scenebenchmark = out.get("scenebenchmark_fd_sa")
+        if not isinstance(scenebenchmark, dict):
+            scenebenchmark = build_scenebenchmark_annotation(out)
+            out["scenebenchmark_fd_sa"] = scenebenchmark
+        hints = scenebenchmark.get("functional_hints")
+        if isinstance(hints, dict):
+            out.setdefault("scenebenchmark_functional_hints", hints)
+        dependencies = scenebenchmark.get("functional_dependencies")
+        if dependencies:
+            out.setdefault("functional_dependencies", dependencies)
+        support_regions = scenebenchmark.get("support_regions")
+        if support_regions:
+            out.setdefault("support_regions", support_regions)
         return out
 
     def require(self, hssd_id: str) -> dict[str, Any]:
