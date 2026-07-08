@@ -58,6 +58,10 @@ BRANCH_FROM_SHARED_BASE="${BRANCH_FROM_SHARED_BASE:-false}"
 SHARED_BASE_STOP_STAGE="${SHARED_BASE_STOP_STAGE:-floor_plan}"
 SHARED_BASE_ROOT="${SHARED_BASE_ROOT:-}"
 CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-true}"
+# 2026-07-08: 复用之前 critic_on 输出的标注结果。指向之前 critic_on 目录（如
+# .../critic_probe_4rooms_2026-07-07_18-23-17/critic_on），
+# annotate_room_scene 会按 object_id 查找已有 yaml 复制到当前输出中。
+CRITIC_ANNOTATION_CACHE_DIR="${CRITIC_ANNOTATION_CACHE_DIR:-}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
 CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE:-vlm}"
 CRITIC_MAX_FD_RELATION_PROPOSALS="${CRITIC_MAX_FD_RELATION_PROPOSALS:-8}"
@@ -569,6 +573,12 @@ run_batch() {
             "experiment.scenebenchmark_critic.asset_annotation.enabled=true"
             "experiment.scenebenchmark_critic.asset_annotation.backend=vlm"
             "experiment.scenebenchmark_critic.asset_annotation.model=${MODEL_NAME}"
+        )
+    fi
+
+    if [ -n "$CRITIC_ANNOTATION_CACHE_DIR" ]; then
+        cmd+=(
+            "experiment.scenebenchmark_critic.asset_annotation.annotation_cache_dir=${CRITIC_ANNOTATION_CACHE_DIR}"
         )
     fi
 

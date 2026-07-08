@@ -117,6 +117,7 @@ scenebenchmark_critic:
     write_scene_state: true
     skip_existing: true
     refresh: false
+    annotation_cache_dir: ""
     output_dir_name: "asset_annotations"
     request_dir_name: "asset_annotation_requests"
     render_dir_name: "asset_annotation_renders"

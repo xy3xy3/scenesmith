@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "write_scene_state": True,
     "skip_existing": True,
     "refresh": False,
+    "annotation_cache_dir": "",
     "output_dir_name": "asset_annotations",
     "request_dir_name": "asset_annotation_requests",
     "render_dir_name": "asset_annotation_renders",
@@ -69,6 +71,40 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "scene_object_type_threshold": 0.70,
     },
 }
+
+
+def _build_annotation_cache_index(
+    cache_root: Path,
+) -> dict[str, list[Path]]:
+    """Build {object_id: [paths]} index from cache root."""
+    index: dict[str, list[Path]] = {}
+    for yaml_file in cache_root.rglob("*.yaml"):
+        if yaml_file.parent.name == "asset_annotations" and yaml_file.stem != "summary":
+            index.setdefault(yaml_file.stem, []).append(yaml_file)
+    return index
+
+
+def _lookup_cache_annotation(
+    cache_root: Path,
+    object_id: str,
+    output_dir: Path,
+    cache_index: dict[str, list[Path]] | None = None,
+) -> Path | None:
+    """Find annotation in cache. Returns first unique match, prefers same batch/scene scope."""
+    if cache_index is None:
+        cache_index = _build_annotation_cache_index(cache_root)
+    paths = cache_index.get(object_id)
+    if not paths:
+        return None
+    if len(paths) == 1:
+        return paths[0]
+    # Multiple matches — try to scope by matching batch_XXX/scene_XXX in path
+    output_str = str(output_dir)
+    for p in paths:
+        cache_str = str(p)
+        if cache_str in output_str or output_str in cache_str:
+            return p
+    return None
 
 FUNCTIONAL_AFFORDANCES = {
     "sittable",
@@ -291,6 +327,19 @@ def annotate_room_scene(
     skipped: list[str] = []
     annotations: list[AssetAnnotation] = []
 
+    # Build cache index once if annotation_cache_dir is configured
+    cache_cfg_dir = str(annotation_cfg.get("annotation_cache_dir") or "")
+    cache_index: dict[str, list[Path]] | None = None
+    cache_root: Path | None = None
+    if (
+        cache_cfg_dir
+        and _as_bool(annotation_cfg.get("skip_existing"))
+        and not _as_bool(annotation_cfg.get("refresh"))
+    ):
+        cache_root = Path(cache_cfg_dir)
+        if cache_root.is_dir():
+            cache_index = _build_annotation_cache_index(cache_root)
+
     for obj in selected:
         annotation_path = annotation_dir / f"{obj.object_id}.yaml"
         if (
@@ -305,6 +354,26 @@ def annotate_room_scene(
                 skipped.append(str(obj.object_id))
                 annotations.append(existing)
                 continue
+
+        # Check annotation cache dir if not found locally
+        if cache_root is not None and cache_index is not None:
+            cache_path = _lookup_cache_annotation(
+                cache_root, obj.object_id, output_dir, cache_index
+            )
+            if cache_path is not None:
+                cached = _load_annotation(cache_path)
+                if cached is not None and cached.annotation_status == "succeeded":
+                    annotation_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(cache_path), str(annotation_path))
+                    if _as_bool(annotation_cfg.get("write_back")):
+                        write_back_effective_hints(obj, cached)
+                    skipped.append(str(obj.object_id))
+                    annotations.append(cached)
+                    console_logger.info(
+                        "Reused cached annotation for %s from %s",
+                        obj.object_id, cache_path,
+                    )
+                    continue
 
         annotation = annotate_scene_object(
             scene,
