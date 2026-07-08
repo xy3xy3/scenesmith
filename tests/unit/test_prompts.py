@@ -294,6 +294,34 @@ class TestPromptSystem(unittest.TestCase):
         self.assertIn("Do NOT dismiss", critic_prompt)
         self.assertIn("Do not label that specific bedside wall issue", runner_prompt)
 
+    def test_furniture_prompts_prioritize_existing_layout_for_geometry_fixes(self):
+        """Geometry feedback should prefer fixing existing furniture over duplicates."""
+        # 2026-07-08 修改原因：锁定 critic-on 问题1的动作策略，防止后续
+        # prompt 改动再次允许用新增重复主家具绕过朝向/clearance 反馈。
+        designer_prompt = prompt_manager.get_prompt(
+            prompt_name=FurnitureAgentPrompts.DESIGNER_CRITIQUE_INSTRUCTION_STATEFUL,
+            instruction=(
+                "SceneBenchmark reports seating orientation and support failures "
+                "in a living room."
+            ),
+        )
+        critic_prompt = prompt_manager.get_prompt(
+            prompt_name=FurnitureAgentPrompts.STATEFUL_CRITIC_AGENT,
+            scene_description="A living room with a sofa, TV stand, and coffee table.",
+        )
+
+        for rendered_prompt in (designer_prompt, critic_prompt):
+            self.assertIn("SceneBenchmark", rendered_prompt)
+            self.assertIn("existing", rendered_prompt)
+            self.assertIn("orientation", rendered_prompt)
+            self.assertIn("clearance", rendered_prompt)
+            self.assertIn("coffee", rendered_prompt.lower())
+            self.assertIn("media_console", rendered_prompt)
+            self.assertIn("duplicate", rendered_prompt.lower())
+
+        self.assertIn("Do NOT add a new object", designer_prompt)
+        self.assertIn("Only recommend adding furniture", critic_prompt)
+
     def test_registry_functionality(self):
         """Test registry functionality with actual prompts."""
         # Test getting prompt through registry.

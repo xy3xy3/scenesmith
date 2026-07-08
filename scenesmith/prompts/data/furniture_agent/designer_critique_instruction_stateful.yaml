@@ -2,8 +2,28 @@ name: "designer_critique_instruction_stateful"
 version: "1.0"
 description: "Instructions for addressing critiques in stateful agent"
 template_variables: ["instruction"]
+# 2026-07-08 Modification reason: SceneBenchmark critic feedback should repair
+# existing layout first and avoid duplicate primary furniture when fixing
+# orientation, distance, clearance, support, or wall-backing issues.
 prompt: |
   Address the following feedback: {{ instruction }}
+
+  ## SceneBenchmark Geometry Fix Strategy:
+  - For orientation, distance, clearance, support, reachability, wall-backing, and
+    facing feedback, FIRST repair the existing layout by moving, rotating,
+    snapping, or proportionally rescaling the existing object named in the issue.
+  - Do NOT add a new object to fix a geometry or orientation failure unless the
+    critique explicitly says required furniture is missing or the prompt's
+    required quantity is not met.
+  - Preserve existing primary furniture roles. In living rooms, if a coffee_table,
+    central table, tv_stand, or media_console already exists, do NOT add another
+    coffee table, central support surface, TV stand, or media console just to fix
+    seating orientation or support relationships.
+  - When a support surface is poorly placed, move/rotate the existing support
+    surface or the related seating/media object instead of creating a duplicate.
+  - If the critique asks for an addition but the room already contains a matching
+    primary furniture role, treat the task as a reposition/rotation/replacement
+    problem and mention that choice in your final summary.
 
   ## Critique Resolution Workflow:
   1. Review the critique instructions provided by the planner
