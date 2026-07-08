@@ -62,6 +62,8 @@ CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-true}"
 # .../critic_probe_4rooms_2026-07-07_18-23-17/critic_on），
 # annotate_room_scene 会按 object_id 查找已有 yaml 复制到当前输出中。
 CRITIC_ANNOTATION_CACHE_DIR="${CRITIC_ANNOTATION_CACHE_DIR:-}"
+CRITIC_HSSD_FRONT_AXIS_SOURCE="${CRITIC_HSSD_FRONT_AXIS_SOURCE:-vlm}"
+CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH="${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH:-}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
 CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE:-vlm}"
 CRITIC_MAX_FD_RELATION_PROPOSALS="${CRITIC_MAX_FD_RELATION_PROPOSALS:-8}"
@@ -328,6 +330,8 @@ echo "SHARED_BASE_STOP_STAGE: $SHARED_BASE_STOP_STAGE"
 echo "SHARED_BASE_ROOT: ${SHARED_BASE_ROOT:-<auto-generate under OUTPUT_ROOT>}"
 echo "BRANCH_START_STAGE: ${BRANCH_START_STAGE:-<none>}"
 echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
+echo "CRITIC_HSSD_FRONT_AXIS_SOURCE: $CRITIC_HSSD_FRONT_AXIS_SOURCE"
+echo "CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH: ${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH:-<default bundled lookup>}"
 echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
 echo "CRITIC_FD_RELATION_PROPOSER_MODE: $CRITIC_FD_RELATION_PROPOSER_MODE"
 echo "CRITIC_MAX_FD_RELATION_PROPOSALS: $CRITIC_MAX_FD_RELATION_PROPOSALS"
@@ -367,12 +371,18 @@ COMMON_ARGS=(
     "experiment.scenebenchmark_critic.house_stage_hooks=[]"
     "floor_plan_agent.materials.use_retrieval_server=false"
     "furniture_agent.asset_manager.general_asset_source=hssd"
+    # 2026-07-08: Allow this probe to opt into SceneBenchmark-annotated HSSD
+    # front axes during mesh canonicalization, instead of the VLM front pick.
+    "furniture_agent.asset_manager.hssd_front_axis.source=${CRITIC_HSSD_FRONT_AXIS_SOURCE}"
     "furniture_agent.asset_manager.router.strategies.articulated.enabled=false"
     "manipuland_agent.asset_manager.general_asset_source=hssd"
+    "manipuland_agent.asset_manager.hssd_front_axis.source=${CRITIC_HSSD_FRONT_AXIS_SOURCE}"
     "manipuland_agent.asset_manager.router.strategies.articulated.enabled=false"
     "wall_agent.asset_manager.general_asset_source=hssd"
+    "wall_agent.asset_manager.hssd_front_axis.source=${CRITIC_HSSD_FRONT_AXIS_SOURCE}"
     "wall_agent.asset_manager.router.strategies.articulated.enabled=false"
     "ceiling_agent.asset_manager.general_asset_source=hssd"
+    "ceiling_agent.asset_manager.hssd_front_axis.source=${CRITIC_HSSD_FRONT_AXIS_SOURCE}"
     "ceiling_agent.asset_manager.router.strategies.articulated.enabled=false"
     "floor_plan_agent.openai.model=${MODEL_NAME}"
     "furniture_agent.openai.model=${MODEL_NAME}"
@@ -383,6 +393,17 @@ COMMON_ARGS=(
     "experiment.scenebenchmark_critic.fd_relation_proposer_mode=${CRITIC_FD_RELATION_PROPOSER_MODE}"
     "experiment.scenebenchmark_critic.max_fd_relation_proposals=${CRITIC_MAX_FD_RELATION_PROPOSALS}"
 )
+
+if [ -n "$CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH" ]; then
+    # 2026-07-08: Optional override for testing alternate HSSD annotation lookup
+    # artifacts without changing checked-in agent configs.
+    COMMON_ARGS+=(
+        "furniture_agent.asset_manager.hssd_front_axis.annotation_lookup_path=${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH}"
+        "manipuland_agent.asset_manager.hssd_front_axis.annotation_lookup_path=${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH}"
+        "wall_agent.asset_manager.hssd_front_axis.annotation_lookup_path=${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH}"
+        "ceiling_agent.asset_manager.hssd_front_axis.annotation_lookup_path=${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH}"
+    )
+fi
 
 port_block_base() {
     local run_kind="$1"

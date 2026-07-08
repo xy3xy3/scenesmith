@@ -71,6 +71,13 @@ asset_manager:
   # Asset source: "generated" (Hunyuan3D/SAM3D) or "hssd" (HSSD retrieval)
   general_asset_source: "generated"
 
+  # 2026-07-08: Optional HSSD front-axis source for mesh canonicalization.
+  # Use "scenebenchmark_critic" to replace VLM front-axis picks with curated
+  # HSSD asset-library annotations from scenesmith/scenebenchmark_critic.
+  hssd_front_axis:
+    source: "vlm"  # "vlm" or "scenebenchmark_critic"
+    annotation_lookup_path: null
+
   # 7.3 fix: deterministic scale guards for common small desktop objects.
   # Prevents notebooks, lamps, monitors, etc. from retaining bad retrieved-mesh
   # aspect ratios after uniform scaling.

@@ -16,6 +16,7 @@ from scenesmith.agent_utils.asset_manager import (
     AssetManager,
     AssetPathConfig,
     FailedAsset,
+    _normalize_hssd_annotation_front_axis,
 )
 from scenesmith.agent_utils.geometry_generation_server.dataclasses import (
     GeometryGenerationServerResponse,
@@ -1115,6 +1116,109 @@ class TestAssetManagerDimensionControl(unittest.TestCase):
         mock_scale_mesh.assert_called_once()
         call_args = mock_scale_mesh.call_args
         self.assertEqual(call_args[1]["desired_dimensions"], [1.8, 0.9, 0.75])
+
+
+class TestHssdFrontAxisOverride(unittest.TestCase):
+    """Tests for SceneBenchmark HSSD front-axis annotation overrides."""
+
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.mock_logger = create_mock_logger(self.temp_dir)
+
+    def tearDown(self):
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+
+    def test_hsm_front_vector_maps_to_blender_minus_y(self):
+        """SceneBenchmark HSSD +Z-forward annotations become Blender -Y."""
+        self.assertEqual(_normalize_hssd_annotation_front_axis([0.0, 0.0, 1.0]), "-Y")
+
+    @patch("scenesmith.agent_utils.asset_manager.generate_drake_sdf")
+    @patch("scenesmith.agent_utils.asset_manager.load_mesh_as_trimesh")
+    @patch("scenesmith.agent_utils.asset_manager.remove_mesh_floaters")
+    @patch("scenesmith.agent_utils.asset_manager.canonicalize_mesh")
+    @patch("scenesmith.agent_utils.asset_manager.analyze_mesh_orientation_and_material")
+    @patch("scenesmith.agent_utils.asset_manager._get_hssd_front_axis_annotation_record")
+    def test_hssd_conversion_uses_scenebenchmark_front_axis(
+        self,
+        mock_annotation_record,
+        mock_analyze,
+        mock_canonicalize,
+        mock_remove_floaters,
+        mock_load_mesh,
+        mock_generate_sdf,
+    ):
+        """HSSD canonicalization receives the configured annotated front axis."""
+        cfg = create_mock_cfg()
+        cfg.asset_manager.hssd_front_axis.source = "scenebenchmark_critic"
+
+        mock_annotation_record.return_value = {
+            "canonical_front": {
+                "asset_local_front_axis": [0.0, 0.0, 1.0],
+            }
+        }
+        mock_analyze.return_value = MeshPhysicsAnalysis(
+            up_axis="+Z",
+            front_axis="+X",
+            material="wood",
+            mass_kg=10.0,
+            mass_range_kg=(8.0, 12.0),
+        )
+
+        test_mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        mesh_obj = MagicMock()
+        mesh_obj.bounds = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+        mock_load_mesh.return_value = mesh_obj
+
+        def mock_canonicalize_side_effect(gltf_path, output_path, **kwargs):
+            test_mesh.export(output_path)
+            return output_path
+
+        mock_canonicalize.side_effect = mock_canonicalize_side_effect
+
+        with (
+            patch("scenesmith.agent_utils.asset_manager.create_image_generator"),
+            patch("scenesmith.agent_utils.asset_manager.GeometryGenerationClient"),
+        ):
+            asset_manager = AssetManager(
+                logger=self.mock_logger,
+                vlm_service=MagicMock(),
+                blender_server=MagicMock(),
+                collision_client=MagicMock(),
+                cfg=cfg,
+                agent_type=AgentType.FURNITURE,
+            )
+
+        def mock_convert_side_effect(input_path, output_path, export_yup=False):
+            test_mesh.export(output_path)
+            return output_path
+
+        asset_manager.blender_server.convert_glb_to_gltf.side_effect = (
+            mock_convert_side_effect
+        )
+        asset_manager._generate_collision_geometry = MagicMock(return_value=[])
+
+        geometry_path = self.temp_dir / "chair.glb"
+        test_mesh.export(geometry_path)
+        config = AssetPathConfig(
+            description="HSSD dining chair",
+            short_name="dining_chair",
+            image_path=None,
+            geometry_path=geometry_path,
+            sdf_dir=self.temp_dir / "sdf" / "chair",
+        )
+        config.sdf_dir.mkdir(parents=True)
+
+        asset_manager._convert_mesh_to_simulation_asset(
+            geometry_path=geometry_path,
+            config=config,
+            object_type=ObjectType.FURNITURE,
+            asset_source="hssd",
+            hssd_id="5ed3a1eea7afd4823307ab713540e935af6a47fa",
+        )
+
+        self.assertEqual(mock_canonicalize.call_args.kwargs["front_axis"], "-Y")
+        self.assertEqual(mock_generate_sdf.call_args.kwargs["physics_analysis"].front_axis, "-Y")
 
 
 if __name__ == "__main__":
