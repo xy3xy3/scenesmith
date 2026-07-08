@@ -14,6 +14,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry impo
     object_affordances,
     object_category,
 )
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.profiles import (
+    object_function_profile,
+)
 
 console_logger = logging.getLogger(__name__)
 
@@ -78,9 +81,7 @@ def stabilize_orientation_contracts(
         return
 
     geometry = case_pack.get("scene_geometry") or {}
-    objects = [
-        item for item in geometry.get("objects") or [] if isinstance(item, dict)
-    ]
+    objects = [item for item in geometry.get("objects") or [] if isinstance(item, dict)]
     objects_by_id = {
         str(item.get("id") or ""): item for item in objects if item.get("id")
     }
@@ -164,9 +165,7 @@ def _contract_is_usable(
 ) -> bool:
     if not isinstance(contract, dict):
         return False
-    target_ids = [
-        str(item) for item in contract.get("target_ids") or [] if str(item)
-    ]
+    target_ids = [str(item) for item in contract.get("target_ids") or [] if str(item)]
     if not target_ids or any(
         target_id not in objects_by_id for target_id in target_ids
     ):
@@ -176,11 +175,7 @@ def _contract_is_usable(
         return False
 
     # A newly available semantic focal point is a legitimate topology change.
-    if (
-        media_intent
-        and media_focus is not None
-        and relation_type != "seating_to_media"
-    ):
+    if media_intent and media_focus is not None and relation_type != "seating_to_media":
         return False
     return True
 
@@ -249,9 +244,7 @@ def _replace_contract_check(
     contract: dict[str, Any],
 ) -> None:
     subject_id = str(contract.get("subject_id") or subject.get("id") or "")
-    target_ids = [
-        str(item) for item in contract.get("target_ids") or [] if str(item)
-    ]
+    target_ids = [str(item) for item in contract.get("target_ids") or [] if str(item)]
     relation_type = str(contract.get("relation_type") or "")
     if not subject_id or not target_ids or relation_type not in SEATING_RELATIONS:
         return
@@ -348,15 +341,16 @@ def _media_rank(obj: dict[str, Any]) -> tuple[int, float]:
 
 
 def _is_seating(obj: dict[str, Any]) -> bool:
-    return (
-        "sittable" in object_affordances(obj)
-        or object_category(obj) in LIVING_SEATING
+    # 2026-07-08 修改原因：asset affordances 会把部分非座椅误标成 sittable，
+    # orientation contract 必须使用归一化后的功能画像，避免给桌、灯、小物生成 seating 关系。
+    return object_function_profile(obj).is_seating and (
+        "sittable" in object_affordances(obj) or object_category(obj) in LIVING_SEATING
     )
 
 
 def _should_face_media(subject: dict[str, Any]) -> bool:
     category = object_category(subject)
-    return category in LIVING_SEATING or "sittable" in object_affordances(subject)
+    return _is_seating(subject) and category in LIVING_SEATING
 
 
 def _nearest_work_surface(
@@ -375,10 +369,9 @@ def _nearest_work_surface(
 
 def _is_work_surface(obj: dict[str, Any]) -> bool:
     category = object_category(obj)
-    affordances = object_affordances(obj)
     if category in WORK_SURFACE_CATEGORIES:
         return True
-    return "supportable" in affordances and not _is_media_target(obj)
+    return object_function_profile(obj).is_work_surface and not _is_media_target(obj)
 
 
 def _surface_rank(

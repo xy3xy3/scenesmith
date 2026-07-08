@@ -41,8 +41,11 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_d
     _is_side_surface_target,
     _is_computer_peripheral_subject,
     _is_computer_screen_target,
+    _is_directional_facing_subject,
+    _is_facing_relation_target,
     _is_supported_small_subject,
     _is_work_surface_target,
+    _scene_object_type,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.support import (
     _eval_object_on_support,
@@ -136,6 +139,7 @@ def _normalize_relation_type(relation_type: str) -> str:
         "face_to": "furniture_faces_furniture",
         "faces": "furniture_faces_furniture",
         "facing": "furniture_faces_furniture",
+        "front_faces": "furniture_faces_furniture",
         "media_viewing": "seating_to_media",
         "seat_faces_table": "seat_faces_surface",
         "bedside": "bedside_pair",
@@ -791,6 +795,7 @@ def _eval_annotated_dependency_relation(
             dependency,
             candidate_faces=("back",),
             allow_distance_degraded=False,
+            relation_type=relation_type,
         )
     if relation_type == "side_or_back_against_wall":
         return _eval_face_against_wall(
@@ -799,10 +804,15 @@ def _eval_annotated_dependency_relation(
             dependency,
             candidate_faces=("back", "left", "right"),
             allow_distance_degraded=False,
+            relation_type=relation_type,
         )
     if relation_type == "mounted_to_wall":
         return _eval_face_against_wall(
-            subject, target, dependency, candidate_faces=("back", "front")
+            subject,
+            target,
+            dependency,
+            candidate_faces=("back", "front"),
+            relation_type=relation_type,
         )
     if relation_type == "mounted_to_ceiling":
         return _eval_vertical_attachment(
@@ -834,6 +844,7 @@ def _eval_face_against_wall(
     *,
     candidate_faces: tuple[str, ...],
     allow_distance_degraded: bool = True,
+    relation_type: str = "back_against_wall",
 ) -> tuple[str, float, str]:
     if object_category(target) != "wall":
         return "fail", 0.3, "target is not a wall architecture object."
@@ -875,11 +886,173 @@ def _eval_face_against_wall(
             0.72,
             f"{best_face} face is near wall but loose: gap {gap:.2f}m, angle {best_angle:.0f}deg.",
         )
+    thin_mount_result = _eval_thin_wall_mounted_contact(
+        subject, target, gap=gap, max_distance=max_distance
+    )
+    if thin_mount_result is not None:
+        return thin_mount_result
+    footprint_result = _eval_wall_contact_footprint_fallback(
+        subject, target, gap=gap, max_distance=max_distance, relation_type=relation_type
+    )
+    if footprint_result is not None:
+        return footprint_result
     return (
         "fail",
         0.84,
         f"no allowed face is backed by the wall: gap {gap:.2f}m, best {best_face} angle {best_angle:.0f}deg.",
     )
+
+
+def _eval_wall_contact_footprint_fallback(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    gap: float,
+    max_distance: float,
+    relation_type: str,
+) -> tuple[str, float, str] | None:
+    # 2026-07-08 修改原因：bookshelf/floating shelf 等资产的 front/back
+    # 有时与实际贴墙短轴不一致；用 AABB 短轴只兜底存储/墙挂类贴墙物。
+    if object_category(target) != "wall" or gap > max_distance:
+        return None
+    wall_axis = _wall_normal_axis(target)
+    subject_size = _bbox_size_xyz(subject)
+    if wall_axis is None or subject_size is None:
+        return None
+    normal_index = 0 if wall_axis == "x" else 1
+    normal_span = subject_size[normal_index]
+    parallel_span = subject_size[1 - normal_index]
+    if normal_span <= 0.0 or parallel_span <= 0.0:
+        return None
+    scene_type = _scene_object_type(subject)
+    if relation_type == "mounted_to_wall" and _is_projecting_wall_mount(subject):
+        if _footprint_has_wall_contact_shape(normal_span, parallel_span, limit_m=0.35):
+            return (
+                "pass",
+                0.86,
+                (
+                    "wall-mounted footprint is flush with the wall: "
+                    f"gap {gap:.2f}m, {wall_axis}-axis projection {normal_span:.2f}m."
+                ),
+            )
+    if (
+        relation_type in {"back_against_wall", "side_or_back_against_wall"}
+        and scene_type == "furniture"
+        and _is_storage_or_work_wall_backed(subject)
+    ):
+        if _footprint_has_wall_contact_shape(normal_span, parallel_span, limit_m=0.45):
+            return (
+                "pass",
+                0.84,
+                (
+                    "storage/work furniture footprint is flush with the wall: "
+                    f"gap {gap:.2f}m, {wall_axis}-axis depth {normal_span:.2f}m."
+                ),
+            )
+    return None
+
+
+def _footprint_has_wall_contact_shape(
+    normal_span: float, parallel_span: float, *, limit_m: float
+) -> bool:
+    return (
+        normal_span <= max(limit_m, parallel_span * 0.45)
+        and parallel_span >= normal_span * 1.5
+    )
+
+
+def _is_projecting_wall_mount(subject: dict[str, Any]) -> bool:
+    if _scene_object_type(subject) != "wall_mounted":
+        return False
+    category = object_category(subject)
+    group = _category_group(subject)
+    profile = object_function_profile(subject)
+    return (
+        category in MEDIA
+        or category in {"mirror", "wall_mirror", "shelf", "wall_shelf", "wall_art"}
+        or group in {"media", "storage", "storage_surface", "work_surface"}
+        or profile.can_support_top
+    )
+
+
+def _is_storage_or_work_wall_backed(subject: dict[str, Any]) -> bool:
+    category = object_category(subject)
+    group = _category_group(subject)
+    if category in SEATING or category in BEDS:
+        return False
+    profile = object_function_profile(subject)
+    return (
+        category in SUPPORTS
+        or category in WORK_SURFACES
+        or group in {"storage", "storage_surface", "work_surface"}
+        or profile.has_internal_shelf
+        or profile.is_work_surface
+    )
+
+
+def _eval_thin_wall_mounted_contact(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    gap: float,
+    max_distance: float,
+) -> tuple[str, float, str] | None:
+    # 2026-07-08 修改原因：墙画/钟/电视等薄墙挂物的 canonical front/back
+    # 有时与实际贴墙薄轴不一致；仅对 wall_mounted 薄物体启用 AABB 薄轴兜底。
+    if (
+        _scene_object_type(subject) != "wall_mounted"
+        or object_category(target) != "wall"
+    ):
+        return None
+    if gap > max_distance:
+        return None
+    wall_axis = _wall_normal_axis(target)
+    subject_size = _bbox_size_xyz(subject)
+    if wall_axis is None or subject_size is None:
+        return None
+    normal_index = 0 if wall_axis == "x" else 1
+    normal_span = subject_size[normal_index]
+    in_plane_span = max(subject_size[1 - normal_index], subject_size[2])
+    if normal_span <= 0.0 or in_plane_span <= 0.0:
+        return None
+    if normal_span > max(0.12, in_plane_span * 0.12):
+        return None
+    return (
+        "pass",
+        0.86,
+        (
+            "thin wall-mounted footprint is flush with the wall: "
+            f"gap {gap:.2f}m, {wall_axis}-axis thickness {normal_span:.2f}m."
+        ),
+    )
+
+
+def _wall_normal_axis(target: dict[str, Any]) -> str | None:
+    size = _bbox_size_xyz(target)
+    if size is None:
+        return None
+    sx, sy, _sz = size
+    if sx <= 0.0 or sy <= 0.0:
+        return None
+    if sx <= sy * 0.25:
+        return "x"
+    if sy <= sx * 0.25:
+        return "y"
+    return None
+
+
+def _bbox_size_xyz(obj: dict[str, Any]) -> tuple[float, float, float] | None:
+    size = ((obj.get("bbox_world") or {}).get("size")) or []
+    if not isinstance(size, list) or len(size) < 3:
+        return None
+    try:
+        return (
+            abs(float(size[0])),
+            abs(float(size[1])),
+            abs(float(size[2])),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _eval_face_to_target(
@@ -1106,7 +1279,9 @@ def _relation_target_is_valid(
     if relation_type == "seat_faces_surface":
         return _is_seating_subject(subject) and _is_work_surface_target(target)
     if relation_type == "furniture_faces_furniture":
-        return object_category(target) not in {"wall", "floor", "ceiling"}
+        return _is_directional_facing_subject(subject) and _is_facing_relation_target(
+            target
+        )
     if relation_type in {
         "back_against_wall",
         "side_or_back_against_wall",

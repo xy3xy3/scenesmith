@@ -47,6 +47,25 @@ _VERTICAL_TYPES = {"上方站立", "above", "overhead"}
 # Symmetric / no-front objects: keep-clear ring on all four horizontal sides.
 _RING_DIRECTIONS = {"四周", "ring", "all"}
 _STRUCTURAL_BLOCKER_CATEGORIES = {"floor", "wall", "ceiling", "door", "window"}
+_DISPLAY_CLEARANCE_CATEGORIES = {
+    "display",
+    "laptop",
+    "monitor",
+    "notebook_computer",
+    "projection_screen",
+    "screen",
+    "tablet",
+    "tablet_computer",
+    "television",
+    "tv",
+}
+_DESKTOP_PERIPHERAL_CATEGORIES = {
+    "keyboard",
+    "mouse",
+    "mousepad",
+    "trackpad",
+    "touchpad",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -98,12 +117,32 @@ _SEATING_FRONT_DEPTH_M = 0.10
 # independent of any scene.
 _SUPPRESS_FLOOR_CLEARANCE_CATS = {
     # anchored sleeping furniture
-    "bed", "double_bed", "king_bed", "queen_bed", "twin_bed", "single_bed",
-    "bunk_bed", "daybed", "round_daybed", "trundle_bed", "toddler_bed", "crib",
+    "bed",
+    "double_bed",
+    "king_bed",
+    "queen_bed",
+    "twin_bed",
+    "single_bed",
+    "bunk_bed",
+    "daybed",
+    "round_daybed",
+    "trundle_bed",
+    "toddler_bed",
+    "crib",
     # wall-mounted decor
-    "wall_art", "wall_mirror", "wall_lamp", "wall_sconce", "wall_shelf",
-    "wall_hook_rack", "wall_clock", "mirror", "picture_frame", "painting",
-    "wall_decor", "window_curtain", "curtain",
+    "wall_art",
+    "wall_mirror",
+    "wall_lamp",
+    "wall_sconce",
+    "wall_shelf",
+    "wall_hook_rack",
+    "wall_clock",
+    "mirror",
+    "picture_frame",
+    "painting",
+    "wall_decor",
+    "window_curtain",
+    "curtain",
 }
 
 
@@ -397,7 +436,12 @@ def project_keep_clear(
 
     # Symmetric ring: reserve on all four horizontal sides.
     if direction in _RING_DIRECTIONS or "四周" in direction:
-        for axis, sign, name in ((0, 1, "+x"), (0, -1, "-x"), (1, 1, "+y"), (1, -1, "-y")):
+        for axis, sign, name in (
+            (0, 1, "+x"),
+            (0, -1, "-x"),
+            (1, 1, "+y"),
+            (1, -1, "-y"),
+        ):
             lo, hi = _expand_side(bmin, bmax, axis, sign, depth)
             if height:
                 hi[2] = lo[2] + height
@@ -509,6 +553,33 @@ def _is_clearance_blocker_candidate(obj: dict[str, Any]) -> bool:
     return object_type not in _STRUCTURAL_BLOCKER_CATEGORIES
 
 
+def _is_intended_desktop_peripheral_intrusion(
+    subject: dict[str, Any], blocker: dict[str, Any] | None
+) -> bool:
+    # 2026-07-08 修改原因：显示器的接近净空会覆盖键盘/鼠标所在桌面区域；
+    # 同一桌面的电脑外设是正常工作站搭配，不应当作显示器 clearance 阻挡。
+    if blocker is None:
+        return False
+    if _norm_category(subject) not in _DISPLAY_CLEARANCE_CATEGORIES:
+        return False
+    if _norm_category(blocker) not in _DESKTOP_PERIPHERAL_CATEGORIES:
+        return False
+    subject_surface = _parent_surface_id(subject)
+    blocker_surface = _parent_surface_id(blocker)
+    return bool(subject_surface and subject_surface == blocker_surface)
+
+
+def _norm_category(obj: dict[str, Any]) -> str:
+    return str(obj.get("category_norm") or obj.get("category") or "").strip().lower()
+
+
+def _parent_surface_id(obj: dict[str, Any]) -> str:
+    placement = obj.get("placement_info") or {}
+    if not isinstance(placement, dict):
+        return ""
+    return str(placement.get("parent_surface_id") or "").strip()
+
+
 def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Build one clearance check per object that reserves a keep-clear region.
 
@@ -547,6 +618,13 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
             if box["id"] != oid and (box.get("family") not in partners)
         ]
         hits = intrusions(keep_clear, others)
+        hits = [
+            hit
+            for hit in hits
+            if not _is_intended_desktop_peripheral_intrusion(
+                obj, objects.get(str(hit.get("object_id") or ""))
+            )
+        ]
         blockers = sorted({h["object_id"] for h in hits if h.get("object_id")})
         label = "fail" if blockers else "pass"
         ctype = record.get("clearance_type") or record.get("kind") or "clearance"

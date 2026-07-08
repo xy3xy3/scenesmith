@@ -25,6 +25,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_d
     _is_seating_subject,
     _is_work_surface_target,
 )
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.support import (
+    evaluate_support_relation,
+)
 
 ACCESS_AFFORDANCES = {"sittable", "openable", "supportable", "sleepable", "graspable"}
 ACCESS_AFFORDANCE_PRIORITY = (
@@ -399,7 +402,17 @@ def _build_explicit_target_relation_checks(
             if _relation_target_is_valid(subject, target, relation_type)
         ]
         if not compatible_targets:
-            compatible_targets = targets[:1]
+            # 2026-07-08 修改原因：保留 shelf->book 这类显式抓取目标的反向 support
+            # 解释，但不要把 floor lamp->sofa 等不兼容目标硬塞成 lamp_to_surface。
+            if relation_type == "object_on_support":
+                compatible_targets = [
+                    target
+                    for target in targets
+                    if _relation_target_is_valid(target, subject, relation_type)
+                    and _reverse_support_relation_is_plausible(subject, target)
+                ]
+            if not compatible_targets:
+                continue
         target_ids = [
             str(target.get("id") or "")
             for target in compatible_targets
@@ -431,6 +444,18 @@ def _build_explicit_target_relation_checks(
         )
         seen_check_ids.add(check_id)
     return checks
+
+
+def _reverse_support_relation_is_plausible(
+    support: dict[str, Any], item: dict[str, Any]
+) -> bool:
+    # 2026-07-08 修改原因：显式 target_relation 的反向 support 只在物体
+    # 真实位于该支撑面时生成，避免 wall shelf 误连远处桌面 notebook。
+    support_result = evaluate_support_relation(item, support, "object_on_support")
+    return (
+        support_result.label in {"pass", "degraded"}
+        and support_result.confidence >= 0.6
+    )
 
 
 def _explicit_target_relations(obj: dict[str, Any]) -> list[str]:
@@ -543,6 +568,7 @@ def _build_dependency_annotation_checks(
                 relation_type = _normalize_relation_token(
                     dependency.get("relation_type") or dependency.get("type")
                 )
+                relation_type = _normalize_dependency_relation_type(relation_type)
                 if not relation_type:
                     continue
                 if _dependency_conflicts_with_placement(
@@ -550,6 +576,15 @@ def _build_dependency_annotation_checks(
                 ):
                     continue
                 targets = _dependency_targets(subject, objects.values(), dependency)
+                if not targets:
+                    continue
+                # 2026-07-08 修改原因：资产标注里的 front_faces/functional_dependency
+                # 有时泛化到墙、装饰物或无正面的家具；生成阶段先过滤不兼容目标。
+                targets = [
+                    target
+                    for target in targets
+                    if _relation_target_is_valid(subject, target, relation_type)
+                ]
                 if not targets:
                     continue
                 target_ids = [
@@ -601,6 +636,16 @@ def _dependency_annotation_items(
     raw = hints.get(source_key)
     values = raw if isinstance(raw, list) else [raw]
     return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _normalize_dependency_relation_type(value: Any) -> str:
+    relation_type = _normalize_relation_token(value)
+    return {
+        "face_to": "furniture_faces_furniture",
+        "faces": "furniture_faces_furniture",
+        "facing": "furniture_faces_furniture",
+        "front_faces": "furniture_faces_furniture",
+    }.get(relation_type, relation_type)
 
 
 def _dependency_conflicts_with_placement(
@@ -812,7 +857,9 @@ def _grouped_workstation_checks(
 def _is_workstation_surface(obj: dict[str, Any]) -> bool:
     category = object_category(obj)
     if category in {"desk", "office_desk", "computer_desk", "writing_desk"}:
-        return True
+        # 2026-07-08 修改原因：少量桌面小物会被上游误分类为 desk；
+        # 即使命中 desk 类别，也必须尊重功能画像里的 small_placeable 否定信号。
+        return _is_work_surface_target(obj)
     text = " ".join(
         str(obj.get(key) or "").strip().lower()
         for key in ("id", "name", "description", "category", "category_norm")

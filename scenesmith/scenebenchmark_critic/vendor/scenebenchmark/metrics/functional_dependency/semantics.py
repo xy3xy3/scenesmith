@@ -21,6 +21,13 @@ def _is_work_surface_target(target: dict[str, Any]) -> bool:
     profile = object_function_profile(target)
     if (
         profile.source == "explicit"
+        and profile.is_small_placeable
+        and _scene_object_type(target) == "manipuland"
+        and not profile.is_work_surface
+    ):
+        return False
+    if (
+        profile.source == "explicit"
         and profile.is_work_surface
         and not profile.is_seating
         and not profile.is_media_target
@@ -128,11 +135,27 @@ def _is_supported_small_subject(subject: dict[str, Any]) -> bool:
     if (
         profile.source == "explicit"
         and profile.is_small_placeable
+        and _is_surface_placed_small_placeable(subject)
+        and not (
+            profile.is_seating
+            or profile.is_work_surface
+            or profile.is_media_target
+            or profile.is_sleeping_surface
+            or _is_any_lamp_object(subject)
+        )
+    ):
+        # 2026-07-08 修改原因：pen cup/tray/jewelry box 等 surface object
+        # 可能被误标为 furniture 或可收纳，但自身仍应能作为被支撑小物。
+        return _support_subject_size_is_reasonable(subject)
+    if (
+        profile.source == "explicit"
+        and profile.is_small_placeable
         and not (
             profile.can_support_top
             or profile.has_internal_shelf
             or profile.is_seating
             or profile.is_work_surface
+            or _is_any_lamp_object(subject)
         )
     ):
         return True
@@ -155,6 +178,20 @@ def _is_supported_small_subject(subject: dict[str, Any]) -> bool:
     ):
         return _support_subject_size_is_reasonable(subject)
     return False
+
+
+def _is_surface_placed_small_placeable(subject: dict[str, Any]) -> bool:
+    scene_type = _scene_object_type(subject)
+    if scene_type in {"wall_mounted", "ceiling_mounted"}:
+        return False
+    if scene_type == "manipuland":
+        return True
+    hints = subject.get("functional_hints") or {}
+    placement_class = str(hints.get("placement_class") or "").strip().lower()
+    if placement_class == "surface_object":
+        return True
+    placement = subject.get("placement_info") or {}
+    return isinstance(placement, dict) and bool(placement.get("parent_surface_id"))
 
 
 def _is_upright_reading_material(subject: dict[str, Any]) -> bool:
@@ -255,6 +292,101 @@ def _is_seating_subject(subject: dict[str, Any]) -> bool:
         return not _raw_text_has_any(subject, SEATING_SUBJECT_REJECT_HINTS)
     return object_category(subject) in SEATING and not _raw_text_has_any(
         subject, SEATING_SUBJECT_REJECT_HINTS
+    )
+
+
+def _is_directional_facing_subject(subject: dict[str, Any]) -> bool:
+    # 2026-07-08 修改原因：资产标注会给对称桌面、装饰物、落地灯生成 front-facing
+    # 依赖；只让有明确使用正面的对象参与 furniture_faces_furniture。
+    category = object_category(subject)
+    profile = object_function_profile(subject)
+    if category in {"wall", "floor", "ceiling"}:
+        return False
+    if _scene_object_type(subject) == "ceiling_mounted":
+        return False
+    if _is_seating_subject(subject) or _is_media_target(subject):
+        return True
+    if (
+        profile.source == "explicit"
+        and profile.is_small_placeable
+        and _scene_object_type(subject) == "manipuland"
+    ):
+        return False
+    if category in {
+        "bookshelf",
+        "cabinet",
+        "console",
+        "credenza",
+        "desk",
+        "dresser",
+        "media_console",
+        "nightstand",
+        "sideboard",
+        "storage_furniture",
+        "tv_stand",
+        "wardrobe",
+    }:
+        return True
+    group = _category_group(subject)
+    if group in {"seating", "media"}:
+        return True
+    if group not in {"storage", "storage_surface", "work_surface"}:
+        return False
+    if not (profile.has_internal_shelf or profile.can_support_top):
+        return False
+    return _front_access_terms(subject)
+
+
+def _is_facing_relation_target(target: dict[str, Any]) -> bool:
+    category = object_category(target)
+    if category in {"wall", "floor", "ceiling"}:
+        return False
+    if _is_seating_subject(target) or _is_media_target(target):
+        return True
+    if _is_work_surface_target(target) or _is_nightstand_target(target):
+        return True
+    if category in BEDS:
+        return True
+    if category in {
+        "bookshelf",
+        "cabinet",
+        "console",
+        "credenza",
+        "dresser",
+        "media_console",
+        "sideboard",
+        "storage_furniture",
+        "tv_stand",
+        "wardrobe",
+    }:
+        return True
+    if _scene_object_type(target) in {"wall_mounted", "ceiling_mounted"}:
+        return False
+    if is_small_object(target):
+        return False
+    group = _category_group(target)
+    return group in {"storage", "storage_surface", "work_surface"}
+
+
+def _front_access_terms(obj: dict[str, Any]) -> bool:
+    hints = obj.get("functional_hints") or {}
+    access_type = hints.get("access_type") or {}
+    primary_access = (
+        str(access_type.get("primary") or "").strip().lower()
+        if isinstance(access_type, dict)
+        else ""
+    )
+    if primary_access in {"front", "front_open", "front-open"}:
+        return True
+    surface_map = hints.get("interaction_surface_map") or {}
+    if not isinstance(surface_map, dict):
+        return False
+    front_terms = " ".join(
+        str(item or "").strip().lower() for item in surface_map.get("front") or []
+    )
+    return any(
+        term in front_terms
+        for term in ("drawer", "door", "storage", "shelf", "screen", "viewing", "work")
     )
 
 

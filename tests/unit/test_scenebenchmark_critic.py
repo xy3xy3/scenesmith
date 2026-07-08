@@ -462,7 +462,9 @@ def test_room_scene_adapter_normalizes_workstation_categories(tmp_path: Path) ->
     objects = {obj["id"]: obj for obj in case_pack["scene_geometry"]["objects"]}
 
     assert objects["computer_monitor_0"]["category_norm"] == "monitor"
-    assert objects["computer_monitor_0"]["functional_hints"]["category_group"] == "media"
+    assert (
+        objects["computer_monitor_0"]["functional_hints"]["category_group"] == "media"
+    )
     assert objects["wireless_mouse_0"]["category_norm"] == "mouse"
     assert objects["tablet_computer_0"]["category_norm"] == "tablet_computer"
 
@@ -489,10 +491,28 @@ def test_computer_peripheral_faces_screen_accepts_workstation_categories() -> No
     )
     laptop["functional_hints"]["category_group"] = "small_object"
 
-    assert _relation_target_is_valid(
-        mouse, monitor, "computer_peripheral_faces_screen"
-    )
+    assert _relation_target_is_valid(mouse, monitor, "computer_peripheral_faces_screen")
     assert _relation_target_is_valid(mouse, laptop, "computer_peripheral_faces_screen")
+
+
+def test_furniture_faces_furniture_requires_directional_subject() -> None:
+    sofa = _benchmark_obj("sofa_1", "sofa", (0.0, 0.0, 0.4), (1.6, 0.8, 0.8))
+    coffee_table = _benchmark_obj(
+        "coffee_table_1", "coffee_table", (0.0, 0.9, 0.25), (1.0, 0.5, 0.5)
+    )
+    tv_stand = _benchmark_obj(
+        "tv_stand_1", "tv_stand", (0.0, 1.2, 0.3), (1.2, 0.35, 0.6)
+    )
+    television = _benchmark_obj(
+        "wall_mounted_television_1", "television", (0.0, 1.8, 1.2), (1.0, 0.08, 0.6)
+    )
+
+    assert _relation_target_is_valid(sofa, coffee_table, "furniture_faces_furniture")
+    assert _relation_target_is_valid(sofa, tv_stand, "furniture_faces_furniture")
+    assert _relation_target_is_valid(television, sofa, "furniture_faces_furniture")
+    assert not _relation_target_is_valid(
+        coffee_table, sofa, "furniture_faces_furniture"
+    )
 
 
 def test_room_scene_adapter_respects_nonfunctional_asset_annotation(
@@ -986,6 +1006,244 @@ def test_explicit_graspable_object_relation_matches_small_placeable_target(
     assert check["relation_type"] == "object_on_support"
     assert result["evaluation_source"] == "rule_functional_dependency"
     assert result["label"] in {"pass", "degraded"}
+
+
+def test_explicit_reverse_support_relation_requires_geometric_support() -> None:
+    shelf = _benchmark_obj("shelf_1", "shelf", (0.0, 0.0, 0.5), (0.8, 0.4, 1.0))
+    shelf["functional_hints"].update(
+        {
+            "scene_object_type": "furniture",
+            "explicit_target_relation": ["book"],
+        }
+    )
+    shelf["support_regions"] = [
+        {
+            "region_id": "S_shelf",
+            "support_kind": "top_surface",
+            "height_world_z": 1.0,
+            "polygon_world_xy": [
+                [-0.4, -0.2],
+                [0.4, -0.2],
+                [0.4, 0.2],
+                [-0.4, 0.2],
+            ],
+            "clearance_above_m": 0.6,
+            "access_type": "top",
+        }
+    ]
+    far_book = _benchmark_obj("far_book_1", "book", (1.5, 0.0, 1.04), (0.2, 0.16, 0.08))
+    near_book = _benchmark_obj(
+        "near_book_1", "book", (0.0, 0.0, 1.04), (0.2, 0.16, 0.08)
+    )
+    far_book["functional_hints"].update(
+        {"functional_categories": ["graspable"], "scene_object_type": "manipuland"}
+    )
+    near_book["functional_hints"].update(
+        {"functional_categories": ["graspable"], "scene_object_type": "manipuland"}
+    )
+
+    far_checks = build_checks(
+        _benchmark_case_pack([shelf, far_book]),
+        metrics=["functional_dependency"],
+    )
+    near_checks = build_checks(
+        _benchmark_case_pack([shelf, far_book, near_book]),
+        metrics=["functional_dependency"],
+    )
+    explicit_near = [
+        check
+        for check in near_checks
+        if check.get("check_source") == "asset_explicit_target_relation"
+    ]
+
+    assert not any(
+        check.get("check_source") == "asset_explicit_target_relation"
+        and check.get("subject_id") == "shelf_1"
+        for check in far_checks
+    )
+    assert len(explicit_near) == 1
+    assert explicit_near[0]["subject_id"] == "shelf_1"
+    assert explicit_near[0]["target_ids"] == ["near_book_1"]
+
+
+def test_explicit_target_relation_skips_incompatible_floor_lamp_surface() -> None:
+    floor_lamp = _benchmark_obj(
+        "tripod_floor_lamp_1",
+        "tripod_floor_lamp",
+        (0.0, 0.0, 0.8),
+        (0.35, 0.35, 1.6),
+    )
+    floor_lamp["functional_hints"].update(
+        {
+            "category_group": "lighting",
+            "explicit_target_relation": ["sofa"],
+        }
+    )
+    sofa = _benchmark_obj("sofa_1", "sofa", (0.8, 0.0, 0.4), (1.6, 0.8, 0.8))
+
+    checks = build_checks(
+        _benchmark_case_pack([floor_lamp, sofa]),
+        metrics=["functional_dependency"],
+    )
+
+    assert not any(
+        check.get("check_source") == "asset_explicit_target_relation"
+        and check.get("subject_id") == "tripod_floor_lamp_1"
+        for check in checks
+    )
+
+
+def test_small_placeable_profile_overrides_noisy_work_surface_category() -> None:
+    desk = _benchmark_obj("desk_1", "desk", (2.0, 2.0, 0.4), (1.2, 0.8, 0.8))
+    desk["functional_hints"].update(
+        {"category_group": "work_surface", "scene_object_type": "furniture"}
+    )
+    desk["support_regions"] = [
+        {
+            "region_id": "S_desk",
+            "support_kind": "top_surface",
+            "height_world_z": 0.8,
+            "polygon_world_xy": [
+                [1.4, 1.6],
+                [2.6, 1.6],
+                [2.6, 2.4],
+                [1.4, 2.4],
+            ],
+            "clearance_above_m": 1.0,
+            "access_type": "top",
+        }
+    ]
+    pen_cup = _benchmark_obj("pen_cup_1", "desk", (2.0, 2.0, 0.85), (0.10, 0.08, 0.10))
+    pen_cup["functional_hints"].update(
+        {
+            "category_group": "object",
+            "scene_object_type": "manipuland",
+            "placement_class": "surface_object",
+            "explicit_target_relation": ["desk"],
+            "orientation_dependencies": [
+                {
+                    "relation_type": "front_faces",
+                    "target_kind": "object",
+                    "target_category": ["desk"],
+                    "subject_face": "front",
+                }
+            ],
+        }
+    )
+    pen_cup["object_function_profile"] = {
+        "can_support_top": True,
+        "has_internal_shelf": False,
+        "is_small_placeable": True,
+        "is_seating": False,
+        "is_work_surface": False,
+        "is_media_target": False,
+        "is_bedside_surface": False,
+        "is_sleeping_surface": False,
+    }
+    pen_cup["placement_info"] = {
+        "parent_surface_id": "S_desk",
+        "placement_method": "surface_placement",
+    }
+    chair = _benchmark_obj(
+        "office_chair_1", "office_chair", (2.0, 1.15, 0.45), (0.5, 0.5, 0.9)
+    )
+    chair["functional_hints"]["category_group"] = "seating"
+
+    case_pack = _benchmark_case_pack([desk, pen_cup, chair])
+    checks = build_checks(case_pack, metrics=["functional_dependency"])
+    check_ids = {check["check_id"] for check in checks}
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([desk, pen_cup, chair], checks),
+        metrics=["functional_dependency"],
+    )
+    support_result = next(
+        result
+        for result in results
+        if result["check_id"] == "fd_pen_cup_1_desk_1_object_on_support"
+    )
+
+    assert "fd_pen_cup_1_desk_1_object_on_support" in check_ids
+    assert not any(
+        check.get("subject_id") == "pen_cup_1"
+        and check.get("relation_type") == "workstation"
+        for check in checks
+    )
+    assert not any(
+        check.get("subject_id") == "pen_cup_1"
+        and check.get("check_source") == "asset_orientation_dependency"
+        for check in checks
+    )
+    assert support_result["label"] == "pass"
+
+
+def test_surface_placed_small_placeable_furniture_can_be_supported() -> None:
+    dresser = _benchmark_obj("dresser_1", "dresser", (0.0, 0.0, 0.35), (1.4, 0.5, 0.7))
+    dresser["functional_hints"].update(
+        {"scene_object_type": "furniture", "category_group": "storage"}
+    )
+    dresser["support_regions"] = [
+        {
+            "region_id": "S_dresser",
+            "support_kind": "top_surface",
+            "height_world_z": 0.7,
+            "polygon_world_xy": [
+                [-0.7, -0.25],
+                [0.7, -0.25],
+                [0.7, 0.25],
+                [-0.7, 0.25],
+            ],
+            "clearance_above_m": 0.8,
+            "access_type": "top",
+        }
+    ]
+    jewelry_box = _benchmark_obj(
+        "jewelry_box_1",
+        "jewelry_box_jewelry",
+        (0.0, 0.0, 0.73),
+        (0.16, 0.12, 0.06),
+    )
+    jewelry_box["functional_hints"].update(
+        {
+            "category_group": "storage",
+            "scene_object_type": "furniture",
+            "placement_class": "surface_object",
+            "functional_categories": [
+                "containable",
+                "graspable",
+                "openable",
+                "supportable",
+            ],
+        }
+    )
+    jewelry_box["object_function_profile"] = {
+        "can_support_top": False,
+        "has_internal_shelf": True,
+        "is_small_placeable": True,
+        "is_seating": False,
+        "is_work_surface": False,
+        "is_media_target": False,
+        "is_bedside_surface": False,
+        "is_sleeping_surface": False,
+    }
+    jewelry_box["placement_info"] = {
+        "parent_surface_id": "S_dresser",
+        "placement_method": "surface_placement",
+    }
+    check = {
+        "check_id": "fd_jewelry_box_dresser",
+        "metric": "functional_dependency",
+        "subject_id": "jewelry_box_1",
+        "target_ids": ["dresser_1"],
+        "relation_type": "object_on_support",
+    }
+
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([jewelry_box, dresser], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert _relation_target_is_valid(jewelry_box, dresser, "object_on_support")
+    assert result["label"] == "pass"
 
 
 def test_build_checks_materializes_grouped_fd_relations() -> None:
@@ -1529,6 +1787,65 @@ def test_orientation_contract_keeps_living_room_seat_target_stable(
     assert first_check["target_ids"] == ["tv_stand_0"]
     assert second_check["relation_type"] == "seating_to_media"
     assert second_check["target_ids"] == ["tv_stand_0"]
+
+
+def test_orientation_contract_ignores_noisy_sittable_affordance_on_non_seats(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.room_type = "living_room"
+    scene.text_description = "A living room with an armchair, TV, and coffee table."
+    scene.objects.clear()
+    for obj in [
+        _box_object(
+            "armchair_0",
+            "armchair",
+            ObjectType.FURNITURE,
+            center=(1.2, 0.4, 0.4),
+            size=(0.8, 0.8, 0.8),
+            yaw_deg=90.0,
+        ),
+        _box_object(
+            "tv_stand_0",
+            "tv stand",
+            ObjectType.FURNITURE,
+            center=(0.0, -1.7, 0.3),
+            size=(1.4, 0.35, 0.6),
+        ),
+        _box_object(
+            "coffee_table_0",
+            "coffee table",
+            ObjectType.FURNITURE,
+            center=(0.0, 0.0, 0.25),
+            size=(1.1, 0.55, 0.5),
+        ),
+    ]:
+        scene.add_object(obj)
+
+    config = CriticConfig(
+        enabled=True,
+        metrics=("functional_dependency",),
+        extra={"stable_orientation_contracts": True},
+    )
+    case_pack = room_scene_to_case_pack(scene, stage="final_scene")
+    for record in case_pack["scene_geometry"]["objects"]:
+        if record["id"] in {"tv_stand_0", "coffee_table_0"}:
+            # 2026-07-08 修改原因：复现资产标注把非座椅误带 sittable 的回归场景。
+            record["functional_hints"]["affordances"] = ["sittable", "supportable"]
+            record["functional_hints"]["functional_categories"] = [
+                "sittable",
+                "supportable",
+            ]
+            record["object_function_profile"]["is_seating"] = False
+
+    stabilize_orientation_contracts(case_pack, scene, config, stage="final_scene")
+
+    contract_subjects = [
+        check["subject_id"]
+        for check in case_pack["checks"]
+        if check.get("check_source") == CONTRACT_CHECK_SOURCE
+    ]
+    assert contract_subjects == ["armchair_0"]
 
 
 def _contract_check_for(case_pack: dict[str, Any], subject_id: str) -> dict[str, Any]:
@@ -2908,6 +3225,51 @@ def test_dependency_annotation_checks_skip_floor_attachment_for_surface_object()
     assert vase_checks[0]["target_ids"] == ["table_1"]
 
 
+def test_dependency_annotation_skips_nondirectional_front_faces_noise() -> None:
+    coffee_table = _benchmark_obj(
+        "coffee_table_1", "coffee_table", (2.0, 2.0, 0.25), (1.0, 0.55, 0.5)
+    )
+    coffee_table["functional_hints"]["orientation_dependencies"] = [
+        {
+            "relation_type": "front_faces",
+            "target_kind": "object",
+            "target_category": ["sofa"],
+            "subject_face": "front",
+            "max_distance_m": 2.0,
+        }
+    ]
+    sofa = _benchmark_obj("sofa_1", "sofa", (2.0, 3.0, 0.4), (1.6, 0.8, 0.8))
+    sofa["functional_hints"].update(
+        {
+            "category_group": "seating",
+            "orientation_dependencies": [
+                {
+                    "relation_type": "front_faces",
+                    "target_kind": "object",
+                    "target_category": ["coffee_table"],
+                    "subject_face": "front",
+                    "max_distance_m": 2.0,
+                }
+            ],
+        }
+    )
+
+    checks = build_checks(
+        _benchmark_case_pack([coffee_table, sofa]),
+        metrics=["functional_dependency"],
+    )
+    orientation_checks = [
+        check
+        for check in checks
+        if check.get("check_source") == "asset_orientation_dependency"
+    ]
+
+    observed = [
+        (check["subject_id"], check["relation_type"]) for check in orientation_checks
+    ]
+    assert observed == [("sofa_1", "furniture_faces_furniture")]
+
+
 def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> None:
     desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
     check = {
@@ -3006,6 +3368,131 @@ def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None
 
     assert pass_result["label"] == "pass"
     assert fail_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_wall_mounted_thin_axis_fallback() -> None:
+    wall = _benchmark_obj("north_wall", "wall", (0.0, 2.0, 1.5), (4.0, 0.1, 3.0))
+    check = {
+        "check_id": "fd_wall_art_mount",
+        "metric": "functional_dependency",
+        "subject_id": "wall_art_1",
+        "target_ids": ["north_wall"],
+        "relation_type": "mounted_to_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 10.0,
+                "max_distance_m": 0.05,
+            }
+        },
+    }
+    wall_art = _benchmark_obj(
+        "wall_art_1",
+        "wall_art",
+        (0.0, 1.93, 1.4),
+        (0.8, 0.04, 0.5),
+        yaw=0.0,
+    )
+    wall_art["functional_hints"]["scene_object_type"] = "wall_mounted"
+    furniture_panel = _benchmark_obj(
+        "wall_art_1",
+        "wall_art",
+        (0.0, 1.93, 1.4),
+        (0.8, 0.04, 0.5),
+        yaw=0.0,
+    )
+    furniture_panel["functional_hints"]["scene_object_type"] = "furniture"
+
+    wall_mounted_result = _run_direct_case_pack(
+        _benchmark_case_pack([wall_art, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+    furniture_result = _run_direct_case_pack(
+        _benchmark_case_pack([furniture_panel, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert wall_mounted_result["label"] == "pass"
+    assert "thin wall-mounted footprint" in wall_mounted_result["reason"]
+    assert furniture_result["label"] == "fail"
+
+
+def test_rule_functional_dependency_wall_mounted_shelf_projection_fallback() -> None:
+    wall = _benchmark_obj("west_wall", "wall", (0.0, 2.0, 1.5), (0.1, 4.0, 3.0))
+    shelf = _benchmark_obj(
+        "floating_shelf_1",
+        "shelf",
+        (0.14, 2.0, 1.2),
+        (0.18, 0.8, 0.04),
+        yaw=90.0,
+    )
+    shelf["functional_hints"].update(
+        {
+            "scene_object_type": "wall_mounted",
+            "category_group": "storage_surface",
+        }
+    )
+    check = {
+        "check_id": "fd_floating_shelf_mount",
+        "metric": "functional_dependency",
+        "subject_id": "floating_shelf_1",
+        "target_ids": ["west_wall"],
+        "relation_type": "mounted_to_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 5.0,
+                "max_distance_m": 0.05,
+            }
+        },
+    }
+
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([shelf, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert result["label"] == "pass"
+    assert "wall-mounted footprint is flush" in result["reason"]
+
+
+def test_rule_functional_dependency_storage_backed_by_wall_footprint_fallback() -> None:
+    wall = _benchmark_obj("east_wall", "wall", (2.5, 0.0, 1.5), (0.1, 4.0, 3.0))
+    bookshelf = _benchmark_obj(
+        "bookshelf_1",
+        "bookshelf",
+        (2.30, 0.0, 0.8),
+        (0.35, 1.0, 1.6),
+        yaw=0.0,
+    )
+    bookshelf["functional_hints"].update(
+        {
+            "scene_object_type": "furniture",
+            "category_group": "storage_surface",
+        }
+    )
+    check = {
+        "check_id": "fd_bookshelf_wall",
+        "metric": "functional_dependency",
+        "subject_id": "bookshelf_1",
+        "target_ids": ["east_wall"],
+        "relation_type": "back_against_wall",
+        "evidence": {
+            "dependency": {
+                "subject_face": "back",
+                "max_angle_deg": 5.0,
+                "max_distance_m": 0.05,
+            }
+        },
+    }
+
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([bookshelf, wall], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    assert result["label"] == "pass"
+    assert "storage/work furniture footprint is flush" in result["reason"]
 
 
 def test_rule_functional_dependency_sideboard_back_against_north_wall_passes() -> None:
@@ -4961,6 +5448,50 @@ def test_room_stage_reports_do_not_collide_across_rooms(tmp_path: Path) -> None:
     )
     assert saved_a["scope"] == "room:room_a"
     assert saved_b["scope"] == "room:room_b"
+
+
+def test_monitor_clearance_ignores_same_surface_desktop_peripherals() -> None:
+    monitor = _benchmark_obj(
+        "computer_monitor_1", "monitor", (0.0, 0.0, 0.9), (0.4, 0.08, 0.3)
+    )
+    monitor["metadata"] = {
+        "clearance": {
+            "clearance_type": "接近",
+            "direction": "前",
+            "depth_m": 0.45,
+            "width_m": 0.52,
+            "height_m": 1.8,
+            "confidence": "high",
+            "inherits_from_support": False,
+        }
+    }
+    monitor["object_type"] = "manipuland"
+    monitor["functional_hints"]["scene_object_type"] = "manipuland"
+    monitor["placement_info"] = {"parent_surface_id": "desk_top"}
+    keyboard = _benchmark_obj(
+        "keyboard_1", "keyboard", (0.0, 0.18, 0.75), (0.32, 0.12, 0.04)
+    )
+    keyboard["object_type"] = "manipuland"
+    keyboard["functional_hints"]["scene_object_type"] = "manipuland"
+    keyboard["placement_info"] = {"parent_surface_id": "desk_top"}
+    book = _benchmark_obj("book_1", "book", (0.18, 0.18, 0.75), (0.16, 0.12, 0.04))
+    book["object_type"] = "manipuland"
+    book["functional_hints"]["scene_object_type"] = "manipuland"
+    book["placement_info"] = {"parent_surface_id": "desk_top"}
+
+    checks = build_checks(
+        _benchmark_case_pack([monitor, keyboard, book]),
+        metrics=["interaction_clearance"],
+    )
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([monitor, keyboard, book], checks),
+        metrics=["interaction_clearance"],
+    )[0]
+
+    assert checks[0]["target_ids"] == ["book_1"]
+    assert result["label"] == "fail"
+    assert result["blocking_objects"] == ["book_1"]
+    assert "keyboard_1" not in result["reason"]
 
 
 def test_prompt_context_is_concise(tmp_path: Path) -> None:
