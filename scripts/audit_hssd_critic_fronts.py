@@ -3,6 +3,8 @@
 
 # 2026-07-08 修改原因：新增 HSSD/critic front 审查脚本，支持用 HSSD embedding
 # 抽样椅子资产，并导出多视角渲染与 HTML 报告，方便人工核验正面标注是否正确。
+# 2026-07-08 修改原因：zvec/clip 检索改用 HssdZvecSearcher / clip_get_top_k_similar_meshes，
+# 走 WordNet object_categories 过滤，避免 wall-art 等非目标类混入检索结果。
 """
 
 from __future__ import annotations
@@ -12,11 +14,9 @@ import html
 import json
 import logging
 import random
+import re
 import shutil
 import tempfile
-import time
-import urllib.error
-import urllib.request
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,23 +24,53 @@ from typing import Any
 
 import numpy as np
 import trimesh
-import zvec
+
+from PIL import Image, ImageEnhance, ImageOps
 
 from scenesmith.agent_utils.blender.renderer import BlenderRenderer
-from scenesmith.agent_utils.clip_embeddings import (
-    compute_clip_similarities,
-    get_text_embedding,
+from scenesmith.agent_utils.hssd_retrieval.clip_similarity import (
+    get_top_k_similar_meshes as clip_get_top_k,
 )
+from scenesmith.agent_utils.hssd_retrieval.config import HssdZvecConfig
 from scenesmith.agent_utils.hssd_retrieval.data_loader import (
     HssdMeshMetadata,
+    HssdPreprocessedData,
     construct_hssd_mesh_path,
     load_preprocessed_data,
+)
+from scenesmith.agent_utils.hssd_retrieval.zvec_similarity import (
+    HssdZvecSearcher,
 )
 from scenesmith.scenebenchmark_critic.asset_library_annotations import (
     get_hssd_asset_annotations,
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# 2026-07-08 修改原因：默认审计从单一 chair query 扩展为多类少量抽样。
+DEFAULT_AUDIT_KEYWORDS = ["bed", "chair", "Cabinet", "Monitor", "TV"]
+
+# 2026-07-08 修改原因：zvec 语义召回会把 bedroom/wall-art 等相关但非目标类资产带入。
+DEFAULT_KEYWORD_FILTER_TERMS = {
+    "bed": ["bed", "mattress", "daybed", "bunk", "headboard"],
+    "chair": ["chair", "armchair", "stool", "seat"],
+    "cabinet": [
+        "cabinet",
+        "dresser",
+        "wardrobe",
+        "armoire",
+        "cupboard",
+        "sideboard",
+        "drawer",
+    ],
+    "monitor": ["monitor", "screen", "display"],
+    "tv": ["tv", "television", "media console", "tv stand"],
+}
+
+# 2026-07-08 修改原因：白色 HSSD 资产在默认高亮透明背景下难以人工辨认。
+AUDIT_LIGHT_ENERGY = 850.0
+AUDIT_BACKGROUND_GREY = 104
+
 
 VIEW_SPECS: list[tuple[str, np.ndarray, str]] = [
     ("0_top", np.array([0.0, 0.0, 1.0]), "top / +Z"),
@@ -68,118 +98,47 @@ class FrontMatch:
     note: str | None = None
 
 
-class LlamaTextEmbeddingClient:
-    """Minimal llama.cpp embeddings client for zvec text retrieval."""
+@dataclass
+class AuditTarget:
+    """One asset selected for a keyword audit run."""
 
-    def __init__(
-        self,
-        base_url: str,
-        timeout_seconds: float = 120.0,
-        embd_normalize: int = 2,
-        request_retries: int = 2,
-        retry_sleep_seconds: float = 1.0,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.timeout_seconds = timeout_seconds
-        self.embd_normalize = embd_normalize
-        self.request_retries = request_retries
-        self.retry_sleep_seconds = retry_sleep_seconds
-
-    def embed_text(self, text: str) -> list[float]:
-        payloads = [
-            {"content": text, "embd_normalize": self.embd_normalize},
-            {
-                "content": {"prompt_string": text, "multimodal_data": []},
-                "embd_normalize": self.embd_normalize,
-            },
-            {"input": text, "embd_normalize": self.embd_normalize},
-        ]
-
-        last_error: Exception | None = None
-        for payload in payloads:
-            try:
-                body = self._post_embeddings(payload)
-                embedding = extract_embedding(json.loads(body))
-                if embedding:
-                    return embedding
-                last_error = RuntimeError("Empty embedding response")
-            except Exception as exc:
-                last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Failed to embed text query")
-
-    def _post_embeddings(self, payload: dict[str, Any]) -> str:
-        request = urllib.request.Request(
-            f"{self.base_url}/embeddings",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        last_error: Exception | None = None
-        for attempt in range(self.request_retries + 1):
-            try:
-                with urllib.request.urlopen(
-                    request, timeout=self.timeout_seconds
-                ) as response:
-                    return response.read().decode("utf-8")
-            except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")
-                last_error = RuntimeError(
-                    f"Embedding request failed: HTTP {exc.code}: {detail[:500]}"
-                )
-                if 400 <= exc.code < 500 and exc.code not in {408, 429}:
-                    raise last_error from exc
-            except (TimeoutError, urllib.error.URLError) as exc:
-                last_error = RuntimeError(f"Embedding request failed: {exc}")
-
-            if attempt < self.request_retries:
-                time.sleep(self.retry_sleep_seconds * (attempt + 1))
-
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Embedding request failed")
+    mesh_id: str
+    score: float
+    keyword: str
 
 
-def extract_embedding(response: Any) -> list[float]:
-    if isinstance(response, list) and response and isinstance(response[0], dict):
-        embedding = response[0].get("embedding") or response[0].get("embeddings")
-    elif isinstance(response, list):
-        embedding = response
-    elif isinstance(response, dict):
-        embedding = (
-            response.get("embedding")
-            or response.get("embeddings")
-            or (response.get("data") or [{}])[0].get("embedding")
-        )
-    else:
-        embedding = None
-
-    while (
-        isinstance(embedding, list)
-        and len(embedding) == 1
-        and isinstance(embedding[0], list)
-    ):
-        embedding = embedding[0]
-
-    if not isinstance(embedding, list):
-        return []
-    return [float(value) for value in embedding]
+# 2026-07-08 修改原因：将默认审计关键词映射到 HSSD
+# preprocessed_data.object_categories 里的过滤类别，配合
+# HssdZvecSearcher / clip_get_top_k 按 WordNet 键过滤。
+_KEYWORD_HSSD_CATEGORY: dict[str, str] = {
+    "bed": "large_objects",
+    "chair": "large_objects",
+    "cabinet": "large_objects",
+    "monitor": "small_objects",
+    "tv": "large_objects",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit HSSD chair front annotations by sampling assets with HSSD "
+            "Audit HSSD front annotations by sampling assets with HSSD "
             "retrieval, rendering standard views, and generating an HTML report."
         )
     )
     parser.add_argument(
+        "--keyword",
+        action="append",
+        default=[],
+        help=(
+            "Keyword to audit. Repeat or pass comma-separated values. "
+            f"Defaults to: {', '.join(DEFAULT_AUDIT_KEYWORDS)}."
+        ),
+    )
+    parser.add_argument(
         "--query",
-        default="dining chair",
-        help="Text query used for HSSD embedding retrieval.",
+        default=None,
+        help="Backward-compatible single keyword alias appended to --keyword.",
     )
     parser.add_argument(
         "--search-mode",
@@ -190,14 +149,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=40,
-        help="Top-k retrieved assets to build the sampling pool from.",
+        default=20,
+        help="Top-k retrieved assets per keyword to build each sampling pool from.",
     )
     parser.add_argument(
         "--sample-count",
         type=int,
-        default=12,
-        help="How many assets to audit from the retrieved pool.",
+        default=3,
+        help="How many assets to audit per keyword from the retrieved pool.",
     )
     parser.add_argument(
         "--seed",
@@ -207,8 +166,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--name-filter",
-        default="chair",
-        help="Optional case-insensitive substring filter on name/wordnet/id.",
+        default=None,
+        help=(
+            "Optional comma-separated substring filter on name/wordnet/id. "
+            "Overrides the default per-keyword filters."
+        ),
     )
     parser.add_argument(
         "--asset-id",
@@ -242,7 +204,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output/hssd_critic_front_audit"),
+        default=Path("outputs/hssd_critic_front_audit"),
         help="Directory to store rendered images, JSON, and HTML report.",
     )
     parser.add_argument(
@@ -262,34 +224,43 @@ def parse_args() -> argparse.Namespace:
 
 def load_hssd_metadata_index(
     preprocessed_path: Path,
-) -> tuple[list[str], dict[str, HssdMeshMetadata]]:
-    index_path = preprocessed_path / "hssd_wnsynsetkey_index.json"
-    if not index_path.exists():
-        raise FileNotFoundError(f"Index file not found: {index_path}")
-
-    with index_path.open("r", encoding="utf-8") as file:
-        index_data = json.load(file)
-
+) -> tuple[list[str], dict[str, HssdMeshMetadata], HssdPreprocessedData]:
+    # 2026-07-08 修改原因：改用 load_preprocessed_data 统一加载，
+    # 返回 HssdPreprocessedData 供 zvec/clip searcher 按 WordNet 类别过滤。
+    preprocessed = load_preprocessed_data(preprocessed_path=preprocessed_path)
     metadata_by_id: dict[str, HssdMeshMetadata] = {}
     object_ids: list[str] = []
-    for wordnet_key, entries in index_data.items():
-        for entry in entries:
-            metadata = HssdMeshMetadata(
-                mesh_id=entry["id"],
-                name=entry.get("name", ""),
-                up=entry.get("up", ""),
-                front=entry.get("front", ""),
-                wordnet_key=wordnet_key,
-            )
+    for wordnet_key, entries in preprocessed.metadata_by_wordnet.items():
+        for metadata in entries:
             metadata_by_id[metadata.mesh_id] = metadata
             object_ids.append(metadata.mesh_id)
+    return object_ids, metadata_by_id, preprocessed
 
-    return object_ids, metadata_by_id
+
+def _split_filter_terms(value: str | list[str] | None) -> list[str]:
+    if value is None:
+        return []
+    raw_values = value if isinstance(value, list) else [value]
+    terms: list[str] = []
+    for raw_value in raw_values:
+        for part in str(raw_value).split(","):
+            term = part.strip().lower()
+            if term:
+                terms.append(term)
+    return terms
 
 
-def load_hssd_clip_index(preprocessed_path: Path) -> tuple[np.ndarray, list[str]]:
-    preprocessed = load_preprocessed_data(preprocessed_path=preprocessed_path)
-    return preprocessed.clip_embeddings, preprocessed.embedding_index
+def _default_filter_terms_for_keyword(keyword: str) -> list[str]:
+    normalized = keyword.strip().lower()
+    return list(DEFAULT_KEYWORD_FILTER_TERMS.get(normalized, [normalized]))
+
+
+def _effective_name_filter(
+    keyword: str, explicit_name_filter: str | None
+) -> list[str]:
+    if explicit_name_filter is not None:
+        return _split_filter_terms(explicit_name_filter)
+    return _default_filter_terms_for_keyword(keyword)
 
 
 def _filter_and_sample_ranked_assets(
@@ -298,10 +269,17 @@ def _filter_and_sample_ranked_assets(
     top_k: int,
     sample_count: int,
     seed: int,
-    name_filter: str | None,
+    name_filter: str | list[str] | None,
 ) -> list[tuple[str, float]]:
     filtered: list[tuple[str, float]] = []
-    filter_text = (name_filter or "").strip().lower()
+    filter_terms = _split_filter_terms(name_filter)
+    # 2026-07-08 修改原因：用 \b 词边界匹配，防止 "bed" 匹配到
+    # "bedside" 之类子串，避免 nightstand 等带 bedside 的非床资产误入。
+    _filter_re: re.Pattern[str] | None = None
+    if filter_terms:
+        _filter_re = re.compile(
+            r"\b(?:" + "|".join(re.escape(term) for term in filter_terms) + r")\b"
+        )
     for mesh_id, score in ranked:
         metadata = metadata_by_id.get(mesh_id)
         haystack = " ".join(
@@ -313,7 +291,7 @@ def _filter_and_sample_ranked_assets(
             ]
             if part
         ).lower()
-        if filter_text and filter_text not in haystack:
+        if _filter_re and not _filter_re.search(haystack):
             continue
         filtered.append((mesh_id, score))
         if len(filtered) >= top_k:
@@ -321,7 +299,8 @@ def _filter_and_sample_ranked_assets(
 
     if not filtered:
         raise RuntimeError(
-            f"No HSSD assets matched name_filter='{name_filter}' within the retrieval pool."
+            f"No HSSD assets matched name_filter={filter_terms} "
+            f"(word-boundary) within the retrieval pool."
         )
 
     if sample_count >= len(filtered):
@@ -335,25 +314,24 @@ def _filter_and_sample_ranked_assets(
 
 def retrieve_assets_clip(
     query: str,
-    embeddings: np.ndarray,
-    object_ids: list[str],
     metadata_by_id: dict[str, HssdMeshMetadata],
     top_k: int,
     sample_count: int,
     seed: int,
-    name_filter: str | None,
+    name_filter: str | list[str] | None,
+    preprocessed_data: HssdPreprocessedData,
+    hssd_category: str | None,
 ) -> list[tuple[str, float]]:
-    query_embedding = get_text_embedding(query)
-    similarities = compute_clip_similarities(
-        query_embedding=query_embedding,
-        embeddings=embeddings,
-        indices=list(range(len(object_ids))),
+    # 2026-07-08 修改原因：改用 clip_get_top_k_similar_meshes，
+    # 按 WordNet object_categories 过滤，避免无关类别混入。
+    # WordNet 类别过滤 + name_filter 两层过滤会大幅削减候选数。
+    fetch_k = max(top_k * 10, sample_count * 10, top_k)
+    ranked = clip_get_top_k(
+        text_description=query,
+        preprocessed_data=preprocessed_data,
+        category=hssd_category,
+        top_k=fetch_k,
     )
-
-    ranked = [
-        (object_ids[idx], float(score))
-        for idx, score in sorted(similarities.items(), key=lambda item: item[1], reverse=True)
-    ]
     if not ranked:
         raise RuntimeError(
             f"No HSSD assets matched query='{query}' via clip retrieval."
@@ -375,33 +353,22 @@ def retrieve_assets_zvec(
     top_k: int,
     sample_count: int,
     seed: int,
-    name_filter: str | None,
-    collection_path: Path,
-    embedding_base_url: str,
+    name_filter: str | list[str] | None,
+    preprocessed_data: HssdPreprocessedData,
+    zvec_searcher: HssdZvecSearcher,
+    hssd_category: str | None,
 ) -> list[tuple[str, float]]:
-    client = LlamaTextEmbeddingClient(base_url=embedding_base_url)
-    query_embedding = client.embed_text(query)
-    collection = zvec.open(
-        path=str(collection_path),
-        option=zvec.CollectionOption(read_only=True, enable_mmap=True),
+    # 2026-07-08 修改原因：改用 HssdZvecSearcher.get_top_k_similar_meshes，
+    # 按 WordNet object_categories 过滤，避免 wall-art 等非目标类混入。
+    # 使用较大乘数，因为 searcher 内部有 top_k_factor=4 放大，且
+    # WordNet 类别过滤 + name_filter 两层过滤会大幅削减候选数。
+    fetch_k = max(top_k * 10, sample_count * 10, top_k)
+    ranked = zvec_searcher.get_top_k_similar_meshes(
+        text_description=query,
+        preprocessed_data=preprocessed_data,
+        category=hssd_category,
+        top_k=fetch_k,
     )
-    docs = collection.query(
-        queries=zvec.Query(field_name="embedding", vector=query_embedding),
-        topk=max(top_k * 4, sample_count * 4, top_k),
-        output_fields=["asset_id", "name", "wordnet_key"],
-        include_vector=False,
-    )
-
-    ranked: list[tuple[str, float]] = []
-    seen: set[str] = set()
-    for doc in docs:
-        fields = doc.fields or {}
-        mesh_id = str(fields.get("asset_id") or doc.id or "").strip().lower()
-        if not mesh_id or mesh_id in seen:
-            continue
-        seen.add(mesh_id)
-        ranked.append((mesh_id, float(doc.score or 0.0)))
-
     if not ranked:
         raise RuntimeError(
             f"No HSSD assets matched query='{query}' via zvec retrieval."
@@ -432,8 +399,9 @@ def _vector_to_axis_string(vector: np.ndarray) -> str:
 
 
 def _glb_vector_to_blender_vector(glb_vector: np.ndarray) -> np.ndarray:
-    # GLB (X, Y, Z) -> Blender (X, Z, -Y)
-    return np.array([glb_vector[0], glb_vector[2], -glb_vector[1]], dtype=float)
+    # 2026-07-08 修改原因：Blender glTF import 将 GLB/HSSD (X,Y,Z)
+    # 映射为 Blender (X,-Z,Y)，否则椅子 front 会被审计视图反选到椅背。
+    return np.array([glb_vector[0], -glb_vector[2], glb_vector[1]], dtype=float)
 
 
 def parse_vector(value: Any) -> np.ndarray | None:
@@ -529,6 +497,22 @@ def build_front_match(source_name: str, vector_value: Any) -> FrontMatch:
     )
 
 
+def improve_audit_image_visibility(image_path: Path) -> None:
+    """Composite transparent renders onto grey and add mild local contrast."""
+    image = Image.open(image_path).convert("RGBA")
+    alpha = image.getchannel("A")
+    background = Image.new(
+        "RGB",
+        image.size,
+        (AUDIT_BACKGROUND_GREY, AUDIT_BACKGROUND_GREY, AUDIT_BACKGROUND_GREY),
+    )
+    background.paste(image.convert("RGB"), mask=alpha)
+    background = ImageOps.autocontrast(background, cutoff=0.2)
+    background = ImageEnhance.Contrast(background).enhance(1.18)
+    background = ImageEnhance.Sharpness(background).enhance(1.1)
+    background.save(image_path)
+
+
 def render_analysis_views(
     mesh_path: Path,
     output_dir: Path,
@@ -542,9 +526,12 @@ def render_analysis_views(
         elevation_degrees=20.0,
         num_side_views=4,
         include_vertical_views=True,
+        light_energy=AUDIT_LIGHT_ENERGY,
         width=width,
         height=height,
     )
+    for path in image_paths:
+        improve_audit_image_visibility(path)
     return {path.stem: path for path in image_paths}
 
 
@@ -605,7 +592,9 @@ def render_clean_views_from_front_axis(
     if glb_front_vector is None:
         return {}
 
-    target_glb_front = np.array([0.0, 0.0, 1.0], dtype=float)
+    # 2026-07-08 修改原因：render_named_views_for_embedding 的 front 相机在
+    # Blender +Y；该方向对应导入前的 GLB -Z，因此 clean front 需对齐到 GLB -Z。
+    target_glb_front = np.array([0.0, 0.0, -1.0], dtype=float)
     aligned_mesh = mesh.copy()
     aligned_mesh.apply_transform(
         _rotation_matrix_from_vectors(glb_front_vector, target_glb_front)
@@ -622,12 +611,14 @@ def render_clean_views_from_front_axis(
             view_names=["front", "top"],
             width=width,
             height=height,
+            light_energy=AUDIT_LIGHT_ENERGY,
         )
 
     result: dict[str, str] = {}
     for view_name in ("front", "top"):
         path = output_dir / f"{view_name}.png"
         if path.exists():
+            improve_audit_image_visibility(path)
             result[view_name] = path.name
     return result
 
@@ -649,6 +640,7 @@ def copy_selected_view(
 def build_asset_summary(
     mesh_id: str,
     score: float,
+    keyword: str,
     metadata: HssdMeshMetadata | None,
     record: dict[str, Any] | None,
     rendered_views: dict[str, Path],
@@ -685,6 +677,7 @@ def build_asset_summary(
 
     return {
         "mesh_id": mesh_id,
+        "keyword": keyword,
         "retrieval_score": score,
         "name": metadata.name if metadata is not None else "",
         "wordnet_key": metadata.wordnet_key if metadata is not None else "",
@@ -727,6 +720,33 @@ def write_json(path: Path, payload: Any) -> None:
     )
 
 
+def write_asset_info_files(asset_dir: Path, asset: dict[str, Any]) -> None:
+    # 2026-07-08 修改原因：单独打开某个 asset 输出目录时，需要直接看到资产名称。
+    info = {
+        "keyword": asset.get("keyword"),
+        "mesh_id": asset.get("mesh_id"),
+        "name": asset.get("name"),
+        "wordnet_key": asset.get("wordnet_key"),
+        "retrieval_score": asset.get("retrieval_score"),
+        "critic_front_axis": (asset.get("critic_match") or {}).get("raw_vector"),
+        "critic_selected_view": (asset.get("critic_match") or {}).get(
+            "selected_view_name"
+        ),
+        "critic_selected_label": (asset.get("critic_match") or {}).get(
+            "selected_view_label"
+        ),
+    }
+    write_json(asset_dir / "asset_info.json", info)
+
+    lines = [
+        f"name: {asset.get('name') or ''}",
+        f"mesh_id: {asset.get('mesh_id') or ''}",
+        f"keyword: {asset.get('keyword') or ''}",
+        f"wordnet_key: {asset.get('wordnet_key') or ''}",
+    ]
+    (asset_dir / "asset_name.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def html_image(rel_path: str | None, label: str, css_class: str = "") -> str:
     if not rel_path:
         return f"<div class='missing {css_class}'>missing {html.escape(label)}</div>"
@@ -764,9 +784,10 @@ def write_report(output_dir: Path, run_summary: dict[str, Any]) -> None:
         "<h1>HSSD Critic Front Audit</h1>",
         "<p>",
         f"search_mode=<code>{html.escape(str(run_summary['search_mode']))}</code>, ",
-        f"query=<code>{html.escape(str(run_summary['query']))}</code>, ",
+        f"keywords=<code>{html.escape(', '.join(run_summary['keywords']))}</code>, ",
         f"top_k={run_summary['top_k']}, ",
-        f"sample_count={run_summary['sample_count']}, ",
+        f"sample_count_per_keyword={run_summary['sample_count_per_keyword']}, ",
+        f"total_assets={run_summary['sample_count']}, ",
         f"seed={run_summary['seed']}, ",
         f"name_filter=<code>{html.escape(str(run_summary['name_filter']))}</code>",
         "</p>",
@@ -779,6 +800,7 @@ def write_report(output_dir: Path, run_summary: dict[str, Any]) -> None:
                 "<section class='asset'>",
                 f"<h2>{html.escape(asset['name'] or asset['mesh_id'])}</h2>",
                 "<div class='summary'>",
+                f"keyword=<code>{html.escape(str(asset.get('keyword') or ''))}</code><br>",
                 f"asset_id=<code>{html.escape(asset['mesh_id'])}</code><br>",
                 f"wordnet=<code>{html.escape(asset['wordnet_key'] or '')}</code><br>",
                 f"retrieval_score={asset['retrieval_score']:.4f}<br>",
@@ -842,44 +864,97 @@ def write_report(output_dir: Path, run_summary: dict[str, Any]) -> None:
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def resolve_asset_list(
+def parse_audit_keywords(args: argparse.Namespace) -> list[str]:
+    values: list[str] = []
+    for value in [*args.keyword, args.query]:
+        if value is None:
+            continue
+        for part in str(value).split(","):
+            keyword = part.strip()
+            if keyword:
+                values.append(keyword)
+
+    if values:
+        return values
+    return list(DEFAULT_AUDIT_KEYWORDS)
+
+
+def resolve_asset_list_for_keyword(
+    query: str,
     args: argparse.Namespace,
     metadata_by_id: dict[str, HssdMeshMetadata],
+    preprocessed_data: HssdPreprocessedData,
+    zvec_searcher: HssdZvecSearcher | None,
 ) -> list[tuple[str, float]]:
-    if args.asset_id:
-        resolved: list[tuple[str, float]] = []
-        for mesh_id in args.asset_id:
-            if mesh_id not in metadata_by_id:
-                raise KeyError(f"Unknown HSSD asset id: {mesh_id}")
-            resolved.append((mesh_id, 0.0))
-        return resolved
+    name_filter = _effective_name_filter(
+        keyword=query,
+        explicit_name_filter=args.name_filter,
+    )
+    hssd_category = _KEYWORD_HSSD_CATEGORY.get(query.strip().lower())
+    LOGGER.info(
+        "Keyword '%s' using name_filter=%s hssd_category=%s",
+        query,
+        name_filter,
+        hssd_category,
+    )
     if args.search_mode == "zvec":
+        if zvec_searcher is None:
+            raise RuntimeError("zvec searcher not initialised")
         return retrieve_assets_zvec(
-            query=args.query,
+            query=query,
             metadata_by_id=metadata_by_id,
             top_k=args.top_k,
             sample_count=args.sample_count,
             seed=args.seed,
-            name_filter=args.name_filter,
-            collection_path=args.zvec_collection_path,
-            embedding_base_url=args.embedding_base_url,
+            name_filter=name_filter,
+            preprocessed_data=preprocessed_data,
+            zvec_searcher=zvec_searcher,
+            hssd_category=hssd_category,
         )
-    embeddings, object_ids = load_hssd_clip_index(args.preprocessed_path)
     return retrieve_assets_clip(
-        query=args.query,
-        embeddings=embeddings,
-        object_ids=object_ids,
+        query=query,
         metadata_by_id=metadata_by_id,
         top_k=args.top_k,
         sample_count=args.sample_count,
         seed=args.seed,
-        name_filter=args.name_filter,
+        name_filter=name_filter,
+        preprocessed_data=preprocessed_data,
+        hssd_category=hssd_category,
     )
+
+
+def resolve_audit_targets(
+    args: argparse.Namespace,
+    metadata_by_id: dict[str, HssdMeshMetadata],
+    preprocessed_data: HssdPreprocessedData,
+    zvec_searcher: HssdZvecSearcher | None,
+) -> list[AuditTarget]:
+    if args.asset_id:
+        resolved: list[AuditTarget] = []
+        for mesh_id in args.asset_id:
+            if mesh_id not in metadata_by_id:
+                raise KeyError(f"Unknown HSSD asset id: {mesh_id}")
+            resolved.append(AuditTarget(mesh_id=mesh_id, score=0.0, keyword="explicit"))
+        return resolved
+
+    targets: list[AuditTarget] = []
+    for keyword in parse_audit_keywords(args):
+        keyword_assets = resolve_asset_list_for_keyword(
+            query=keyword,
+            args=args,
+            metadata_by_id=metadata_by_id,
+            preprocessed_data=preprocessed_data,
+            zvec_searcher=zvec_searcher,
+        )
+        for mesh_id, score in keyword_assets:
+            targets.append(AuditTarget(mesh_id=mesh_id, score=score, keyword=keyword))
+    return targets
 
 
 def audit_asset(
     mesh_id: str,
     score: float,
+    keyword: str,
     metadata: HssdMeshMetadata | None,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
@@ -913,15 +988,18 @@ def audit_asset(
         width=args.width,
         height=args.height,
     )
-    return build_asset_summary(
+    summary = build_asset_summary(
         mesh_id=mesh_id,
         score=score,
+        keyword=keyword,
         metadata=metadata,
         record=record,
         rendered_views=rendered_views,
         asset_dir=asset_dir,
         clean_critic_views=clean_critic_views,
     )
+    write_asset_info_files(asset_dir, summary)
+    return summary
 
 
 def main() -> int:
@@ -933,25 +1011,54 @@ def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    _, metadata_by_id = load_hssd_metadata_index(args.preprocessed_path)
-    assets_to_audit = resolve_asset_list(args, metadata_by_id)
-    LOGGER.info("Auditing %d assets", len(assets_to_audit))
+    # 2026-07-08 修改原因：统一用 load_preprocessed_data 加载元数据和
+    # embeddings，供 zvec/clip searcher 按 WordNet 类别过滤。
+    _, metadata_by_id, preprocessed_data = load_hssd_metadata_index(
+        args.preprocessed_path
+    )
+    zvec_searcher: HssdZvecSearcher | None = None
+    if args.search_mode == "zvec":
+        zvec_config = HssdZvecConfig(
+            collection_path=args.zvec_collection_path,
+            base_url=args.embedding_base_url,
+        )
+        zvec_searcher = HssdZvecSearcher(zvec_config)
+
+    audit_targets = resolve_audit_targets(
+        args, metadata_by_id, preprocessed_data, zvec_searcher
+    )
+    keywords = ["explicit"] if args.asset_id else parse_audit_keywords(args)
+    LOGGER.info(
+        "Auditing %d assets across %d keyword(s)",
+        len(audit_targets),
+        len(keywords),
+    )
 
     asset_summaries: list[dict[str, Any]] = []
-    for mesh_id, score in assets_to_audit:
-        LOGGER.info("Rendering audit views for %s", mesh_id)
+    for target in audit_targets:
+        LOGGER.info(
+            "Rendering audit views for %s (keyword=%s)",
+            target.mesh_id,
+            target.keyword,
+        )
         summary = audit_asset(
-            mesh_id=mesh_id,
-            score=score,
-            metadata=metadata_by_id.get(mesh_id),
+            mesh_id=target.mesh_id,
+            score=target.score,
+            keyword=target.keyword,
+            metadata=metadata_by_id.get(target.mesh_id),
             args=args,
         )
         asset_summaries.append(summary)
 
     run_summary = {
         "search_mode": args.search_mode,
-        "query": args.query,
+        "keywords": keywords,
+        "keyword_filter_terms": {
+            keyword: _effective_name_filter(keyword, args.name_filter)
+            for keyword in keywords
+        },
         "top_k": args.top_k,
+        "sample_count_per_keyword": args.sample_count,
         "sample_count": len(asset_summaries),
         "seed": args.seed,
         "name_filter": args.name_filter,
