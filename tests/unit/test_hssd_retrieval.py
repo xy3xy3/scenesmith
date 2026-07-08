@@ -363,23 +363,33 @@ class TestHssdRetrieverScaleFiltering(unittest.TestCase):
         )()
         retriever.clip_device = None
         retriever.preprocessed_data = preprocessed_data
+        # 2026-07-08 修改原因：HssdRetriever 现优先使用实例上的
+        # semantic_searcher；测试夹具直接注入假 searcher，避免依赖旧的
+        # _create_semantic_searcher / retrieval_backend 细节。
+        retriever.semantic_searcher = type(
+            "SemanticSearcherStub",
+            (),
+            {
+                "get_top_k_similar_meshes": staticmethod(
+                    lambda **kwargs: [
+                        ("bad_notebook", 0.99),
+                        ("good_notebook", 0.95),
+                    ]
+                )
+            },
+        )()
 
         meshes = {
             "bad_notebook": trimesh.creation.box(extents=[0.107, 0.025, 0.143]),
             "good_notebook": trimesh.creation.box(extents=[0.20, 0.14, 0.02]),
         }
         retriever._load_and_process_mesh = lambda mesh_id, metadata: meshes[mesh_id]
-
-        with patch(
-            "scenesmith.agent_utils.hssd_retrieval.retrieval.get_top_k_similar_meshes",
-            return_value=[("bad_notebook", 0.99), ("good_notebook", 0.95)],
-        ):
-            candidates = retriever.retrieve_multiple(
-                description="notebook",
-                object_type="MANIPULAND",
-                desired_dimensions=np.array([0.22, 0.16, 0.03]),
-                max_axis_relative_error=0.75,
-            )
+        candidates = retriever.retrieve_multiple(
+            description="notebook",
+            object_type="MANIPULAND",
+            desired_dimensions=np.array([0.22, 0.16, 0.03]),
+            max_axis_relative_error=0.75,
+        )
 
         self.assertEqual(
             [candidate.mesh_id for candidate in candidates], ["good_notebook"]

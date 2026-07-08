@@ -50,23 +50,6 @@ LOGGER = logging.getLogger(__name__)
 # 2026-07-08 修改原因：默认审计从单一 chair query 扩展为多类少量抽样。
 DEFAULT_AUDIT_KEYWORDS = ["bed", "chair", "Cabinet", "Monitor", "TV"]
 
-# 2026-07-08 修改原因：zvec 语义召回会把 bedroom/wall-art 等相关但非目标类资产带入。
-DEFAULT_KEYWORD_FILTER_TERMS = {
-    "bed": ["bed", "mattress", "daybed", "bunk", "headboard"],
-    "chair": ["chair", "armchair", "stool", "seat"],
-    "cabinet": [
-        "cabinet",
-        "dresser",
-        "wardrobe",
-        "armoire",
-        "cupboard",
-        "sideboard",
-        "drawer",
-    ],
-    "monitor": ["monitor", "screen", "display"],
-    "tv": ["tv", "television", "media console", "tv stand"],
-}
-
 # 2026-07-08 修改原因：白色 HSSD 资产在默认高亮透明背景下难以人工辨认。
 AUDIT_LIGHT_ENERGY = 850.0
 AUDIT_BACKGROUND_GREY = 104
@@ -116,6 +99,17 @@ _KEYWORD_HSSD_CATEGORY: dict[str, str] = {
     "cabinet": "large_objects",
     "monitor": "small_objects",
     "tv": "large_objects",
+}
+
+# 2026-07-08 修改原因：默认审计脚本不会走真实 HSSD 检索里的尺寸重排，
+# 直接用裸关键词（如 bed/chair/tv）做语义检索时容易漂到无关资产。
+# 这里改用更自然、歧义更小的常见短语，保持默认审计样本更稳定。
+_KEYWORD_RETRIEVAL_QUERY: dict[str, str] = {
+    "bed": "double bed",
+    "chair": "dining chair",
+    "cabinet": "storage cabinet",
+    "monitor": "computer monitor",
+    "tv": "television",
 }
 
 
@@ -169,7 +163,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional comma-separated substring filter on name/wordnet/id. "
-            "Overrides the default per-keyword filters."
+            "Disabled by default so audit retrieval matches the real HSSD path."
+        ),
+    )
+    parser.add_argument(
+        "--no-default-filter",
+        action="store_true",
+        default=False,
+        help=(
+            "Deprecated compatibility flag. Default retrieval already skips "
+            "the old per-keyword name_filter."
         ),
     )
     parser.add_argument(
@@ -250,17 +253,20 @@ def _split_filter_terms(value: str | list[str] | None) -> list[str]:
     return terms
 
 
-def _default_filter_terms_for_keyword(keyword: str) -> list[str]:
-    normalized = keyword.strip().lower()
-    return list(DEFAULT_KEYWORD_FILTER_TERMS.get(normalized, [normalized]))
-
-
 def _effective_name_filter(
-    keyword: str, explicit_name_filter: str | None
+    keyword: str, explicit_name_filter: str | None, no_default: bool = False
 ) -> list[str]:
+    # 2026-07-08 修改原因：默认检索路径改为和真实 HSSD 一致，仅使用
+    # 类别过滤 + 语义相似度；旧的关键词默认 name_filter 不再参与检索。
+    _ = keyword, no_default
     if explicit_name_filter is not None:
         return _split_filter_terms(explicit_name_filter)
-    return _default_filter_terms_for_keyword(keyword)
+    return []
+
+
+def _effective_retrieval_query(keyword: str) -> str:
+    normalized = keyword.strip().lower()
+    return _KEYWORD_RETRIEVAL_QUERY.get(normalized, keyword)
 
 
 def _filter_and_sample_ranked_assets(
@@ -297,11 +303,16 @@ def _filter_and_sample_ranked_assets(
         if len(filtered) >= top_k:
             break
 
+    # 2026-07-08 修改原因：检索池中无匹配时改为警告并返回空列表，
+    # 避免因 zvec/clip 语义排序未命中 name_filter 而直接崩溃。
     if not filtered:
-        raise RuntimeError(
-            f"No HSSD assets matched name_filter={filter_terms} "
-            f"(word-boundary) within the retrieval pool."
+        LOGGER.warning(
+            "No HSSD assets matched name_filter=%s (word-boundary) "
+            "within the retrieval pool of %d candidates.",
+            filter_terms,
+            len(ranked),
         )
+        return []
 
     if sample_count >= len(filtered):
         return filtered
@@ -325,7 +336,14 @@ def retrieve_assets_clip(
     # 2026-07-08 修改原因：改用 clip_get_top_k_similar_meshes，
     # 按 WordNet object_categories 过滤，避免无关类别混入。
     # WordNet 类别过滤 + name_filter 两层过滤会大幅削减候选数。
-    fetch_k = max(top_k * 10, sample_count * 10, top_k)
+    # 2026-07-08 修改原因：当存在 name_filter 时，需要获取更多候选资产
+    # 以确保 name_filter 能匹配到足够多的目标资产。
+    filter_terms = _split_filter_terms(name_filter)
+    category_size = _estimate_category_size(preprocessed_data, hssd_category)
+    if filter_terms:
+        fetch_k = max(top_k * 10, sample_count * 10, category_size)
+    else:
+        fetch_k = max(top_k * 10, sample_count * 10, top_k)
     ranked = clip_get_top_k(
         text_description=query,
         preprocessed_data=preprocessed_data,
@@ -347,6 +365,22 @@ def retrieve_assets_clip(
     )
 
 
+def _estimate_category_size(
+    preprocessed_data: HssdPreprocessedData,
+    hssd_category: str | None,
+) -> int:
+    """估算指定 HSSD 类别下的资产总数，用于动态计算 fetch_k。"""
+    if hssd_category is None:
+        return sum(
+            len(entries)
+            for entries in preprocessed_data.metadata_by_wordnet.values()
+        )
+    wordnets = preprocessed_data.object_categories.get(hssd_category, [])
+    return sum(
+        len(preprocessed_data.metadata_by_wordnet.get(wn, [])) for wn in wordnets
+    )
+
+
 def retrieve_assets_zvec(
     query: str,
     metadata_by_id: dict[str, HssdMeshMetadata],
@@ -362,7 +396,15 @@ def retrieve_assets_zvec(
     # 按 WordNet object_categories 过滤，避免 wall-art 等非目标类混入。
     # 使用较大乘数，因为 searcher 内部有 top_k_factor=4 放大，且
     # WordNet 类别过滤 + name_filter 两层过滤会大幅削减候选数。
-    fetch_k = max(top_k * 10, sample_count * 10, top_k)
+    # 2026-07-08 修改原因：当存在 name_filter 时，需要获取更多候选资产
+    # 以确保 name_filter 能匹配到足够多的目标资产（如 large_objects 有
+    # 5840 个资产但 bed 相关仅 56 个，默认 fetch_k=200 可能全部被过滤）。
+    filter_terms = _split_filter_terms(name_filter)
+    category_size = _estimate_category_size(preprocessed_data, hssd_category)
+    if filter_terms:
+        fetch_k = max(top_k * 10, sample_count * 10, category_size)
+    else:
+        fetch_k = max(top_k * 10, sample_count * 10, top_k)
     ranked = zvec_searcher.get_top_k_similar_meshes(
         text_description=query,
         preprocessed_data=preprocessed_data,
@@ -886,14 +928,17 @@ def resolve_asset_list_for_keyword(
     preprocessed_data: HssdPreprocessedData,
     zvec_searcher: HssdZvecSearcher | None,
 ) -> list[tuple[str, float]]:
+    retrieval_query = _effective_retrieval_query(query)
     name_filter = _effective_name_filter(
         keyword=query,
         explicit_name_filter=args.name_filter,
+        no_default=args.no_default_filter,
     )
     hssd_category = _KEYWORD_HSSD_CATEGORY.get(query.strip().lower())
     LOGGER.info(
-        "Keyword '%s' using name_filter=%s hssd_category=%s",
+        "Keyword '%s' retrieving with query='%s' name_filter=%s hssd_category=%s",
         query,
+        retrieval_query,
         name_filter,
         hssd_category,
     )
@@ -901,7 +946,7 @@ def resolve_asset_list_for_keyword(
         if zvec_searcher is None:
             raise RuntimeError("zvec searcher not initialised")
         return retrieve_assets_zvec(
-            query=query,
+            query=retrieval_query,
             metadata_by_id=metadata_by_id,
             top_k=args.top_k,
             sample_count=args.sample_count,
@@ -912,7 +957,7 @@ def resolve_asset_list_for_keyword(
             hssd_category=hssd_category,
         )
     return retrieve_assets_clip(
-        query=query,
+        query=retrieval_query,
         metadata_by_id=metadata_by_id,
         top_k=args.top_k,
         sample_count=args.sample_count,
@@ -946,6 +991,13 @@ def resolve_audit_targets(
             preprocessed_data=preprocessed_data,
             zvec_searcher=zvec_searcher,
         )
+        # 2026-07-08 修改原因：某个关键词未匹配到任何资产时记录警告，
+        # 跳过该关键词继续处理后续关键词，避免单个关键词失败导致整体中断。
+        if not keyword_assets:
+            LOGGER.warning(
+                "Keyword '%s' yielded no matching assets, skipping.", keyword
+            )
+            continue
         for mesh_id, score in keyword_assets:
             targets.append(AuditTarget(mesh_id=mesh_id, score=score, keyword=keyword))
     return targets
@@ -1033,6 +1085,11 @@ def main() -> int:
         len(audit_targets),
         len(keywords),
     )
+    # 2026-07-08 修改原因：所有关键词均未匹配到资产时提前退出，
+    # 避免生成空报告或在后续渲染阶段出错。
+    if not audit_targets:
+        LOGGER.error("No audit targets resolved for any keyword. Aborting.")
+        return 1
 
     asset_summaries: list[dict[str, Any]] = []
     for target in audit_targets:
@@ -1054,8 +1111,13 @@ def main() -> int:
         "search_mode": args.search_mode,
         "keywords": keywords,
         "keyword_filter_terms": {
-            keyword: _effective_name_filter(keyword, args.name_filter)
+            keyword: _effective_name_filter(
+                keyword, args.name_filter, args.no_default_filter
+            )
             for keyword in keywords
+        },
+        "keyword_retrieval_queries": {
+            keyword: _effective_retrieval_query(keyword) for keyword in keywords
         },
         "top_k": args.top_k,
         "sample_count_per_keyword": args.sample_count,
