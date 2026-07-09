@@ -14,6 +14,7 @@ import concurrent.futures
 import gc
 import json
 import logging
+import multiprocessing as mp
 import re
 import shutil
 import sys
@@ -35,7 +36,8 @@ LOGGER = logging.getLogger("index_rendered_hssd_assets_zvec")
 
 HSSD_ID_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-fA-F]{40})(?![0-9a-fA-F])")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-VIEW_PRIORITY = ("front", "top", "side", "left", "right", "back", "iso", "image")
+DEFAULT_RETRIEVAL_VIEWS = ("front", "back", "left", "right", "top", "iso")
+VIEW_PRIORITY = (*DEFAULT_RETRIEVAL_VIEWS, "bottom", "side", "image")
 
 
 @dataclass
@@ -54,6 +56,28 @@ class RenderedAsset:
     metadata: HssdMeshMetadata | None
     object_groups: list[str]
     asset_path: Path | None
+
+
+@dataclass
+class RenderJob:
+    asset_id: str
+    asset_path: Path
+    metadata: HssdMeshMetadata | None
+    render_root: Path
+    view_names: list[str]
+    overwrite: bool
+    width: int
+    height: int
+
+
+@dataclass
+class RenderJobResult:
+    asset_id: str
+    rendered: bool
+    error: str | None = None
+
+
+_WORKER_RENDERER: Any | None = None
 
 
 class LlamaEmbeddingClient:
@@ -229,6 +253,7 @@ def discover_rendered_assets(
     groups_by_wordnet: dict[str, list[str]],
     hssd_root: Path | None,
     include_views: set[str] | None,
+    require_metadata: bool = True,
 ) -> list[RenderedAsset]:
     grouped: dict[str, dict[str, Path]] = {}
     for image_path in sorted(render_root.rglob("*")):
@@ -240,8 +265,12 @@ def discover_rendered_assets(
         grouped.setdefault(asset_id, {})[view] = image_path
 
     assets: list[RenderedAsset] = []
+    skipped_without_metadata = 0
     for asset_id, image_paths in sorted(grouped.items()):
         metadata = metadata_by_id.get(asset_id)
+        if require_metadata and metadata is None:
+            skipped_without_metadata += 1
+            continue
         object_groups = (
             sorted(groups_by_wordnet.get(metadata.wordnet_key, []))
             if metadata is not None
@@ -256,6 +285,12 @@ def discover_rendered_assets(
                 object_groups=object_groups,
                 asset_path=asset_path,
             )
+        )
+    if skipped_without_metadata:
+        # 2026-07-09 修改原因：HSSD zvec 检索只应索引带 WordNet metadata 的资产，避免无标注渲染图污染重建后的向量库。
+        LOGGER.info(
+            "Skipped %d rendered asset directories without HSSD metadata",
+            skipped_without_metadata,
         )
     return assets
 
@@ -306,11 +341,22 @@ def list_hssd_glb_assets(
     limit: int | None,
 ) -> list[tuple[str, Path, HssdMeshMetadata | None]]:
     assets: list[tuple[str, Path, HssdMeshMetadata | None]] = []
+    skipped_without_metadata = 0
     for asset_path in sorted((hssd_root / "objects").glob("*/*.glb")):
         asset_id = asset_path.stem.lower()
-        assets.append((asset_id, asset_path, metadata_by_id.get(asset_id)))
+        metadata = metadata_by_id.get(asset_id)
+        if metadata is None:
+            skipped_without_metadata += 1
+            continue
+        assets.append((asset_id, asset_path, metadata))
         if limit is not None and len(assets) >= limit:
             break
+    if skipped_without_metadata:
+        # 2026-07-09 修改原因：补渲染也跳过无 metadata 的 HSSD GLB，保持渲染集和最终 zvec 索引一致。
+        LOGGER.info(
+            "Skipped %d HSSD GLB assets without metadata during render discovery",
+            skipped_without_metadata,
+        )
     return assets
 
 
@@ -332,20 +378,13 @@ def missing_render_views(
     return missing
 
 
-def render_hssd_assets_if_needed(
-    render_root: Path,
-    hssd_root: Path | None,
-    metadata_by_id: dict[str, HssdMeshMetadata],
-    render_views: list[str],
-    limit: int | None,
-    overwrite: bool,
-    width: int,
-    height: int,
-) -> int:
-    if hssd_root is None:
-        raise ValueError("HSSD root is required for rendering")
-    if not render_views:
-        raise ValueError("At least one render view is required")
+def _render_hssd_asset_job(job: RenderJob) -> RenderJobResult:
+    """Render missing named views for one HSSD asset.
+
+    This function is process-pool friendly: all bpy imports happen inside the
+    child process, and the BlenderRenderer instance is cached per worker.
+    """
+    global _WORKER_RENDERER
 
     # Local imports keep pure indexing usage lightweight when rendering is skipped.
     import trimesh
@@ -355,14 +394,59 @@ def render_hssd_assets_if_needed(
         apply_hssd_alignment_transform,
     )
 
-    render_root.mkdir(parents=True, exist_ok=True)
-    renderer = BlenderRenderer()
-    rendered_assets = 0
-    failed_assets = 0
+    asset_render_dir = job.render_root / job.asset_id
+    asset_render_dir.mkdir(parents=True, exist_ok=True)
 
-    for asset_id, asset_path, metadata in tqdm(
-        list_hssd_glb_assets(hssd_root, metadata_by_id, limit),
-        desc="Rendering HSSD assets",
+    if job.overwrite:
+        for view_name in job.view_names:
+            output_path = asset_render_dir / f"{view_name}.png"
+            if output_path.exists():
+                output_path.unlink()
+
+    try:
+        if _WORKER_RENDERER is None:
+            _WORKER_RENDERER = BlenderRenderer()
+
+        with tempfile.TemporaryDirectory(
+            prefix=f"hssd_render_{job.asset_id[:8]}_"
+        ) as tmp:
+            aligned_path = Path(tmp) / f"{job.asset_id}.glb"
+            mesh = trimesh.load(job.asset_path, force="mesh")
+            if job.metadata is not None:
+                mesh = apply_hssd_alignment_transform(mesh, job.metadata)
+            mesh.export(aligned_path)
+            _WORKER_RENDERER.render_named_views_for_embedding(
+                mesh_path=aligned_path,
+                output_dir=asset_render_dir,
+                view_names=job.view_names,
+                width=job.width,
+                height=job.height,
+            )
+        return RenderJobResult(asset_id=job.asset_id, rendered=True)
+    except Exception as exc:
+        return RenderJobResult(asset_id=job.asset_id, rendered=False, error=str(exc))
+
+
+def render_hssd_assets_if_needed(
+    render_root: Path,
+    hssd_root: Path | None,
+    metadata_by_id: dict[str, HssdMeshMetadata],
+    render_views: list[str],
+    limit: int | None,
+    overwrite: bool,
+    width: int,
+    height: int,
+    render_workers: int,
+) -> int:
+    if hssd_root is None:
+        raise ValueError("HSSD root is required for rendering")
+    if not render_views:
+        raise ValueError("At least one render view is required")
+
+    render_root.mkdir(parents=True, exist_ok=True)
+    jobs: list[RenderJob] = []
+    for asset_id, asset_path, metadata in list_hssd_glb_assets(
+        hssd_root, metadata_by_id, limit
     ):
         needed_views = missing_render_views(
             render_root=render_root,
@@ -373,35 +457,62 @@ def render_hssd_assets_if_needed(
         if not needed_views:
             continue
 
-        asset_render_dir = render_root / asset_id
-        asset_render_dir.mkdir(parents=True, exist_ok=True)
+        jobs.append(
+            RenderJob(
+                asset_id=asset_id,
+                asset_path=asset_path,
+                metadata=metadata,
+                render_root=render_root,
+                view_names=needed_views,
+                overwrite=overwrite,
+                width=width,
+                height=height,
+            )
+        )
 
-        if overwrite:
-            for view_name in render_views:
-                output_path = asset_render_dir / f"{view_name}.png"
-                if output_path.exists():
-                    output_path.unlink()
+    if not jobs:
+        LOGGER.info("No missing HSSD render views found")
+        return 0
 
-        try:
-            with tempfile.TemporaryDirectory(
-                prefix=f"hssd_render_{asset_id[:8]}_"
-            ) as tmp:
-                aligned_path = Path(tmp) / f"{asset_id}.glb"
-                mesh = trimesh.load(asset_path, force="mesh")
-                if metadata is not None:
-                    mesh = apply_hssd_alignment_transform(mesh, metadata)
-                mesh.export(aligned_path)
-                renderer.render_named_views_for_embedding(
-                    mesh_path=aligned_path,
-                    output_dir=asset_render_dir,
-                    view_names=needed_views,
-                    width=width,
-                    height=height,
+    render_workers = max(1, render_workers)
+    LOGGER.info(
+        "Rendering %d HSSD assets with %d worker(s)",
+        len(jobs),
+        render_workers,
+    )
+
+    # 2026-07-09 修改原因：HSSD 多视角补图很慢，允许多个独立 Blender 子进程并行渲染缺失视角。
+    if render_workers == 1:
+        results = [
+            _render_hssd_asset_job(job)
+            for job in tqdm(jobs, desc="Rendering HSSD assets")
+        ]
+    else:
+        context = mp.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=render_workers,
+            mp_context=context,
+        ) as executor:
+            results = list(
+                tqdm(
+                    executor.map(_render_hssd_asset_job, jobs),
+                    total=len(jobs),
+                    desc="Rendering HSSD assets",
                 )
+            )
+
+    rendered_assets = 0
+    failed_assets = 0
+    for result in results:
+        if result.rendered:
             rendered_assets += 1
-        except Exception as exc:
+        else:
             failed_assets += 1
-            LOGGER.warning("Failed to render HSSD asset %s: %s", asset_id, exc)
+            LOGGER.warning(
+                "Failed to render HSSD asset %s: %s",
+                result.asset_id,
+                result.error,
+            )
 
     if failed_assets:
         LOGGER.warning("Skipped %d assets due to render failures", failed_assets)
@@ -645,6 +756,13 @@ def parse_include_views(value: str) -> set[str] | None:
     return {item.strip() for item in cleaned.split(",") if item.strip()}
 
 
+def parse_view_list(value: str) -> list[str]:
+    cleaned = value.strip().lower()
+    if cleaned in {"", "all", "*"}:
+        return list(DEFAULT_RETRIEVAL_VIEWS)
+    return [item.strip() for item in cleaned.split(",") if item.strip()]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -694,8 +812,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--include-views",
-        default="all",
-        help="Comma-separated view names to include, or 'all'. Example: top,front",
+        default=",".join(DEFAULT_RETRIEVAL_VIEWS),
+        help=(
+            "Comma-separated view names to include, or 'all'. "
+            "Default: front,back,left,right,top,iso"
+        ),
     )
     parser.add_argument(
         "--render-first",
@@ -707,10 +828,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--render-views",
-        default="top,front",
+        default=",".join(DEFAULT_RETRIEVAL_VIEWS),
         help=(
             "Comma-separated named views to render when --render-first is set. "
-            "Supported: top,front,back,left,right,bottom."
+            "Supported: top,front,back,left,right,bottom,iso. "
+            "Default: front,back,left,right,top,iso."
         ),
     )
     parser.add_argument(
@@ -729,6 +851,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--render-overwrite",
         action="store_true",
         help="Re-render requested views even if output PNGs already exist.",
+    )
+    parser.add_argument(
+        "--render-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel Blender worker processes for --render-first. "
+            "Use 2-4 only if GPU/CPU memory allows."
+        ),
     )
     parser.add_argument(
         "--view-embedding-strategy",
@@ -787,7 +918,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--recreate",
         action="store_true",
-        help="Delete and rebuild the Zvec collection path before indexing.",
+        default=True,
+        help=(
+            "Delete and rebuild the Zvec collection path before indexing. "
+            "Default is enabled to avoid stale embeddings."
+        ),
+    )
+    parser.add_argument(
+        "--no-recreate",
+        dest="recreate",
+        action="store_false",
+        help="Open the existing Zvec collection and upsert into it.",
     )
     parser.add_argument(
         "--no-fts",
@@ -833,7 +974,7 @@ def main(argv: list[str] | None = None) -> int:
 
     metadata_by_id, groups_by_wordnet = load_hssd_lookup(preprocessed_path)
     include_views = parse_include_views(args.include_views)
-    render_views = sorted(parse_include_views(args.render_views) or [])
+    render_views = parse_view_list(args.render_views)
 
     if args.render_first:
         try:
@@ -846,6 +987,7 @@ def main(argv: list[str] | None = None) -> int:
                 overwrite=args.render_overwrite,
                 width=args.render_width,
                 height=args.render_height,
+                render_workers=args.render_workers,
             )
         except Exception as exc:
             LOGGER.error("Pre-render stage failed: %s", exc)
@@ -865,6 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
         groups_by_wordnet=groups_by_wordnet,
         hssd_root=hssd_root,
         include_views=include_views,
+        require_metadata=True,
     )
     if args.limit is not None:
         assets = assets[: args.limit]
@@ -878,7 +1021,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 3
 
-    LOGGER.info("Discovered %d rendered assets", len(assets))
+    # 2026-07-09 修改原因：本脚本用于重建 HSSD zvec RAG 库，默认只索引有 metadata 的多视角资产并清空旧库。
+    LOGGER.info(
+        "Discovered %d rendered assets with metadata using views=%s",
+        len(assets),
+        sorted(include_views) if include_views is not None else "all",
+    )
 
     embedding_retries = max(0, args.embedding_retries)
     client = LlamaEmbeddingClient(

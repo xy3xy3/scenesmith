@@ -689,6 +689,7 @@ class BlenderRenderer(
         - ``top`` / ``bottom``
         - ``front`` / ``back``
         - ``left`` / ``right``
+        - ``iso``
 
         The mesh is assumed to already be aligned to canonical orientation where
         Blender +Y corresponds to the semantic front.
@@ -706,6 +707,8 @@ class BlenderRenderer(
             "back": Vector((0, -1, 0)),
             "left": Vector((-1, 0, 0)),
             "right": Vector((1, 0, 0)),
+            # 2026-07-09 修改原因：HSSD zvec 重建需要斜侧视角帮助小物体暴露可辨识形态。
+            "iso": Vector((1, 1, 1)),
         }
         unknown_views = [name for name in view_names if name not in direction_by_name]
         if unknown_views:
