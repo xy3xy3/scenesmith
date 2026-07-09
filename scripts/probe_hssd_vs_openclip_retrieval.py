@@ -42,299 +42,336 @@ SUPPORTED_NAMED_VIEWS = {"top", "bottom", "front", "back", "left", "right", "iso
 
 # 2026-07-08: Keep the evaluated object list explicit so report rows remain
 # traceable to the fixed single-room critic probe prompts.
+DEFAULT_CASE_PROMPTS: dict[str, str] = {
+    "living_room_media_bottleneck": (
+        "A living room with a sofa against the back wall facing a TV stand and "
+        "television on the opposite wall, a coffee table centered between the "
+        "sofa and TV stand, two armchairs flanking the coffee table near each end "
+        "of the sofa, and a floor lamp beside one armchair. A remote control and "
+        "a few magazines lie on the coffee table, and a small rug lies between "
+        "the coffee table and TV stand."
+    ),
+    "study_desk_access_crunch": (
+        "A study with a desk centered against the back wall, an office chair "
+        "tucked under the desk, a computer monitor on the desk, two guest chairs "
+        "against the side wall facing the desk, and a bookshelf on the adjacent "
+        "wall. A desk lamp and a notebook sit on the desk, a pen holder next to "
+        "the monitor, and a small trash can beside the desk."
+    ),
+    "bedroom_bedside_blockage": (
+        "A bedroom with a bed centered on the main wall, a nightstand with a "
+        "table lamp on each side of the bed, a dresser against the opposite wall "
+        "directly facing the bed, and a wardrobe placed next to the dresser. An "
+        "alarm clock sits on one nightstand, a book on the other, and a small "
+        "wastebasket near the dresser."
+    ),
+    "dining_room_service_squeeze": (
+        "A dining room with a dining table in the center, four dining chairs "
+        "arranged around it with one on each side, a sideboard against the wall "
+        "behind the chairs on one side, and table settings for four including "
+        "plates, cutlery, and glasses. A centerpiece vase with flowers sits in "
+        "the middle of the table, and a set of coasters sits on the sideboard."
+    ),
+}
+
+QUERY_VARIANT_LABELS = {
+    "keyword_only": "Keyword only",
+    "context_plus_keyword": "Scene context + keyword",
+}
+
 PROMPT_OBJECTS: list[dict[str, str]] = [
     {
         "case_id": "living_room_media_bottleneck",
         "object": "sofa",
-        "query": "living room sofa",
+        "keyword": "comfortable three-seater fabric sofa with cushions",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "TV stand",
-        "query": "TV stand",
+        "keyword": "modern wooden TV stand with shelves",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "television",
-        "query": "television",
+        "keyword": "modern flat-screen television with slim bezel",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "coffee table",
-        "query": "coffee table",
+        "keyword": "rectangular wooden coffee table with lower shelf",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "armchair",
-        "query": "living room armchair",
+        "keyword": "upholstered accent armchair with wooden legs",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "floor lamp",
-        "query": "floor lamp",
+        "keyword": "tall slim floor lamp with cylindrical shade",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "remote control",
-        "query": "remote control",
+        "keyword": "black TV remote control",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "magazine",
-        "query": "magazine",
+        "keyword": "lifestyle magazine",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "rug",
-        "query": "small rug",
+        "keyword": "minimalist solid gray rectangular rug",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "game controller",
-        "query": "game controller",
+        "keyword": "wireless game controller",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "coaster",
-        "query": "drink coaster",
+        "keyword": "round cork coaster",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "living_room_media_bottleneck",
         "object": "candle",
-        "query": "decorative candle",
+        "keyword": "small decorative candle in glass holder",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "desk",
-        "query": "study desk",
+        "keyword": "modern wooden study desk with drawers",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "office chair",
-        "query": "office chair",
+        "keyword": "ergonomic office chair with wheels",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "computer monitor",
-        "query": "computer monitor",
+        "keyword": "Modern flat-screen computer monitor with thin bezel and slim stand",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "guest chair",
-        "query": "guest chair",
+        "keyword": "upholstered guest armchair",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "bookshelf",
-        "query": "bookshelf",
+        "keyword": "tall wooden bookshelf with multiple shelves",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "desk lamp",
-        "query": "desk lamp",
+        "keyword": "Modern adjustable desk lamp with metal arm and cylindrical shade",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "notebook",
-        "query": "notebook",
+        "keyword": "Spiral-bound notebook with white pages and colored cover",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "pen holder",
-        "query": "pen holder",
+        "keyword": "Cylindrical pen holder made of bamboo",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "trash can",
-        "query": "small trash can",
+        "keyword": "small cylindrical trash can",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "keyboard",
-        "query": "computer keyboard",
+        "keyword": "Slim wireless keyboard for desktop use",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "computer mouse",
-        "query": "computer mouse",
+        "keyword": "Ergonomic wireless computer mouse",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "headphones",
-        "query": "desk headphones",
+        "keyword": "black over-ear headphones",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "study_desk_access_crunch",
         "object": "coffee mug",
-        "query": "coffee mug",
+        "keyword": "ceramic coffee mug",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "bed",
-        "query": "bed",
+        "keyword": "queen bed with mattress pillows and white duvet",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "nightstand",
-        "query": "nightstand",
+        "keyword": "modern wooden nightstand with drawer",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "table lamp",
-        "query": "table lamp",
+        "keyword": "Small wooden bedside lamp with fabric shade",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "dresser",
-        "query": "dresser",
+        "keyword": "wide wooden dresser with drawers",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "wardrobe",
-        "query": "wardrobe",
+        "keyword": "tall wooden wardrobe with double doors",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "alarm clock",
-        "query": "alarm clock",
+        "keyword": "Modern digital alarm clock with LCD display",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "book",
-        "query": "book",
+        "keyword": "hardcover book with dark cover",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "wastebasket",
-        "query": "small wastebasket",
+        "keyword": "small cylindrical wastebasket",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "picture frame",
-        "query": "picture frame",
+        "keyword": "small wooden picture frame",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "smartphone",
-        "query": "smartphone",
+        "keyword": "modern smartphone",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "bedroom_bedside_blockage",
         "object": "eyeglasses",
-        "query": "eyeglasses",
+        "keyword": "black framed eyeglasses",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "dining table",
-        "query": "dining table",
+        "keyword": "Elegant rectangular dining table with smooth wooden top and tapered legs",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "dining chair",
-        "query": "dining chair",
+        "keyword": "Slim upholstered dining chair with narrow wooden frame and curved backrest",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "sideboard",
-        "query": "sideboard",
+        "keyword": "Classic wooden sideboard with drawers and cabinet doors",
         "object_type": "FURNITURE",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "plate",
-        "query": "plate",
+        "keyword": "white ceramic dinner plate",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "cutlery",
-        "query": "cutlery",
+        "keyword": "stainless steel dining cutlery set",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "drinking glass",
-        "query": "drinking glass",
+        "keyword": "clear drinking glass",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "vase with flowers",
-        "query": "vase with flowers",
+        "keyword": "glass vase with fresh flowers",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "coaster",
-        "query": "coaster",
+        "keyword": "round cork coaster",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "fork",
-        "query": "dining fork",
+        "keyword": "stainless steel dining fork",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "spoon",
-        "query": "dining spoon",
+        "keyword": "stainless steel dining spoon",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "bowl",
-        "query": "serving bowl",
+        "keyword": "white ceramic serving bowl",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "napkin",
-        "query": "cloth napkin",
+        "keyword": "folded cloth napkin",
         "object_type": "MANIPULAND",
     },
     {
         "case_id": "dining_room_service_squeeze",
         "object": "salt shaker",
-        "query": "salt shaker",
+        "keyword": "glass salt shaker",
         "object_type": "MANIPULAND",
     },
 ]
@@ -344,8 +381,16 @@ PROMPT_OBJECTS: list[dict[str, str]] = [
 class QuerySpec:
     case_id: str
     object_name: str
-    query: str
+    keyword: str
     object_type: str
+    context_prompt: str
+
+
+@dataclass(frozen=True)
+class QueryVariant:
+    variant_id: str
+    label: str
+    query: str
 
 
 @dataclass
@@ -428,19 +473,45 @@ def prioritize_specs_for_sampling(specs: list[QuerySpec]) -> list[QuerySpec]:
     )
 
 
-def build_query_specs(max_queries: int) -> list[QuerySpec]:
+def build_query_specs(
+    max_queries: int, cases: dict[str, dict[str, str]]
+) -> list[QuerySpec]:
     specs = [
         QuerySpec(
             case_id=item["case_id"],
             object_name=item["object"],
-            query=item["query"],
+            keyword=item["keyword"],
             object_type=item["object_type"],
+            context_prompt=cases.get(item["case_id"], {}).get(
+                "prompt", DEFAULT_CASE_PROMPTS.get(item["case_id"], "")
+            ),
         )
         for item in PROMPT_OBJECTS
     ]
     if max_queries > 0:
         return prioritize_specs_for_sampling(specs)[:max_queries]
     return specs
+
+
+def build_query_variants(spec: QuerySpec) -> list[QueryVariant]:
+    # 2026-07-09 修改原因：同一物体同时保留“只用关键词”和“场景背景+关键词”两种检索，
+    # 直接验证带背景是否更贴近真实 Scenesmith 使用方式并提升结果。
+    variants = [
+        QueryVariant(
+            variant_id="keyword_only",
+            label=QUERY_VARIANT_LABELS["keyword_only"],
+            query=spec.keyword,
+        )
+    ]
+    if spec.context_prompt:
+        variants.append(
+            QueryVariant(
+                variant_id="context_plus_keyword",
+                label=QUERY_VARIANT_LABELS["context_plus_keyword"],
+                query=f"{spec.context_prompt} {spec.keyword}",
+            )
+        )
+    return variants
 
 
 def make_hssd_config(
@@ -597,6 +668,7 @@ def write_result_metadata(
     *,
     output_dir: Path,
     spec: QuerySpec,
+    variant: QueryVariant,
     method_key: str,
     result: RenderedResult,
     render_views: list[str],
@@ -604,7 +676,11 @@ def write_result_metadata(
     lines = [
         f"Case ID: {spec.case_id}",
         f"Object Name: {spec.object_name}",
-        f"Query: {spec.query}",
+        f"Keyword: {spec.keyword}",
+        f"Context Prompt: {spec.context_prompt}",
+        f"Query Variant: {variant.variant_id}",
+        f"Query Variant Label: {variant.label}",
+        f"Query: {variant.query}",
         f"Object Type: {spec.object_type}",
         f"Method: {method_key}",
         f"Rank: {result.rank}",
@@ -691,6 +767,7 @@ def render_results(
     retriever: HssdRetriever,
     renderer: BlenderRenderer,
     spec: QuerySpec,
+    variant: QueryVariant,
     method_dir: Path,
     method_key: str,
     width: int,
@@ -699,7 +776,7 @@ def render_results(
     render_views: list[str],
 ) -> list[RenderedResult]:
     candidates = retriever.retrieve_multiple(
-        description=spec.query,
+        description=variant.query,
         object_type=spec.object_type,
         max_candidates=retriever.config.use_top_k,
     )
@@ -740,6 +817,7 @@ def render_results(
         result.metadata_path = write_result_metadata(
             output_dir=result_dir,
             spec=spec,
+            variant=variant,
             method_key=method_key,
             result=result,
             render_views=render_views,
@@ -807,6 +885,7 @@ def write_markdown(
         f"- Render size: `{args.render_width}x{args.render_height}`",
         f"- Render cache root: `{args.render_cache_root}`",
         f"- Render views: `{', '.join(args.render_views)}`",
+        f"- Query variants: `{', '.join(QUERY_VARIANT_LABELS.values())}`",
         "",
         "## Prompt Cases",
         "",
@@ -831,50 +910,66 @@ def write_markdown(
             [
                 f"### {spec['case_id']} / {spec['object_name']}",
                 "",
-                f"- Query: `{spec['query']}`",
+                f"- Keyword: `{spec['keyword']}`",
                 f"- Object type: `{spec['object_type']}`",
+                f"- Scene background: `{spec['context_prompt']}`",
                 "",
-                "| HSSD embedding retrieval | OpenCLIP retrieval |",
-                "| --- | --- |",
             ]
         )
 
-        embedding_montage = item["methods"]["hssd_embedding"].get("montage_path")
-        openclip_montage = item["methods"]["openclip"].get("montage_path")
-        embedding_cell = (
-            f"![hssd embedding]({relative_to_report(output_dir / embedding_montage, report_path)})"
-            if embedding_montage
-            else "No render"
-        )
-        openclip_cell = (
-            f"![openclip]({relative_to_report(output_dir / openclip_montage, report_path)})"
-            if openclip_montage
-            else "No render"
-        )
-        lines.extend([f"| {embedding_cell} | {openclip_cell} |", ""])
-
-        for method_key, method_label in [
-            ("hssd_embedding", "HSSD embedding"),
-            ("openclip", "OpenCLIP"),
-        ]:
-            lines.extend([f"**{method_label} top results**", ""])
-            rows = item["methods"][method_key]["results"]
-            if not rows:
-                lines.extend(["No candidates.", ""])
-                continue
+        for variant_id, variant_payload in item["variants"].items():
             lines.extend(
                 [
-                    "| Rank | Asset | Score | Name | WordNet |",
-                    "| --- | --- | ---: | --- | --- |",
+                    f"#### {variant_payload['label']}",
+                    "",
+                    f"- Variant ID: `{variant_id}`",
+                    f"- Query: `{variant_payload['query']}`",
+                    "",
+                    "| HSSD embedding retrieval | OpenCLIP retrieval |",
+                    "| --- | --- |",
                 ]
             )
-            for row in rows:
-                asset = row["asset_id"]
-                lines.append(
-                    f"| {row['rank']} | `{asset[:12]}` | {row['score']:.4f} | "
-                    f"{row['name']} | `{row['wordnet_key']}` |"
+
+            embedding_montage = variant_payload["methods"]["hssd_embedding"].get(
+                "montage_path"
+            )
+            openclip_montage = variant_payload["methods"]["openclip"].get(
+                "montage_path"
+            )
+            embedding_cell = (
+                f"![hssd embedding]({relative_to_report(output_dir / embedding_montage, report_path)})"
+                if embedding_montage
+                else "No render"
+            )
+            openclip_cell = (
+                f"![openclip]({relative_to_report(output_dir / openclip_montage, report_path)})"
+                if openclip_montage
+                else "No render"
+            )
+            lines.extend([f"| {embedding_cell} | {openclip_cell} |", ""])
+
+            for method_key, method_label in [
+                ("hssd_embedding", "HSSD embedding"),
+                ("openclip", "OpenCLIP"),
+            ]:
+                lines.extend([f"**{method_label} top results**", ""])
+                rows = variant_payload["methods"][method_key]["results"]
+                if not rows:
+                    lines.extend(["No candidates.", ""])
+                    continue
+                lines.extend(
+                    [
+                        "| Rank | Asset | Score | Name | WordNet |",
+                        "| --- | --- | ---: | --- | --- |",
+                    ]
                 )
-            lines.append("")
+                for row in rows:
+                    asset = row["asset_id"]
+                    lines.append(
+                        f"| {row['rank']} | `{asset[:12]}` | {row['score']:.4f} | "
+                        f"{row['name']} | `{row['wordnet_key']}` |"
+                    )
+                lines.append("")
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -987,8 +1082,19 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     report_path = args.output_dir / "hssd_embedding_vs_openclip.md"
 
-    cases = parse_probe_cases(args.probe_script)
-    specs = build_query_specs(args.max_queries)
+    parsed_cases = parse_probe_cases(args.probe_script)
+    # 2026-07-09 修改原因：即使外部 probe 脚本临时不可读，也保留四个 canonical case 的场景背景，
+    # 让“背景+关键词”检索对比依然可运行，同时优先保留脚本里解析出的 critic_goal/prompt。
+    cases = {
+        case_id: {"critic_goal": "", "prompt": prompt}
+        for case_id, prompt in DEFAULT_CASE_PROMPTS.items()
+    }
+    for case_id, meta in parsed_cases.items():
+        cases[case_id] = {
+            "critic_goal": meta.get("critic_goal", ""),
+            "prompt": meta.get("prompt", DEFAULT_CASE_PROMPTS.get(case_id, "")),
+        }
+    specs = build_query_specs(args.max_queries, cases)
     LOGGER.info("Writing probe output to %s", args.output_dir)
     LOGGER.info("Running %d object queries", len(specs))
     if args.render_cache_root.exists():
@@ -1036,42 +1142,48 @@ def main() -> int:
     for index, spec in enumerate(specs, start=1):
         query_slug = f"{index:02d}_{slugify(spec.case_id)}_{slugify(spec.object_name)}"
         query_dir = args.output_dir / query_slug
-        LOGGER.info(
-            "[%d/%d] %s / %s (%s)",
-            index,
-            len(specs),
-            spec.case_id,
-            spec.object_name,
-            spec.query,
-        )
+        LOGGER.info("[%d/%d] %s / %s", index, len(specs), spec.case_id, spec.object_name)
 
-        method_payloads: dict[str, dict[str, Any]] = {}
-        for method_key, retriever in [
-            ("hssd_embedding", embedding_retriever),
-            ("openclip", openclip_retriever),
-        ]:
-            method_dir = query_dir / method_key
-            results = render_results(
-                retriever=retriever,
-                renderer=renderer,
-                spec=spec,
-                method_dir=method_dir,
-                method_key=method_key,
-                width=args.render_width,
-                height=args.render_height,
-                cache_root=render_cache_root,
-                render_views=args.render_views,
+        variant_payloads: dict[str, dict[str, Any]] = {}
+        for variant in build_query_variants(spec):
+            LOGGER.info(
+                "  - variant=%s query=%s",
+                variant.variant_id,
+                variant.query,
             )
-            montage = results[0].montage_path if results else None
-            method_payloads[method_key] = {
-                "montage_path": (
-                    montage.resolve().relative_to(args.output_dir.resolve()).as_posix()
-                    if montage is not None
-                    else None
-                ),
-                "results": [
-                    result_to_json(result, args.output_dir) for result in results
-                ],
+            method_payloads: dict[str, dict[str, Any]] = {}
+            for method_key, retriever in [
+                ("hssd_embedding", embedding_retriever),
+                ("openclip", openclip_retriever),
+            ]:
+                method_dir = query_dir / variant.variant_id / method_key
+                results = render_results(
+                    retriever=retriever,
+                    renderer=renderer,
+                    spec=spec,
+                    variant=variant,
+                    method_dir=method_dir,
+                    method_key=method_key,
+                    width=args.render_width,
+                    height=args.render_height,
+                    cache_root=render_cache_root,
+                    render_views=args.render_views,
+                )
+                montage = results[0].montage_path if results else None
+                method_payloads[method_key] = {
+                    "montage_path": (
+                        montage.resolve().relative_to(args.output_dir.resolve()).as_posix()
+                        if montage is not None
+                        else None
+                    ),
+                    "results": [
+                        result_to_json(result, args.output_dir) for result in results
+                    ],
+                }
+            variant_payloads[variant.variant_id] = {
+                "label": variant.label,
+                "query": variant.query,
+                "methods": method_payloads,
             }
 
         all_results.append(
@@ -1079,10 +1191,11 @@ def main() -> int:
                 "query": {
                     "case_id": spec.case_id,
                     "object_name": spec.object_name,
-                    "query": spec.query,
+                    "keyword": spec.keyword,
                     "object_type": spec.object_type,
+                    "context_prompt": spec.context_prompt,
                 },
-                "methods": method_payloads,
+                "variants": variant_payloads,
             }
         )
 
