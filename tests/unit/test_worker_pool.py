@@ -13,11 +13,24 @@ from scenesmith.agent_utils.geometry_generation_server.gpu_worker import (
     WorkerReady,
     WorkRequest,
     WorkResult,
+    _preload_failure_is_fatal,
 )
 from scenesmith.agent_utils.geometry_generation_server.worker_pool import (
     GPUWorkerPool,
     PoolStats,
 )
+
+
+class TestWorkerPreloadPolicy(unittest.TestCase):
+    """Test worker preload failure handling policy."""
+
+    def test_sam3d_preload_failure_keeps_worker_alive(self):
+        """SAM3D preload can fail locally without triggering restart loops."""
+        self.assertFalse(_preload_failure_is_fatal("sam3d"))
+
+    def test_hunyuan_preload_failure_is_fatal(self):
+        """Hunyuan preload still fails fast because generated assets require it."""
+        self.assertTrue(_preload_failure_is_fatal("hunyuan3d"))
 
 
 class TestGPUDetection(unittest.TestCase):

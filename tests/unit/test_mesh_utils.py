@@ -539,6 +539,30 @@ class TestRemoveMeshFloaters(unittest.TestCase):
         cleaned_mesh = trimesh.load(output_path, force="mesh")
         self.assertAlmostEqual(cleaned_mesh.volume, main_mesh.volume, delta=0.01)
 
+    def test_remove_floaters_skips_spatial_clustering_when_component_cap_exceeded(self):
+        """Very fragmented meshes should be preserved instead of stalling cleanup."""
+        main_mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        floater = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
+        floater.apply_translation([2.0, 0, 0])
+
+        input_path = self.temp_path / "component_cap_input.glb"
+        output_path = self.temp_path / "component_cap_output.glb"
+        combined = trimesh.util.concatenate([main_mesh, floater])
+        combined.export(input_path)
+
+        # 2026-07-09 修改原因：复现 HSSD lamp 出现 91605 components 后
+        # spatial clustering 长时间无进展；超过阈值时应快速保留 mesh。
+        remove_mesh_floaters(
+            mesh_path=input_path,
+            output_path=output_path,
+            distance_threshold=0.05,
+            max_components_for_spatial_clustering=1,
+        )
+
+        cleaned_mesh = trimesh.load(output_path, force="mesh")
+        self.assertAlmostEqual(cleaned_mesh.volume, combined.volume, delta=0.01)
+        self.assertEqual(len(cleaned_mesh.split()), 2)
+
 
 class TestChooseFallbackFrontAxis(unittest.TestCase):
     """Test fallback front axis selection when VLM predicts parallel axes."""

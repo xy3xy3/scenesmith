@@ -637,8 +637,16 @@ def _find_connected_components_within_distance(
     return visited
 
 
+MAX_COMPONENTS_FOR_SPATIAL_FLOATER_CLUSTERING = 50000
+
+
 def remove_mesh_floaters(
-    mesh_path: Path, output_path: Path | None = None, distance_threshold: float = 0.05
+    mesh_path: Path,
+    output_path: Path | None = None,
+    distance_threshold: float = 0.05,
+    max_components_for_spatial_clustering: int = (
+        MAX_COMPONENTS_FOR_SPATIAL_FLOATER_CLUSTERING
+    ),
 ) -> Path:
     """Remove disconnected mesh components (floaters) based on spatial distance.
 
@@ -664,6 +672,10 @@ def remove_mesh_floaters(
             further than this distance from any component in the main cluster will
             be removed as floaters. Default is 0.05 (5cm). Set to very large value
             (e.g., 1000.0) to keep all components.
+        max_components_for_spatial_clustering: Component count above which the
+            function skips distance clustering and preserves the mesh unchanged.
+            This guards against extremely fragmented library assets where the
+            floater cleanup can cost more than the rest of asset conversion.
 
     Returns:
         Path to the cleaned mesh file.
@@ -709,6 +721,21 @@ def remove_mesh_floaters(
         console_logger.info("Single component mesh, no floaters to remove")
         final_output_path = output_path if output_path is not None else mesh_path
         if output_path is not None:
+            mesh.export(final_output_path)
+        return final_output_path
+
+    if component_count > max_components_for_spatial_clustering:
+        # 2026-07-09 修改原因：部分 HSSD 小物 mesh 可有 90k+ disconnected
+        # components；空间聚类会卡住 replay。此时保留原 mesh 比长时间阻塞更安全。
+        console_logger.warning(
+            "Skipping mesh floater removal for %s: %d components exceed limit %d",
+            mesh_path,
+            component_count,
+            max_components_for_spatial_clustering,
+        )
+        final_output_path = output_path if output_path is not None else mesh_path
+        if output_path is not None:
+            final_output_path.parent.mkdir(parents=True, exist_ok=True)
             mesh.export(final_output_path)
         return final_output_path
 

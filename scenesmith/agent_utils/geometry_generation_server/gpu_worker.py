@@ -81,6 +81,11 @@ class WorkerReady:
     """ID of the worker that is now ready."""
 
 
+def _preload_failure_is_fatal(backend: str) -> bool:
+    """Return whether a preload error should terminate the worker process."""
+    return backend != "sam3d"
+
+
 def gpu_worker_main(
     gpu_id: int,
     work_queue: Queue,
@@ -180,7 +185,16 @@ def gpu_worker_main(
             )
         except Exception as e:
             logger.error(f"Pipeline preload failed: {e}")
-            raise
+            # 2026-07-09 修改原因：SAM3D 在 HSSD-heavy runs 中是可选后端；
+            # 本地缺少 iopath 等 SAM3D 依赖时保持 worker 存活，避免 health
+            # monitor 每几秒重启刷屏；真实 SAM3D 请求仍走 per-request error。
+            if _preload_failure_is_fatal(backend):
+                raise
+            logger.warning(
+                "Continuing without preloaded SAM3D pipeline; first SAM3D request "
+                "will attempt lazy initialization and may fail if dependencies are "
+                "still missing."
+            )
         finally:
             if init_lock is not None:
                 init_lock.release()
