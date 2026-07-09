@@ -968,6 +968,28 @@ class TestClearanceViolationFiltering(unittest.TestCase):
         )
         self.scene.add_object(wall_obj)
 
+        self.bed_id = UniqueID("bed_00000001")
+        bed_obj = SceneObject(
+            object_id=self.bed_id,
+            object_type=ObjectType.FURNITURE,
+            name="Bed",
+            description="Queen bed with headboard",
+            transform=RigidTransform(np.array([0.0, 1.0, 0.0])),
+            sdf_path=sdf_path,
+        )
+        self.scene.add_object(bed_obj)
+
+        self.nightstand_id = UniqueID("nightstand_00000001")
+        nightstand_obj = SceneObject(
+            object_id=self.nightstand_id,
+            object_type=ObjectType.FURNITURE,
+            name="Nightstand",
+            description="Bedside table with drawer",
+            transform=RigidTransform(np.array([0.8, 1.0, 0.0])),
+            sdf_path=sdf_path,
+        )
+        self.scene.add_object(nightstand_obj)
+
     def test_filter_door_violations_furniture_agent(self):
         """FurnitureAgent sees only door violations from FURNITURE objects."""
         violations = [
@@ -1068,6 +1090,40 @@ class TestClearanceViolationFiltering(unittest.TestCase):
         )
         self.assertEqual(len(wall_filtered), 1)
         self.assertEqual(wall_filtered[0].furniture_id, str(self.wall_id))
+
+    def test_filter_window_violations_ignores_bedside_furniture(self):
+        """Beds and nightstands may overlap window zones to stay wall-backed."""
+        violations = [
+            WindowClearanceViolation(
+                furniture_id=str(self.bed_id),
+                window_label="window_1",
+                furniture_top_height=1.1,
+                sill_height=0.9,
+            ),
+            WindowClearanceViolation(
+                furniture_id=str(self.nightstand_id),
+                window_label="window_1",
+                furniture_top_height=1.0,
+                sill_height=0.9,
+            ),
+            WindowClearanceViolation(
+                furniture_id=str(self.furniture_id),
+                window_label="window_2",
+                furniture_top_height=1.5,
+                sill_height=1.0,
+            ),
+        ]
+
+        # 2026-07-09 修改原因：床和床头柜靠有窗墙时不应触发移动修复；
+        # 普通家具挡窗仍要报告。
+        filtered = filter_window_violations_by_agent(
+            violations=violations,
+            scene=self.scene,
+            agent_type=AgentType.FURNITURE,
+        )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0].furniture_id, str(self.furniture_id))
 
     def test_filter_open_connection_violations_by_agent(self):
         """Open connection violations filter by any blocking furniture of agent type."""

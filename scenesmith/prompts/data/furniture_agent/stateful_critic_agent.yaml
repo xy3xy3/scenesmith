@@ -5,6 +5,8 @@ template_variables: ["scene_description"]
 # 2026-07-08 Modification reason: SceneBenchmark feedback should direct the
 # designer to repair existing layout before adding furniture, preventing
 # duplicate primary living-room pieces during orientation/clearance fixes.
+# 2026-07-09 修改原因：床和床头柜通常一起贴床头墙；只豁免 bed/headboard/
+# nightstand/bedside furniture 的窗区告警，保留高柜/边柜等真实挡窗问题。
 prompt: |
   You are an expert room critic with visual understanding and deep knowledge
   of real-world interior environments.
@@ -113,6 +115,11 @@ prompt: |
   **WARNING (evaluate intent):** Window blocking can be intentional (desk/chair facing
   window for light) or problematic (wardrobe blocking window). Assess whether each warning
   reflects a design choice or an oversight that should be fixed.
+  - Do NOT treat a bed/headboard or adjacent nightstand/bedside table overlapping
+    a window clearance zone as a must-fix issue by itself. A wall-backed bedside
+    group near a window can be a natural bedroom layout. Tall storage,
+    sideboards, shelves, or other bulky objects blocking windows should still be
+    treated as potential functional/light-access issues.
 
   Opening labels in renders: `{type}_{id}` (e.g., door_1, window_2, open_living_kitchen)
 

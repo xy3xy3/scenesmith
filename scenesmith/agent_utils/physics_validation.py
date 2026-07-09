@@ -1,6 +1,7 @@
 """Physics validation for scenes using Drake."""
 
 import logging
+import re
 import time
 
 from dataclasses import dataclass
@@ -21,6 +22,31 @@ from scenesmith.agent_utils.drake_utils import (
 from scenesmith.agent_utils.room import AgentType, ObjectType, RoomScene, UniqueID
 
 console_logger = logging.getLogger(__name__)
+
+
+_BED_WINDOW_EXEMPT_TOKEN_RE = re.compile(
+    r"\bbed(?:_\d+)?\b|(?:^|_)bed(?:_|$)|"
+    r"\bnight\s*stand\b|\bnightstand(?:_\d+)?\b|(?:^|_)nightstand(?:_|$)|"
+    r"\bbedside\b|(?:^|_)bedside(?:_|$)"
+)
+
+
+def _is_bed_window_warning_exempt_object(object_id: str, scene: RoomScene) -> bool:
+    """Return True when a window warning should not move bedside furniture."""
+    obj = scene.objects.get(UniqueID(object_id))
+    if obj is None or obj.object_type != ObjectType.FURNITURE:
+        return False
+
+    fields = [str(obj.object_id), obj.name, obj.description]
+    category = obj.metadata.get("category") or obj.metadata.get("semantic_category")
+    if category is not None:
+        fields.append(str(category))
+
+    # 2026-07-09 修改原因：床和床头柜通常一起贴床头墙；窗区 warning
+    # 不应迫使它们离墙，但仍保留高柜/墙挂物等真实挡窗告警。
+    return any(
+        _BED_WINDOW_EXEMPT_TOKEN_RE.search(field.lower()) for field in fields if field
+    )
 
 
 @dataclass
@@ -1234,6 +1260,8 @@ def filter_window_violations_by_agent(
     filtered = []
     for v in violations:
         obj_type = _get_object_type_for_collision_id(v.furniture_id, scene)
+        if _is_bed_window_warning_exempt_object(v.furniture_id, scene):
+            continue
         if obj_type == target_object_type:
             filtered.append(v)
 
