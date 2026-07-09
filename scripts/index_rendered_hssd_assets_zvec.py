@@ -22,6 +22,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import warnings
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,13 @@ import zvec
 from tqdm import tqdm
 
 LOGGER = logging.getLogger("index_rendered_hssd_assets_zvec")
+
+# 2026-07-09 修改原因：并行渲染 worker 启动时 Pydantic 会重复打印无害的 Field(repr/frozen) warning，
+# 会淹没 ACP 日志里的 tqdm 进度；这里只过滤这类第三方库噪声。
+warnings.filterwarnings(
+    "ignore",
+    message=r"The '(repr|frozen)' attribute .*`?Field\(\)`? function.*",
+)
 
 HSSD_ID_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-fA-F]{40})(?![0-9a-fA-F])")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
