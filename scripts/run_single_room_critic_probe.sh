@@ -49,6 +49,8 @@ EXPERIMENT_NAME_PREFIX="${EXPERIMENT_NAME_PREFIX:-single_room_critic_probe}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/critic_probe/$RUN_ID}"
 MAX_CASES="${MAX_CASES:-0}"
+CASE_FILTER="${CASE_FILTER:-}"
+PRESERVE_CASE_BATCH_INDEX="${PRESERVE_CASE_BATCH_INDEX:-false}"
 SCENE_BATCH_SIZE="${SCENE_BATCH_SIZE:-1}"
 SCENE_WORKERS_PER_PROCESS="${SCENE_WORKERS_PER_PROCESS:-1}"
 PIPELINE_STOP_STAGE="${PIPELINE_STOP_STAGE:-furniture}"
@@ -65,6 +67,9 @@ CRITIC_ANNOTATION_CACHE_DIR="${CRITIC_ANNOTATION_CACHE_DIR:-}"
 CRITIC_HSSD_FRONT_AXIS_SOURCE="${CRITIC_HSSD_FRONT_AXIS_SOURCE:-vlm}"
 CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH="${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH:-}"
 CRITIC_ROOM_STAGE_HOOKS="${CRITIC_ROOM_STAGE_HOOKS:-}"
+# 2026-07-09 修改原因：允许 ACP 运行显式启用本地 MaterialsRetrievalServer，
+# 让 napkin/placemat/tablecloth 等 thin_covering 资产优先使用真实 PBR 材质。
+ENABLE_MATERIALS_RETRIEVAL="${ENABLE_MATERIALS_RETRIEVAL:-false}"
 CRITIC_FD_RELATION_PROPOSER_MODE="${CRITIC_FD_RELATION_PROPOSER_MODE:-vlm}"
 CRITIC_MAX_FD_RELATION_PROPOSALS="${CRITIC_MAX_FD_RELATION_PROPOSALS:-8}"
 CRITIC_PROBE_PARALLEL="${CRITIC_PROBE_PARALLEL:-false}"
@@ -214,13 +219,28 @@ if ! CRITIC_PROBE_PARALLEL="$(normalize_bool "$CRITIC_PROBE_PARALLEL")"; then
     exit 1
 fi
 
+if ! ENABLE_MATERIALS_RETRIEVAL="$(normalize_bool "$ENABLE_MATERIALS_RETRIEVAL")"; then
+    echo "错误：ENABLE_MATERIALS_RETRIEVAL 必须是 true/false"
+    exit 1
+fi
+
 if ! AVOID_FORK_BPY="$(normalize_bool "$AVOID_FORK_BPY")"; then
     echo "错误：AVOID_FORK_BPY 必须是 true/false"
     exit 1
 fi
 
+if ! PRESERVE_CASE_BATCH_INDEX="$(normalize_bool "$PRESERVE_CASE_BATCH_INDEX")"; then
+    echo "错误：PRESERVE_CASE_BATCH_INDEX 必须是 true/false"
+    exit 1
+fi
+
 if [ "$AVOID_FORK_BPY" = "true" ] && [ "$SCENE_WORKERS_PER_PROCESS" -ne 1 ]; then
     echo "错误：AVOID_FORK_BPY=true 时 SCENE_WORKERS_PER_PROCESS 必须为 1，避免 fork 已导入的 bpy。"
+    exit 1
+fi
+
+if [ "$PRESERVE_CASE_BATCH_INDEX" = "true" ] && [ "$SCENE_BATCH_SIZE" -ne 1 ]; then
+    echo "错误：PRESERVE_CASE_BATCH_INDEX=true 时 SCENE_BATCH_SIZE 必须为 1"
     exit 1
 fi
 
@@ -265,7 +285,22 @@ if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
 fi
 
 if [ -z "$CRITIC_ROOM_STAGE_HOOKS" ]; then
-    CRITIC_ROOM_STAGE_HOOKS="[$CRITIC_REPORT_STAGE_LABEL]"
+    # 2026-07-09 修改原因：最终 final_scene 才报告会把家具布局问题拖到
+    # manipuland 后才暴露；默认覆盖从家具到停止阶段的所有 room checkpoint。
+    case "$PIPELINE_STOP_STAGE" in
+        furniture)
+            CRITIC_ROOM_STAGE_HOOKS="[scene_after_furniture]"
+            ;;
+        wall_mounted)
+            CRITIC_ROOM_STAGE_HOOKS="[scene_after_furniture,scene_after_wall_objects]"
+            ;;
+        ceiling_mounted)
+            CRITIC_ROOM_STAGE_HOOKS="[scene_after_furniture,scene_after_wall_objects,scene_after_ceiling_objects]"
+            ;;
+        manipuland)
+            CRITIC_ROOM_STAGE_HOOKS="[scene_after_furniture,scene_after_wall_objects,scene_after_ceiling_objects,final_scene]"
+            ;;
+    esac
 fi
 
 if [ ! -d "$PROJECT_ROOT/.venv" ]; then
@@ -320,6 +355,8 @@ echo "请求运行模式: $REQUESTED_MODE"
 echo "实际运行模式: $MODE"
 echo "模型名: $MODEL_NAME"
 echo "MAX_CASES: $MAX_CASES (0 表示不限制)"
+echo "CASE_FILTER: ${CASE_FILTER:-<none>}"
+echo "PRESERVE_CASE_BATCH_INDEX: $PRESERVE_CASE_BATCH_INDEX"
 echo "SCENE_BATCH_SIZE: $SCENE_BATCH_SIZE"
 echo "SCENE_WORKERS_PER_PROCESS: $SCENE_WORKERS_PER_PROCESS"
 echo "PIPELINE_STOP_STAGE: $PIPELINE_STOP_STAGE"
@@ -333,6 +370,7 @@ echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
 echo "CRITIC_HSSD_FRONT_AXIS_SOURCE: $CRITIC_HSSD_FRONT_AXIS_SOURCE"
 echo "CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH: ${CRITIC_HSSD_FRONT_AXIS_LOOKUP_PATH:-<default bundled lookup>}"
 echo "CRITIC_ROOM_STAGE_HOOKS: $CRITIC_ROOM_STAGE_HOOKS"
+echo "ENABLE_MATERIALS_RETRIEVAL: $ENABLE_MATERIALS_RETRIEVAL"
 echo "CRITIC_FD_RELATION_PROPOSER_MODE: $CRITIC_FD_RELATION_PROPOSER_MODE"
 echo "CRITIC_MAX_FD_RELATION_PROPOSALS: $CRITIC_MAX_FD_RELATION_PROPOSALS"
 echo "CRITIC_PROBE_PARALLEL: $CRITIC_PROBE_PARALLEL"
@@ -366,7 +404,7 @@ COMMON_ARGS=(
     "experiment.pipeline.max_parallel_rooms=1"
     "experiment.pipeline.skip_wall_mounted=${SKIP_WALL_MOUNTED}"
     "experiment.pipeline.skip_ceiling_mounted=${SKIP_CEILING_MOUNTED}"
-    "experiment.materials_retrieval_server.enabled=false"
+    "experiment.materials_retrieval_server.enabled=${ENABLE_MATERIALS_RETRIEVAL}"
     "experiment.scenebenchmark_critic.room_stage_hooks=${CRITIC_ROOM_STAGE_HOOKS}"
     "experiment.scenebenchmark_critic.house_stage_hooks=[]"
     "floor_plan_agent.materials.use_retrieval_server=false"
@@ -707,9 +745,35 @@ run_mode() {
         fi
     }
 
+    case_selected() {
+        local scene_index="$1"
+        local case_id="$2"
+        local token
+
+        if [ -z "$CASE_FILTER" ]; then
+            return 0
+        fi
+
+        # 2026-07-09 修改原因：支持只回放指定内置 case，同时可保持
+        # batch_004 这类 shared_base 对齐关系，便于针对单个失败场景验证。
+        IFS=',' read -ra filter_tokens <<< "$CASE_FILTER"
+        for token in "${filter_tokens[@]}"; do
+            token="${token#"${token%%[![:space:]]*}"}"
+            token="${token%"${token##*[![:space:]]}"}"
+            if [ "$token" = "$case_id" ] || [ "$token" = "$scene_index" ]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
     for case_entry in "${CASES[@]}"; do
         IFS="|" read -r case_id critic_goal prompt <<< "$case_entry"
         count=$((count + 1))
+
+        if ! case_selected "$count" "$case_id"; then
+            continue
+        fi
 
         if [ "$MAX_CASES" -gt 0 ] && [ "$count" -gt "$MAX_CASES" ]; then
             echo "已达到 MAX_CASES=$MAX_CASES，停止继续提交新场景。"
@@ -719,7 +783,11 @@ run_mode() {
 
         batch_entries+=("${count}|${case_id}|${critic_goal}|${prompt}")
 
-        if [ "${#batch_entries[@]}" -ge "$SCENE_BATCH_SIZE" ]; then
+        if [ "$PRESERVE_CASE_BATCH_INDEX" = "true" ]; then
+            batch_index="$count"
+            launch_batch
+            batch_entries=()
+        elif [ "${#batch_entries[@]}" -ge "$SCENE_BATCH_SIZE" ]; then
             batch_index=$((batch_index + 1))
             launch_batch
             batch_entries=()
