@@ -132,6 +132,24 @@ SIZE_PROFILES: tuple[SizeProfile, ...] = (
         depth=DimensionRange(0.08, 0.14),
         height=DimensionRange(0.02, 0.06),
     ),
+    # 2026-07-09 修改原因：study desk replay 中 HSSD 对 pen/pencil 连续返回
+    # 笔筒/家具/平板等错类资产；为单支书写工具提供稳定的真实尺度 envelope。
+    SizeProfile(
+        name="writing_instrument",
+        patterns=(
+            r"\bballpoint pen\b",
+            r"\bblack pen\b",
+            r"\bblue pen\b",
+            r"\bpen\b",
+            r"\bpencil\b",
+            r"\bmechanical pencil\b",
+            r"\bwriting instrument\b",
+        ),
+        width=DimensionRange(0.006, 0.02),
+        depth=DimensionRange(0.10, 0.20),
+        height=DimensionRange(0.006, 0.025),
+        footprint_swappable=True,
+    ),
     SizeProfile(
         name="mug_cup",
         patterns=(r"\bmug\b", r"\bcup\b", r"\bteacup\b", r"\bcoffee cup\b"),

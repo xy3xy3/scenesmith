@@ -199,6 +199,58 @@ class TestSimpleManipulandPrimitiveFallback(unittest.TestCase):
         self.assertTrue(can_generate_simple_manipuland_primitive(coaster))
         self.assertFalse(can_generate_simple_manipuland_primitive(sculpture))
 
+    def test_primitive_classifier_supports_common_desk_small_items(self) -> None:
+        """Mouse and standalone pens should degrade to simple primitives."""
+        mouse = AssetItem(
+            description="black wireless computer mouse",
+            short_name="computer_mouse",
+            dimensions=[0.08, 0.12, 0.035],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+        pen = AssetItem(
+            description="ballpoint pen blue ink",
+            short_name="blue_pen",
+            dimensions=[0.012, 0.14, 0.012],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+        pen_holder = AssetItem(
+            description="pen holder cup",
+            short_name="pen_holder",
+            dimensions=[0.08, 0.08, 0.12],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["generated"],
+        )
+
+        # 2026-07-09 修改原因：study desk replay 中 mouse/pen/pencil
+        # HSSD 候选反复错类；只给单个小物 fallback，笔筒仍走正常资产流程。
+        self.assertTrue(can_generate_simple_manipuland_primitive(mouse))
+        self.assertTrue(can_generate_simple_manipuland_primitive(pen))
+        self.assertFalse(can_generate_simple_manipuland_primitive(pen_holder))
+
+    def test_primitive_classifier_supports_table_linen(self) -> None:
+        """Napkins and placemats should not disappear when materials are disabled."""
+        napkin = AssetItem(
+            description="folded white linen napkin",
+            short_name="white_linen_napkin",
+            dimensions=[0.22, 0.15, 0.01],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["thin_covering"],
+        )
+        placemat = AssetItem(
+            description="rectangular woven placemat",
+            short_name="woven_placemat",
+            dimensions=[0.35, 0.25, 0.008],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["thin_covering"],
+        )
+
+        # 2026-07-09 修改原因：critic probe 中 materials client 关闭时，
+        # thin_covering-only napkin 失败；这类薄片餐桌织物需要 procedural fallback。
+        self.assertTrue(can_generate_simple_manipuland_primitive(napkin))
+        self.assertTrue(can_generate_simple_manipuland_primitive(placemat))
+
     def test_generate_simple_primitive_glb(self) -> None:
         item = AssetItem(
             description="television remote control",
@@ -214,6 +266,39 @@ class TestSimpleManipulandPrimitiveFallback(unittest.TestCase):
             self.assertIsNotNone(path)
             self.assertTrue(path.exists())
             self.assertEqual(path.suffix, ".glb")
+
+    def test_generate_pen_and_mouse_primitives(self) -> None:
+        items = [
+            AssetItem(
+                description="black wireless computer mouse",
+                short_name="computer_mouse",
+                dimensions=[0.08, 0.12, 0.035],
+                object_type=ObjectType.MANIPULAND,
+                strategies=["generated"],
+            ),
+            AssetItem(
+                description="mechanical pencil",
+                short_name="mechanical_pencil",
+                dimensions=[0.012, 0.16, 0.012],
+                object_type=ObjectType.MANIPULAND,
+                strategies=["generated"],
+            ),
+            AssetItem(
+                description="folded white linen napkin",
+                short_name="white_linen_napkin",
+                dimensions=[0.22, 0.15, 0.01],
+                object_type=ObjectType.MANIPULAND,
+                strategies=["thin_covering"],
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for item in items:
+                path = generate_simple_manipuland_primitive(item, Path(tmpdir))
+
+                self.assertIsNotNone(path)
+                self.assertTrue(path.exists())
+                self.assertEqual(path.suffix, ".glb")
 
     def test_router_uses_primitive_fallback_when_retrieval_fails(self) -> None:
         router = self._make_router()
@@ -234,6 +319,53 @@ class TestSimpleManipulandPrimitiveFallback(unittest.TestCase):
                 geometry_dir=Path(tmpdir),
                 debug_dir=Path(tmpdir) / "debug",
                 hssd_client=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.asset_source, "procedural_primitive")
+            self.assertTrue(result.geometry_path.exists())
+
+    def test_router_falls_back_for_table_linen_when_materials_unavailable(self) -> None:
+        cfg = OmegaConf.create(
+            {
+                "asset_manager": {
+                    "general_asset_source": "hssd",
+                    "side_view_elevation_degrees": 15.0,
+                    "validation_taa_samples": 8,
+                    "router": {
+                        "simple_manipuland_fallback": {"enabled": True},
+                        "strategies": {
+                            "thin_covering": {"enabled": True, "max_retries": 1}
+                        },
+                    },
+                }
+            }
+        )
+        router = AssetRouter(
+            agent_type=AgentType.MANIPULAND,
+            vlm_service=MagicMock(),
+            cfg=cfg,
+        )
+        item = AssetItem(
+            description="folded white linen napkin",
+            short_name="white_linen_napkin",
+            dimensions=[0.22, 0.15, 0.01],
+            object_type=ObjectType.MANIPULAND,
+            strategies=["thin_covering"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 2026-07-09 修改原因：critic probe 关闭 materials client 时，
+            # napkin 的 thin_covering 策略会失败，必须回退到薄片 primitive。
+            result = router.generate_with_validation(
+                item=item,
+                geometry_client=None,
+                image_generator=None,
+                images_dir=None,
+                geometry_dir=Path(tmpdir),
+                debug_dir=Path(tmpdir) / "debug",
+                hssd_client=None,
+                materials_client=None,
             )
 
             self.assertIsNotNone(result)
@@ -401,6 +533,55 @@ class TestAnalysisResponseParsing(unittest.TestCase):
         result = router._parse_analysis_response(response)
         assert len(result.items) == 1
         assert result.items[0].object_type == ObjectType.FURNITURE
+
+    def test_parse_normalizes_negative_router_dimensions(self) -> None:
+        """Negative router dimensions are treated as sign slips, not scale values."""
+        router = AssetRouter(
+            agent_type=AgentType.FURNITURE, vlm_service=MagicMock(), cfg=MagicMock()
+        )
+
+        response = {
+            "items": [
+                {
+                    "description": "classic dining chair",
+                    "short_name": "dining_chair",
+                    "dimensions": [-0.45, 0.5, 0.95],
+                    "object_type": "FURNITURE",
+                    "strategies": ["generated"],
+                }
+            ],
+            "original_description": None,
+        }
+
+        result = router._parse_analysis_response(response)
+
+        assert len(result.items) == 1
+        item = result.items[0]
+        assert item.requested_dimensions == [-0.45, 0.5, 0.95]
+        assert item.dimensions == [0.45, 0.5, 0.95]
+
+    def test_parse_rejects_zero_router_dimensions(self) -> None:
+        """Zero dimensions are invalid and should drop the malformed item."""
+        router = AssetRouter(
+            agent_type=AgentType.FURNITURE, vlm_service=MagicMock(), cfg=MagicMock()
+        )
+
+        response = {
+            "items": [
+                {
+                    "description": "zero width chair",
+                    "short_name": "bad_chair",
+                    "dimensions": [0.0, 0.5, 0.95],
+                    "object_type": "FURNITURE",
+                    "strategies": ["generated"],
+                }
+            ],
+            "original_description": None,
+        }
+
+        result = router._parse_analysis_response(response)
+
+        assert result.items == []
 
     def test_parse_manipuland_normalizes_known_scale_profile(self) -> None:
         """Known manipulands keep original request and use clamped dimensions."""

@@ -79,7 +79,40 @@ if TYPE_CHECKING:
         ObjaverseRetrievalResult,
     )
 
+
 console_logger = logging.getLogger(__name__)
+
+
+def _normalize_router_dimensions(
+    dimensions: list[float], *, description: str
+) -> list[float]:
+    """Normalize dimensions returned by the router before asset conversion."""
+    if len(dimensions) != 3:
+        raise ValueError(
+            f"dimensions must contain exactly 3 values, got {len(dimensions)}: "
+            f"{dimensions}"
+        )
+
+    normalized: list[float] = []
+    for dim in dimensions:
+        try:
+            value = float(dim)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"dimension is not numeric: {dim!r}") from exc
+        if value == 0:
+            raise ValueError(f"dimension must be non-zero, got {dimensions}")
+        normalized.append(abs(value))
+
+    # 2026-07-09 修改原因：LLM/router 可能输出 [-0.45, 0.5, 0.95]
+    # 这类负轴符号 slip；转正后继续生成，并保留原始 requested_dimensions 便于排查。
+    if normalized != list(dimensions):
+        console_logger.warning(
+            "Normalized non-positive router dimensions for '%s': %s -> %s",
+            description,
+            dimensions,
+            normalized,
+        )
+    return normalized
 
 
 class AssetRouter:
@@ -241,7 +274,10 @@ class AssetRouter:
             try:
                 object_type = ObjectType(item_data["object_type"].lower())
                 requested_dimensions = item_data["dimensions"]
-                dimensions = list(requested_dimensions)
+                dimensions = _normalize_router_dimensions(
+                    list(requested_dimensions),
+                    description=item_data.get("description", "<unknown>"),
+                )
                 scale_profile = None
                 scale_cfg = self.cfg.asset_manager.get("manipuland_scale", {}) or {}
                 scale_enabled = scale_cfg.get("enabled", True)

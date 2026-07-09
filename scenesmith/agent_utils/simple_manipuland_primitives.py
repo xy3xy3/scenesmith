@@ -46,6 +46,8 @@ _SUPPORTED_PROFILE_NAMES = {
     "remote_control",
     "computer_monitor",
     "keyboard",
+    "mouse",
+    "writing_instrument",
 }
 
 
@@ -101,6 +103,21 @@ def _primitive_category(item: AssetItem) -> str | None:
     if _matches(
         item,
         (
+            r"\bnapkin(s)?\b",
+            r"\bplacemat(s)?\b",
+            r"\bplace mat(s)?\b",
+            r"\btable runner(s)?\b",
+            r"\btablecloth(s)?\b",
+            r"\blinen(s)?\b",
+        ),
+    ):
+        # 2026-07-09 修改原因：critic probe 中 materials client 关闭时，
+        # napkin 会被 router 选成 thin_covering 后直接失败；用保守薄片
+        # primitive 保留 prompt-critical 餐桌织物，不依赖材料服务。
+        return "table_linen"
+    if _matches(
+        item,
+        (
             r"\bfork(s)?\b",
             r"\bknife\b",
             r"\bknives\b",
@@ -129,12 +146,21 @@ def _mesh_for_category(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     if category == "coaster":
         return _elliptic_cylinder_mesh(width, depth, height, segments=48)
+    if category == "table_linen":
+        linen_height = min(max(height, 0.004), 0.012)
+        return _combined_boxes(
+            [((0.0, 0.0, linen_height / 2.0), (width, depth, linen_height))]
+        )
     if category == "plate_bowl":
         return _elliptic_cylinder_mesh(width, depth, height, segments=64)
     if category in {"notebook_book", "remote_control", "keyboard"}:
         return _combined_boxes(
             [((0.0, 0.0, height / 2.0), (width, depth, height))]
         )
+    if category == "mouse":
+        return _mouse_mesh(width, depth, height)
+    if category == "writing_instrument":
+        return _writing_instrument_mesh(width, depth, height)
     if category == "cutlery":
         return _cutlery_mesh(width, depth, height)
     if category == "computer_monitor":
@@ -188,6 +214,84 @@ def _monitor_mesh(
         ),
     ]
     return _combined_boxes(boxes)
+
+
+def _mouse_mesh(
+    width: float,
+    depth: float,
+    height: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # 2026-07-09 修改原因：HSSD 常把 mouse 检索成板/支架；用低矮椭圆
+    # primitive 保留“桌面鼠标”语义，避免 designer 反复换词重试。
+    body = _elliptic_cylinder_mesh(width, depth, height, segments=48)
+    button_bar_height = max(height * 0.12, 0.003)
+    button_bar_width = min(width * 0.08, 0.008)
+    button = _combined_boxes(
+        [
+            (
+                (0.0, depth * 0.18, height + button_bar_height / 2.0),
+                (button_bar_width, depth * 0.45, button_bar_height),
+            )
+        ]
+    )
+    return _combine_meshes([body, button])
+
+
+def _writing_instrument_mesh(
+    width: float,
+    depth: float,
+    height: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # 2026-07-09 修改原因：单支 pen/pencil 是常见 prompt-critical 小物；
+    # 失败时用细长 primitive，避免错类 HSSD 候选拖慢 critic-on。
+    long_axis_is_x = width >= depth
+    length = max(width, depth)
+    thickness = min(max(min(width, depth), height), 0.02)
+    shaft_length = length * 0.86
+    tip_length = length - shaft_length
+
+    if long_axis_is_x:
+        boxes = [
+            (
+                (-tip_length / 2.0, 0.0, height / 2.0),
+                (shaft_length, thickness, thickness),
+            ),
+            (
+                (shaft_length / 2.0, 0.0, height / 2.0),
+                (tip_length, thickness * 0.65, thickness * 0.65),
+            ),
+        ]
+    else:
+        boxes = [
+            (
+                (0.0, -tip_length / 2.0, height / 2.0),
+                (thickness, shaft_length, thickness),
+            ),
+            (
+                (0.0, shaft_length / 2.0, height / 2.0),
+                (thickness * 0.65, tip_length, thickness * 0.65),
+            ),
+        ]
+    return _combined_boxes(boxes)
+
+
+def _combine_meshes(
+    meshes: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    vertices_parts: list[np.ndarray] = []
+    normals_parts: list[np.ndarray] = []
+    indices_parts: list[np.ndarray] = []
+    vertex_offset = 0
+    for vertices, normals, indices in meshes:
+        vertices_parts.append(vertices)
+        normals_parts.append(normals)
+        indices_parts.append(indices + vertex_offset)
+        vertex_offset += len(vertices)
+    return (
+        np.vstack(vertices_parts).astype(np.float32),
+        np.vstack(normals_parts).astype(np.float32),
+        np.concatenate(indices_parts).astype(np.uint32),
+    )
 
 
 def _combined_boxes(
@@ -460,10 +564,13 @@ def _write_colored_glb(
 def _color_for_category(category: str) -> tuple[float, float, float, float]:
     return {
         "coaster": (0.18, 0.16, 0.12, 1.0),
+        "table_linen": (0.93, 0.90, 0.84, 1.0),
         "cutlery": (0.75, 0.72, 0.68, 1.0),
         "notebook_book": (0.08, 0.16, 0.50, 1.0),
         "plate_bowl": (0.86, 0.84, 0.78, 1.0),
         "remote_control": (0.03, 0.03, 0.035, 1.0),
         "computer_monitor": (0.02, 0.025, 0.03, 1.0),
         "keyboard": (0.04, 0.04, 0.045, 1.0),
+        "mouse": (0.02, 0.02, 0.025, 1.0),
+        "writing_instrument": (0.04, 0.035, 0.032, 1.0),
     }.get(category, (0.5, 0.5, 0.5, 1.0))
