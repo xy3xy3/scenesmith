@@ -51,6 +51,7 @@ from scenesmith.agent_utils.physics_validation import compute_scene_collisions
 from scenesmith.agent_utils.room import (
     ObjectType,
     RoomScene,
+    SceneObject,
     UniqueID,
     deserialize_rigid_transform,
     serialize_rigid_transform,
@@ -1324,6 +1325,17 @@ def apply_surface_projection(
         return scene, False, [], 0.0
 
 
+def _should_preserve_supported_manipuland_on_fall(obj: SceneObject) -> bool:
+    if obj.object_type != ObjectType.MANIPULAND:
+        return False
+    placement_info = getattr(obj, "placement_info", None)
+    if placement_info is None:
+        return False
+    # 2026-07-09 修改原因：surface-placed tabletop/sideboard 小物通常来自
+    # prompt 或 agent 规划；模拟掉落时恢复原支撑面姿态比静默删除更可诊断。
+    return getattr(placement_info, "parent_surface_id", None) is not None
+
+
 def apply_forward_simulation(
     scene: RoomScene,
     simulation_time_s: float = 5.0,
@@ -1337,6 +1349,7 @@ def apply_forward_simulation(
     fallen_manipuland_floor_z: float = -0.5,
     fallen_manipuland_near_floor_z: float = 0.02,
     fallen_manipuland_z_displacement: float = 0.3,
+    preserve_supported_manipulands_on_fall: bool = True,
 ) -> tuple[RoomScene, list[UniqueID]]:
     """Apply forward simulation to settle scene to static equilibrium.
 
@@ -1365,6 +1378,9 @@ def apply_forward_simulation(
             on floor (used with z_displacement check).
         fallen_manipuland_z_displacement: Z drop threshold. Manipulands that drop
             more than this AND end up on floor are removed.
+        preserve_supported_manipulands_on_fall: If True, manipulands with
+            placement_info on a support surface are restored to their pre-simulation
+            pose instead of being deleted when the z-drop fall check fires.
 
     Returns:
         Tuple of (scene, removed_ids) where:
@@ -1396,10 +1412,15 @@ def apply_forward_simulation(
 
         # Store pre-simulation Z positions for fallen manipuland detection.
         pre_sim_z: dict[UniqueID, float] = {}
+        pre_sim_supported_transforms: dict[UniqueID, RigidTransform] = {}
         if remove_fallen_manipulands:
             for obj in scene.objects.values():
                 if obj.object_type == ObjectType.MANIPULAND:
                     pre_sim_z[obj.object_id] = obj.transform.translation()[2]
+                    if _should_preserve_supported_manipuland_on_fall(obj):
+                        pre_sim_supported_transforms[obj.object_id] = RigidTransform(
+                            obj.transform
+                        )
 
         # Set up visualization if HTML output is requested.
         if output_html_path is not None:
@@ -1514,6 +1535,21 @@ def apply_forward_simulation(
                 if obj_id in pre_sim_z and is_on_floor:
                     z_delta = current_z - pre_sim_z[obj_id]
                     if z_delta < -fallen_manipuland_z_displacement:
+                        if (
+                            preserve_supported_manipulands_on_fall
+                            and obj_id in pre_sim_supported_transforms
+                        ):
+                            # 2026-07-09 修改原因：critic 通过后的桌面/支撑面小物
+                            # 可能因模拟细节掉落；静默删除会造成 prompt 必需物缺失。
+                            # 对有 surface placement 语义的物体先恢复原位，让后续
+                            # critic/报告仍能看到并处理它，而不是用删除掩盖问题。
+                            obj.transform = pre_sim_supported_transforms[obj_id]
+                            console_logger.warning(
+                                f"Preserving supported fallen manipuland {obj_id}: "
+                                f"restored pre-simulation pose "
+                                f"(bottom_z={bottom_z:.4f}m, z_delta={z_delta:.4f}m)"
+                            )
+                            continue
                         console_logger.warning(
                             f"Removing fallen manipuland {obj_id}: "
                             f"bottom_z={bottom_z:.4f}m, z_delta={z_delta:.4f}m"
@@ -1568,6 +1604,7 @@ def apply_physical_feasibility_postprocessing(
     fallen_manipuland_floor_z: float = -0.5,
     fallen_manipuland_near_floor_z: float = 0.02,
     fallen_manipuland_z_displacement: float = 0.3,
+    preserve_supported_manipulands_on_fall: bool = True,
 ) -> tuple[RoomScene, bool, list[UniqueID]]:
     """Apply complete physical feasibility post-processing pipeline.
 
@@ -1601,6 +1638,9 @@ def apply_physical_feasibility_postprocessing(
         fallen_manipuland_floor_z: Absolute Z threshold for floor penetration.
         fallen_manipuland_near_floor_z: Object bottom below this Z is on floor.
         fallen_manipuland_z_displacement: Z drop threshold for detecting falling.
+        preserve_supported_manipulands_on_fall: Restore support-surface
+            manipulands instead of deleting them when only the z-drop fall check
+            fires.
 
     Returns:
         Tuple of (processed_scene, projection_success, removed_ids).
@@ -1660,6 +1700,7 @@ def apply_physical_feasibility_postprocessing(
             fallen_manipuland_floor_z=fallen_manipuland_floor_z,
             fallen_manipuland_near_floor_z=fallen_manipuland_near_floor_z,
             fallen_manipuland_z_displacement=fallen_manipuland_z_displacement,
+            preserve_supported_manipulands_on_fall=preserve_supported_manipulands_on_fall,
         )
 
     return scene, True, removed_ids
@@ -1760,6 +1801,7 @@ def apply_per_furniture_postprocessing(
         fallen_manipuland_floor_z=simulation_cfg.fallen_manipuland_floor_z,
         fallen_manipuland_near_floor_z=simulation_cfg.fallen_manipuland_near_floor_z,
         fallen_manipuland_z_displacement=simulation_cfg.fallen_manipuland_z_displacement,
+        preserve_supported_manipulands_on_fall=True,
     )
 
     if not success:

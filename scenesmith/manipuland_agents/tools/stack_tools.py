@@ -37,6 +37,8 @@ from scenesmith.manipuland_agents.tools.stacking import (
 
 console_logger = logging.getLogger(__name__)
 
+MAX_GRASPABLE_STACK_SURFACE_HEIGHT_M = 1.8
+
 
 def _compute_stack_composite_bbox_in_local_frame(
     assets: list[SceneObject],
@@ -163,6 +165,21 @@ def create_stack_tool_impl(
         ).to_json()
 
     target_surface = support_surfaces[surface_id]
+    height_error = _graspable_stack_surface_height_error(
+        target_surface=target_surface,
+        support_surfaces=support_surfaces,
+    )
+    if height_error is not None:
+        console_logger.warning("Stack creation failed: %s", height_error)
+        return StackCreationResult(
+            success=False,
+            message=height_error,
+            stack_object_id=None,
+            stack_height=None,
+            parent_surface_id=surface_id,
+            num_items=len(asset_ids),
+            error_type=ManipulandErrorType.INVALID_SURFACE,
+        ).to_json()
 
     # Validate all assets exist and build asset list.
     assets: list[SceneObject] = []
@@ -464,3 +481,36 @@ def create_stack_tool_impl(
         parent_surface_id=surface_id,
         num_items=len(asset_ids),
     ).to_json()
+
+
+def _graspable_stack_surface_height_error(
+    *,
+    target_surface: SupportSurface,
+    support_surfaces: dict[str, SupportSurface],
+    max_surface_height_m: float = MAX_GRASPABLE_STACK_SURFACE_HEIGHT_M,
+) -> str | None:
+    surface_height = _surface_world_height_m(target_surface)
+    if surface_height <= max_surface_height_m:
+        return None
+
+    lower_surface_ids = [
+        str(surface.surface_id)
+        for surface in support_surfaces.values()
+        if _surface_world_height_m(surface) <= max_surface_height_m
+    ]
+    lower_hint = (
+        f" Choose a lower reachable surface instead: {lower_surface_ids}."
+        if lower_surface_ids
+        else " No lower reachable surface is available on this furniture."
+    )
+    # 2026-07-09 修改原因：study 书架 stack 被放到约 2.14m 高层，
+    # SceneBenchmark 判定为不可达；stack 通常是可抓取书本/小物，避免放到过高层。
+    return (
+        f"Surface {target_surface.surface_id} is {surface_height:.2f}m high, "
+        f"above the {max_surface_height_m:.2f}m reachable limit for graspable "
+        f"stacks.{lower_hint}"
+    )
+
+
+def _surface_world_height_m(surface: SupportSurface) -> float:
+    return float(surface.transform.translation()[2])

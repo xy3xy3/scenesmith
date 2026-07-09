@@ -62,6 +62,9 @@ from scenesmith.manipuland_agents.tools.response_dataclasses import (
     SupportSurfaceWithManipulands,
 )
 from scenesmith.manipuland_agents.tools.stack_tools import create_stack_tool_impl
+from scenesmith.manipuland_agents.tools.window_clearance_guard import (
+    window_clearance_placement_error,
+)
 
 console_logger = logging.getLogger(__name__)
 
@@ -1179,6 +1182,16 @@ class ManipulandTools:
                 ),
             )
 
+            window_error = window_clearance_placement_error(
+                scene=self.scene, obj=scene_object
+            )
+            if window_error is not None:
+                return self._create_placement_failure_result(
+                    asset_id=asset_id,
+                    message=window_error,
+                    error_type=ManipulandErrorType.POSITION_OUT_OF_BOUNDS,
+                )
+
             # Add to scene.
             self.scene.add_object(scene_object)
 
@@ -1441,6 +1454,17 @@ class ManipulandTools:
 
             # For stacks, capture old transform before moving to compute delta.
             old_stack_transform = scene_obj.transform
+            scene_obj.transform = world_transform
+            window_error = window_clearance_placement_error(
+                scene=self.scene, obj=scene_obj
+            )
+            scene_obj.transform = old_stack_transform
+            if window_error is not None:
+                return self._create_placement_failure_result(
+                    asset_id=object_id,
+                    message=window_error,
+                    error_type=ManipulandErrorType.POSITION_OUT_OF_BOUNDS,
+                )
 
             # Update object to new pose.
             self.scene.move_object(object_id=unique_id, new_transform=world_transform)

@@ -17,6 +17,7 @@ from scenesmith.agent_utils.asset_manager import AssetManager
 from scenesmith.agent_utils.placement_noise import PlacementNoiseMode
 from scenesmith.agent_utils.room import RoomScene, SupportSurface, UniqueID
 from scenesmith.manipuland_agents.tools.manipuland_tools import ManipulandTools
+from scenesmith.manipuland_agents.tools.stack_tools import create_stack_tool_impl
 
 
 class TestManipulandTools(unittest.TestCase):
@@ -489,6 +490,41 @@ class TestManipulandTools(unittest.TestCase):
         # Top surface should be identified correctly.
         self.assertTrue(tools._is_top_surface(str(top_surface.surface_id)))
         self.assertFalse(tools._is_top_surface(str(shelf_surface.surface_id)))
+
+    def test_create_stack_rejects_unreachable_high_surface(self):
+        """Stacks of graspable objects should not be created on unreachable shelves."""
+        high_surface = Mock(spec=SupportSurface)
+        high_surface.surface_id = UniqueID("high_shelf")
+        high_surface.transform = RigidTransform(p=[0.0, 0.0, 2.14])
+
+        lower_surface = Mock(spec=SupportSurface)
+        lower_surface.surface_id = UniqueID("lower_shelf")
+        lower_surface.transform = RigidTransform(p=[0.0, 0.0, 1.2])
+
+        result_json = create_stack_tool_impl(
+            asset_ids=["book_a", "book_b"],
+            surface_id="high_shelf",
+            position_x=0.0,
+            position_z=0.0,
+            rotation_degrees=0.0,
+            scene=self.mock_scene,
+            cfg=self.cfg,
+            asset_manager=self.mock_asset_manager,
+            support_surfaces={
+                "high_shelf": high_surface,
+                "lower_shelf": lower_surface,
+            },
+            generate_unique_id=lambda prefix: UniqueID(f"{prefix}_0"),
+        )
+
+        # 2026-07-09 修改原因：复现 study 书架 stack 放到 2.14m 高层后
+        # accessibility fail；工具应要求 designer 改用较低可达层。
+        result = json.loads(result_json)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_type"], "invalid_surface")
+        self.assertIn("reachable limit", result["message"])
+        self.assertIn("lower_shelf", result["message"])
+        self.mock_asset_manager.get_asset_by_id.assert_not_called()
 
 
 if __name__ == "__main__":

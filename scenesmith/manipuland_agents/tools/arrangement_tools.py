@@ -41,6 +41,9 @@ from scenesmith.manipuland_agents.tools.response_dataclasses import (
     FillContainerResult,
     ManipulandErrorType,
 )
+from scenesmith.manipuland_agents.tools.window_clearance_guard import (
+    window_clearance_placement_error,
+)
 from scenesmith.utils.collision_utils import compute_pairwise_collisions
 from scenesmith.utils.shape_analysis import is_circular_object
 
@@ -743,6 +746,22 @@ def create_arrangement_impl(
             placement_method="create_arrangement",
         ),
     )
+
+    window_error = window_clearance_placement_error(scene=scene, obj=composite_object)
+    if window_error is not None:
+        return FillContainerResult(
+            success=False,
+            message=window_error,
+            filled_container_id=None,
+            container_asset_id=container_asset_id,
+            fill_count=0,
+            total_fill_attempted=len(fill_assets),
+            removed_count=len(fill_assets),
+            parent_surface_id=surface_id,
+            inside_assets=[],
+            removed_assets=inside_names,
+            error_type=ManipulandErrorType.POSITION_OUT_OF_BOUNDS,
+        ).to_json()
 
     scene.add_object(composite_object)
 

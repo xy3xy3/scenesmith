@@ -19,7 +19,13 @@ from scenesmith.agent_utils.physical_feasibility import (
     apply_physical_feasibility_postprocessing,
     compute_tilt_angle_degrees,
 )
-from scenesmith.agent_utils.room import ObjectType, RoomScene, SceneObject, UniqueID
+from scenesmith.agent_utils.room import (
+    ObjectType,
+    PlacementInfo,
+    RoomScene,
+    SceneObject,
+    UniqueID,
+)
 
 # Path to test data.
 TEST_DATA_DIR = Path(__file__).parent.parent / "test_data"
@@ -948,6 +954,44 @@ class TestFallenManipulandRemoval(PhysicalFeasibilityTestCase):
             # Object should be removed (fell from z=0.7 to floor).
             self.assertIn(UniqueID("ball_0"), removed_ids)
             self.assertIsNone(simulated_scene.get_object(UniqueID("ball_0")))
+
+    def test_surface_placed_fallen_manipuland_is_restored(self) -> None:
+        """Surface-placed objects are restored instead of silently removed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scene = self._create_manipuland_scene(
+                Path(tmp_dir), manipuland_z=0.7, pre_sim_z=None
+            )
+            ball = scene.get_object(UniqueID("ball_0"))
+            self.assertIsNotNone(ball)
+            initial_transform = RigidTransform(ball.transform)
+            ball.placement_info = PlacementInfo(
+                parent_surface_id=UniqueID("S_table"),
+                position_2d=np.array([0.0, 0.0]),
+                rotation_2d=0.0,
+            )
+
+            simulated_scene, removed_ids = apply_forward_simulation(
+                scene=scene,
+                simulation_time_s=2.0,
+                time_step_s=1e-3,
+                timeout_s=30.0,
+                weld_furniture=True,
+                remove_fallen_manipulands=True,
+                fallen_manipuland_floor_z=-0.5,
+                fallen_manipuland_near_floor_z=0.1,
+                fallen_manipuland_z_displacement=0.3,
+            )
+
+            # 2026-07-09 修改原因：critic 通过后的桌面摆台不能因模拟掉落被静默删除；
+            # 恢复原始支撑面姿态，让后续评估能继续检查 prompt/物理问题。
+            self.assertNotIn(UniqueID("ball_0"), removed_ids)
+            restored_ball = simulated_scene.get_object(UniqueID("ball_0"))
+            self.assertIsNotNone(restored_ball)
+            np.testing.assert_allclose(
+                restored_ball.transform.translation(),
+                initial_transform.translation(),
+                atol=1e-6,
+            )
 
     def test_floor_placed_not_removed(self) -> None:
         """Test that floor-placed manipuland (no z_delta) is NOT removed."""
