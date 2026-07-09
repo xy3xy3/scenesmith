@@ -16,6 +16,9 @@ from scenesmith.scenebenchmark_critic.adapter import (
 )
 from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
 from scenesmith.scenebenchmark_critic.config import CriticConfig, critic_config_from_any
+from scenesmith.scenebenchmark_critic.manipuland_completeness import (
+    evaluate_manipuland_completeness,
+)
 from scenesmith.scenebenchmark_critic.orientation_contracts import (
     stabilize_orientation_contracts,
 )
@@ -63,6 +66,9 @@ def evaluate_room_scene(
         stage=stage,
     )
     results = run_case_pack_checks(case_pack, config=critic_config)
+    # 2026-07-09 修改原因：餐桌等成组 tabletop manipulands 可能在物理后处理
+    # 后被删除；规则报告需要直接暴露必需小物缺失，而不只看几何可达性。
+    results.extend(evaluate_manipuland_completeness(case_pack))
     return build_evaluation_payload(
         case_pack=case_pack,
         results=results,
