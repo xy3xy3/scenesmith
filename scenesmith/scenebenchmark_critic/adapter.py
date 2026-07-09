@@ -486,7 +486,7 @@ def _object_to_geometry(
     size = np.maximum(world_max - world_min, 0.0)
     local_size = _local_bbox_size(obj, fallback_size=size)
     category = _category_for_object(obj)
-    yaw = math.degrees(RollPitchYaw(obj.transform.rotation()).yaw_angle())
+    yaw = _semantic_yaw_deg(obj)
     functional_hints = _functional_hints(obj, category, yaw_deg=yaw)
 
     support_regions = _metadata_support_regions(obj, offset)
@@ -721,6 +721,15 @@ def _front_vector_from_hint(
     if front_hint == "right":
         return fy, -fx
     return fx, fy
+
+
+def _semantic_yaw_deg(obj: SceneObject) -> float:
+    # 2026-07-08 修改原因：桌面 manipuland 的 transform yaw 会受资产 canonicalization
+    # 和物理投影扰动影响；SceneBenchmark 朝向规则应优先使用工具记录的 surface 语义摆放角。
+    placement_info = getattr(obj, "placement_info", None)
+    if obj.object_type == ObjectType.MANIPULAND and placement_info is not None:
+        return math.degrees(float(placement_info.rotation_2d))
+    return math.degrees(RollPitchYaw(obj.transform.rotation()).yaw_angle())
 
 
 def _front_hint_from_access_direction(raw: Any, *, yaw_deg: float) -> str | None:
