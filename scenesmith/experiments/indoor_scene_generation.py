@@ -21,6 +21,9 @@ from scenesmith.agent_utils.articulated_retrieval_server import (
 )
 from scenesmith.agent_utils.articulated_retrieval_server.config import ArticulatedConfig
 from scenesmith.agent_utils.geometry_generation_server import GeometryGenerationServer
+from scenesmith.agent_utils.furniture_accessibility_guard import (
+    improve_storage_front_access,
+)
 from scenesmith.agent_utils.house import HouseLayout, HouseScene, RoomGeometry
 from scenesmith.agent_utils.hssd_retrieval_server import HssdRetrievalServer
 from scenesmith.agent_utils.materials_retrieval_server import MaterialsRetrievalServer
@@ -32,6 +35,9 @@ from scenesmith.agent_utils.room import AgentType, ObjectType, RoomScene
 from scenesmith.agent_utils.sceneeval_exporter import (
     SceneEvalExportConfig,
     SceneEvalExporter,
+)
+from scenesmith.agent_utils.seating_orientation_guard import (
+    align_seating_to_nearest_surface,
 )
 from scenesmith.ceiling_agents.stateful_ceiling_agent import StatefulCeilingAgent
 from scenesmith.experiments.base_experiment import BaseExperiment
@@ -705,6 +711,14 @@ def _generate_room(
                     f"{end_time - start_time:.2f} seconds"
                 )
 
+        # 2026-07-09 修改原因：critic probe 中 LLM 可能因物理误报回滚到
+        # 座椅背对桌面的 checkpoint；保存家具阶段前做确定性 seating 朝向兜底。
+        align_seating_to_nearest_surface(scene)
+        if critic_config_from_any(cfg_dict).enabled:
+            # 2026-07-09 修改原因：storage/openable 家具即使视觉上靠墙未碰撞，
+            # 也可能在前方被桌椅堵住；用规则 critic 做通用 front-access 兜底。
+            improve_storage_front_access(scene, config=cfg_dict)
+
         # Always save state after furniture stage (unconditional for resumability).
         furniture_stage_dir = logger.log_scene(
             scene=scene, name="scene_after_furniture"
@@ -912,6 +926,10 @@ def _generate_room(
             f"Manipulands added to room {room_id} in "
             f"{timedelta(seconds=end_time - start_time)}"
         )
+
+    # 2026-07-09 修改原因：从 checkpoint resume 或 manipuland 阶段继续时，
+    # final 物理后处理会 weld furniture；进入 final 前再兜底一次座椅朝向。
+    align_seating_to_nearest_surface(scene)
 
     # Final post-processing (projection + simulation).
     if projection_cfg["enabled"] and projection_cfg["final"]["enabled"]:

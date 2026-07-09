@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import math
 import pkgutil
 
 from pathlib import Path
@@ -19,6 +20,9 @@ from pydrake.math import RigidTransform, RollPitchYaw
 import scenesmith.agent_utils.base_stateful_agent as base_stateful_agent
 
 from scenesmith.agent_utils.base_stateful_agent import BaseStatefulAgent
+from scenesmith.agent_utils.furniture_accessibility_guard import (
+    improve_storage_front_access,
+)
 from scenesmith.agent_utils.house import (
     ClearanceOpeningData,
     HouseLayout,
@@ -37,6 +41,9 @@ from scenesmith.agent_utils.room import (
     UniqueID,
 )
 from scenesmith.agent_utils.scoring import CategoryScore, FurnitureCritiqueWithScores
+from scenesmith.agent_utils.seating_orientation_guard import (
+    align_seating_to_nearest_surface,
+)
 from scenesmith.experiments.indoor_scene_generation import (
     IndoorSceneGenerationExperiment,
 )
@@ -467,6 +474,182 @@ def test_room_scene_adapter_normalizes_workstation_categories(tmp_path: Path) ->
     )
     assert objects["wireless_mouse_0"]["category_norm"] == "mouse"
     assert objects["tablet_computer_0"]["category_norm"] == "tablet_computer"
+
+
+def test_room_scene_adapter_uses_surface_placement_yaw_for_manipuland(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    monitor = _box_object(
+        "computer_monitor_0",
+        "computer monitor",
+        ObjectType.MANIPULAND,
+        center=(0.0, 0.0, 0.9),
+        size=(0.45, 0.08, 0.32),
+        yaw_deg=0.0,
+    )
+    # 2026-07-08 修改原因：复现 surface placement 记录的语义朝向和
+    # transform yaw 不一致时，SceneBenchmark 应使用工具摆放角评估朝向。
+    monitor.placement_info = PlacementInfo(
+        parent_surface_id=UniqueID("desk_top"),
+        position_2d=np.array([0.0, 0.0]),
+        rotation_2d=np.pi,
+        placement_method="surface_placement",
+    )
+    scene.add_object(monitor)
+
+    case_pack = room_scene_to_case_pack(scene, stage="final_scene")
+    objects = {obj["id"]: obj for obj in case_pack["scene_geometry"]["objects"]}
+    monitor_record = objects["computer_monitor_0"]
+    front_face = next(
+        face
+        for face in monitor_record["interaction_faces"]
+        if face["name"] == "front"
+    )
+
+    assert monitor_record["yaw_deg"] == pytest.approx(180.0)
+    assert front_face["normal_xy"][1] == pytest.approx(-1.0)
+
+
+def test_seating_orientation_guard_repairs_backward_side_chairs(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    table = _box_object(
+        "dining_table_0",
+        "dining table",
+        ObjectType.FURNITURE,
+        center=(0.0, 0.0, 0.35),
+        size=(1.5, 0.8, 0.7),
+    )
+    left_chair = _box_object(
+        "dining_chair_2",
+        "dining chair",
+        ObjectType.FURNITURE,
+        center=(-1.0, 0.0, 0.45),
+        size=(0.45, 0.5, 0.9),
+        yaw_deg=90.0,
+    )
+    right_chair = _box_object(
+        "dining_chair_3",
+        "dining chair",
+        ObjectType.FURNITURE,
+        center=(1.0, 0.0, 0.45),
+        size=(0.45, 0.5, 0.9),
+        yaw_deg=-90.0,
+    )
+    scene.add_object(table)
+    scene.add_object(left_chair)
+    scene.add_object(right_chair)
+
+    fixes = align_seating_to_nearest_surface(scene)
+
+    # 2026-07-09 修改原因：复现 dining 左右椅因 checkpoint 回滚背对餐桌；
+    # guard 应只修 yaw，让座椅 front 指向最近 dining/work surface。
+    assert {fix.subject_id for fix in fixes} == {"dining_chair_2", "dining_chair_3"}
+    assert math.degrees(
+        RollPitchYaw(left_chair.transform.rotation()).yaw_angle()
+    ) == pytest.approx(-90.0)
+    assert math.degrees(
+        RollPitchYaw(right_chair.transform.rotation()).yaw_angle()
+    ) == pytest.approx(90.0)
+
+
+def test_storage_accessibility_guard_laterally_moves_blocked_cabinet(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    sideboard = _box_object(
+        "sideboard_cabinet_0",
+        "sideboard cabinet",
+        ObjectType.FURNITURE,
+        center=(0.0, -1.55, 0.5),
+        size=(1.1, 0.4, 1.0),
+    )
+    sideboard.support_surfaces = [
+        SupportSurface(
+            surface_id=UniqueID("sideboard_top"),
+            bounding_box_min=np.array([-0.5, -0.15, 0.0]),
+            bounding_box_max=np.array([0.5, 0.15, 0.0]),
+            transform=RigidTransform(p=[0.0, -1.55, 1.0]),
+        )
+    ]
+    table = _box_object(
+        "dining_table_0",
+        "dining table",
+        ObjectType.FURNITURE,
+        center=(0.0, -0.75, 0.35),
+        size=(1.5, 0.8, 0.7),
+    )
+    chair = _box_object(
+        "dining_chair_1",
+        "dining chair",
+        ObjectType.FURNITURE,
+        center=(0.0, -1.05, 0.45),
+        size=(0.45, 0.5, 0.9),
+        yaw_deg=180.0,
+    )
+    vase = _box_object(
+        "vase_0",
+        "decorative vase",
+        ObjectType.MANIPULAND,
+        center=(0.0, -1.55, 1.15),
+        size=(0.18, 0.18, 0.3),
+    )
+    vase.placement_info = PlacementInfo(
+        parent_surface_id=UniqueID("sideboard_top"),
+        position_2d=np.array([0.0, 0.0]),
+        rotation_2d=0.0,
+    )
+    scene.add_object(sideboard)
+    scene.add_object(table)
+    scene.add_object(chair)
+    scene.add_object(vase)
+    config = CriticConfig(
+        enabled=True,
+        metrics=("spatial_accessibility", "functional_dependency"),
+        room_stage_hooks=("scene_after_furniture",),
+    )
+    before = evaluate_room_scene(
+        scene,
+        config=config,
+        stage="scene_after_furniture",
+        annotate_assets=False,
+    )
+    before_sideboard = next(
+        result
+        for result in before["results"]
+        if result["check_id"] == "spatial_accessibility__sideboard_cabinet_0"
+    )
+    old_surface_x = sideboard.support_surfaces[0].transform.translation()[0]
+    old_vase_x = vase.transform.translation()[0]
+
+    fixes = improve_storage_front_access(scene, config=config)
+
+    # 2026-07-09 修改原因：复现餐边柜靠墙但前方被餐桌/餐椅堵住；
+    # guard 应优先横向找空位，并同步 world-frame support surface。
+    assert before_sideboard["label"] == "fail"
+    assert {fix.subject_id for fix in fixes} == {"sideboard_cabinet_0"}
+    after = evaluate_room_scene(
+        scene,
+        config=config,
+        stage="scene_after_furniture",
+        annotate_assets=False,
+    )
+    after_sideboard = next(
+        result
+        for result in after["results"]
+        if result["check_id"] == "spatial_accessibility__sideboard_cabinet_0"
+    )
+    assert after_sideboard["label"] != "fail"
+    assert sideboard.transform.translation()[0] != pytest.approx(0.0)
+    assert sideboard.support_surfaces[0].transform.translation()[0] != pytest.approx(
+        old_surface_x
+    )
+    assert vase.transform.translation()[0] != pytest.approx(old_vase_x)
 
 
 def test_computer_peripheral_faces_screen_accepts_workstation_categories() -> None:
@@ -3270,6 +3453,47 @@ def test_dependency_annotation_skips_nondirectional_front_faces_noise() -> None:
     assert observed == [("sofa_1", "furniture_faces_furniture")]
 
 
+def test_dependency_annotation_skips_support_prior_front_faces_noise() -> None:
+    desk = _benchmark_obj("desk_1", "desk", (2.0, 2.0, 0.4), (1.2, 0.7, 0.8))
+    desk["functional_hints"].update(
+        {
+            "functional_dependencies": [
+                {
+                    "relation_type": "supports",
+                    "target_category": "monitor",
+                    "height_relation": "target_on_source",
+                    "relative_position": "on_top",
+                }
+            ],
+            "orientation_dependencies": [
+                {
+                    "relation_type": "front_faces",
+                    "target_category": "monitor",
+                    "max_distance_m": 0.2,
+                }
+            ],
+        }
+    )
+    monitor = _benchmark_obj(
+        "monitor_1", "monitor", (2.0, 2.0, 0.9), (0.35, 0.08, 0.22)
+    )
+
+    checks = build_checks(
+        _benchmark_case_pack([desk, monitor]),
+        metrics=["functional_dependency"],
+    )
+
+    # 2026-07-09 修改原因：HSSD support/placed_on prior 不应派生为支撑家具
+    # 正面朝向桌面物体的检查；支撑关系由 object_on_support/placement 语义表达。
+    assert not [
+        check
+        for check in checks
+        if check.get("check_source") == "asset_orientation_dependency"
+        and check.get("subject_id") == "desk_1"
+        and check.get("target_ids") == ["monitor_1"]
+    ]
+
+
 def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> None:
     desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
     check = {
@@ -5492,6 +5716,87 @@ def test_monitor_clearance_ignores_same_surface_desktop_peripherals() -> None:
     assert result["label"] == "fail"
     assert result["blocking_objects"] == ["book_1"]
     assert "keyboard_1" not in result["reason"]
+
+
+def test_seating_clearance_ignores_place_setting_on_table_surface() -> None:
+    chair = _benchmark_obj(
+        "dining_chair_1", "dining_chair", (0.0, 0.0, 0.45), (0.5, 0.5, 0.9)
+    )
+    chair["metadata"] = {
+        "clearance": {
+            "clearance_type": "落座",
+            "direction": "前",
+            "depth_m": 0.6,
+            "width_m": 0.5,
+            "height_m": 1.0,
+            "confidence": "high",
+            "inherits_from_support": False,
+            "partner_families": ["surface"],
+        }
+    }
+    table = _benchmark_obj(
+        "dining_table_1", "dining_table", (0.0, 0.75, 0.4), (1.2, 0.8, 0.8)
+    )
+    table["support_regions"] = [{"region_id": "S_table"}]
+    plate = _benchmark_obj(
+        "dinner_plate_1", "dinner_plate", (0.0, 0.55, 0.82), (0.28, 0.28, 0.04)
+    )
+    plate["object_type"] = "manipuland"
+    plate["functional_hints"]["scene_object_type"] = "manipuland"
+    plate["placement_info"] = {"parent_surface_id": "S_table"}
+
+    checks = build_checks(
+        _benchmark_case_pack([chair, table, plate]),
+        metrics=["interaction_clearance"],
+    )
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([chair, table, plate], checks),
+        metrics=["interaction_clearance"],
+    )[0]
+
+    # 2026-07-09 修改原因：复现 dining table 的 plate 误触餐椅落座区；
+    # 餐桌支撑面上的正常摆台不应被视为挡住座椅。
+    assert checks[0]["target_ids"] == []
+    assert result["label"] == "pass"
+    assert "dinner_plate_1" not in result["reason"]
+
+
+def test_seating_clearance_still_flags_unparented_place_setting() -> None:
+    chair = _benchmark_obj(
+        "dining_chair_1", "dining_chair", (0.0, 0.0, 0.45), (0.5, 0.5, 0.9)
+    )
+    chair["metadata"] = {
+        "clearance": {
+            "clearance_type": "落座",
+            "direction": "前",
+            "depth_m": 0.6,
+            "width_m": 0.5,
+            "height_m": 1.0,
+            "confidence": "high",
+            "inherits_from_support": False,
+            "partner_families": ["surface"],
+        }
+    }
+    plate = _benchmark_obj(
+        "dinner_plate_1", "dinner_plate", (0.0, 0.55, 0.82), (0.28, 0.28, 0.04)
+    )
+    plate["object_type"] = "manipuland"
+    plate["functional_hints"]["scene_object_type"] = "manipuland"
+
+    checks = build_checks(
+        _benchmark_case_pack([chair, plate]),
+        metrics=["interaction_clearance"],
+    )
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([chair, plate], checks),
+        metrics=["interaction_clearance"],
+    )[0]
+
+    # 2026-07-09 修改原因：过滤只适用于桌面摆台；没有餐桌 parent surface 的
+    # 同类物体仍应按真实落座阻挡报告。
+    assert checks[0]["target_ids"] == ["dinner_plate_1"]
+    assert result["label"] == "fail"
+    assert result["blocking_objects"] == ["dinner_plate_1"]
 
 
 def test_prompt_context_is_concise(tmp_path: Path) -> None:

@@ -66,6 +66,24 @@ _DESKTOP_PERIPHERAL_CATEGORIES = {
     "trackpad",
     "touchpad",
 }
+_TABLETOP_PLACE_SETTING_CATEGORIES = {
+    "bowl",
+    "coaster",
+    "cup",
+    "cutlery",
+    "dinner_plate",
+    "dish",
+    "fork",
+    "glass",
+    "knife",
+    "mug",
+    "napkin",
+    "plate",
+    "salt_shaker",
+    "spoon",
+    "tableware",
+    "wine_glass",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +249,7 @@ for _fam, _members in {
         "bed double_bed king_bed queen_bed twin_bed single_bed bunk_bed daybed "
         "round_daybed trundle_bed toddler_bed crib"
     ),
+    "tabletop_place_setting": " ".join(sorted(_TABLETOP_PLACE_SETTING_CATEGORIES)),
 }.items():
     for _m in _members.split():
         _CAT_FAMILY[_m] = _fam
@@ -261,6 +280,13 @@ def _category_family_for_metadata(metadata: Any) -> str | None:
     if not cat and isinstance(metadata, dict):
         cat = metadata.get("category") or metadata.get("cat")
     return _family(cat) if cat else None
+
+
+def _category_family_for_object(obj: dict[str, Any]) -> str | None:
+    """Resolve a coarse family from metadata first, then case-pack category."""
+    return _category_family_for_metadata(obj.get("metadata") or {}) or _family(
+        obj.get("category_norm") or obj.get("category")
+    )
 
 
 def available() -> bool:
@@ -569,6 +595,24 @@ def _is_intended_desktop_peripheral_intrusion(
     return bool(subject_surface and subject_surface == blocker_surface)
 
 
+def _is_intended_tabletop_setting_intrusion(
+    subject: dict[str, Any],
+    subject_record: dict[str, Any],
+    blocker: dict[str, Any] | None,
+) -> bool:
+    # 2026-07-09 修改原因：餐椅的落座净空会穿过餐桌边缘；餐盘/餐具在
+    # 餐桌支撑面上是预期摆台，不应按“阻挡落座”的普通障碍计入。
+    if blocker is None:
+        return False
+    if subject_record.get("clearance_type") not in _SEATING_TYPES:
+        return False
+    if _category_family_for_object(subject) != "seat":
+        return False
+    if blocker.get("family") != "tabletop_place_setting":
+        return False
+    return blocker.get("parent_surface_family") == "surface"
+
+
 def _norm_category(obj: dict[str, Any]) -> str:
     return str(obj.get("category_norm") or obj.get("category") or "").strip().lower()
 
@@ -580,6 +624,23 @@ def _parent_surface_id(obj: dict[str, Any]) -> str:
     return str(placement.get("parent_surface_id") or "").strip()
 
 
+def _support_surface_owner_families(
+    objects: dict[str, dict[str, Any]]
+) -> dict[str, str]:
+    owners: dict[str, str] = {}
+    for obj in objects.values():
+        family = _category_family_for_object(obj)
+        if not family:
+            continue
+        for region in obj.get("support_regions") or []:
+            if not isinstance(region, dict):
+                continue
+            region_id = str(region.get("region_id") or "").strip()
+            if region_id:
+                owners[region_id] = family
+    return owners
+
+
 def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Build one clearance check per object that reserves a keep-clear region.
 
@@ -588,16 +649,26 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
     computed here and embedded in the check so the rule evaluator is a trivial,
     deterministic passthrough (no VLM).
     """
-    world_boxes = [
-        {
-            "id": oid,
-            "bbox": obj.get("bbox_world"),
-            "family": _category_family_for_metadata(obj.get("metadata") or {}),
-        }
-        for oid, obj in objects.items()
-        if isinstance(obj.get("bbox_world"), dict)
-        and _is_clearance_blocker_candidate(obj)
-    ]
+    surface_owner_families = _support_surface_owner_families(objects)
+    world_boxes = []
+    for oid, obj in objects.items():
+        if not isinstance(obj.get("bbox_world"), dict):
+            continue
+        if not _is_clearance_blocker_candidate(obj):
+            continue
+        parent_surface_id = _parent_surface_id(obj)
+        world_boxes.append(
+            {
+                "id": oid,
+                "bbox": obj.get("bbox_world"),
+                "family": _category_family_for_object(obj),
+                "parent_surface_id": parent_surface_id,
+                "parent_surface_family": surface_owner_families.get(
+                    parent_surface_id
+                ),
+            }
+        )
+    world_box_by_id = {str(box.get("id")): box for box in world_boxes}
     checks: list[dict[str, Any]] = []
     for oid, obj in objects.items():
         record = _object_clearance_record(obj)
@@ -623,6 +694,11 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
             for hit in hits
             if not _is_intended_desktop_peripheral_intrusion(
                 obj, objects.get(str(hit.get("object_id") or ""))
+            )
+            and not _is_intended_tabletop_setting_intrusion(
+                obj,
+                record,
+                world_box_by_id.get(str(hit.get("object_id") or "")),
             )
         ]
         blockers = sorted({h["object_id"] for h in hits if h.get("object_id")})

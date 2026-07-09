@@ -52,6 +52,26 @@ SMALL_SA_SUBJECT_HINTS = (
     "bowl",
 )
 WALL_BACKED_RELATIONS = {"back_against_wall", "side_or_back_against_wall"}
+SUPPORT_PRIOR_RELATIONS = {
+    "object_on_support",
+    "placed_on",
+    "rests_on",
+    "supported_by",
+    "support",
+    "supports",
+}
+SUPPORT_PRIOR_HEIGHTS = {
+    "above_target",
+    "on_top",
+    "on_top_of",
+    "target_on_source",
+}
+SUPPORT_PRIOR_POSITIONS = {
+    "above_target",
+    "on_top",
+    "on_top_of",
+    "on_top_of_target",
+}
 
 
 def build_checks(
@@ -571,6 +591,10 @@ def _build_dependency_annotation_checks(
                 relation_type = _normalize_dependency_relation_type(relation_type)
                 if not relation_type:
                     continue
+                if _orientation_dependency_is_support_prior(
+                    subject, dependency, relation_type
+                ):
+                    continue
                 if _dependency_conflicts_with_placement(
                     subject, relation_type, source_key
                 ):
@@ -638,6 +662,15 @@ def _dependency_annotation_items(
     return [dict(item) for item in values if isinstance(item, dict)]
 
 
+def _functional_dependency_items(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    hints = obj.get("functional_hints") or {}
+    raw = hints.get("functional_dependencies")
+    if raw is None:
+        raw = hints.get("functional_dependency")
+    values = raw if isinstance(raw, list) else [raw]
+    return [dict(item) for item in values if isinstance(item, dict)]
+
+
 def _normalize_dependency_relation_type(value: Any) -> str:
     relation_type = _normalize_relation_token(value)
     return {
@@ -665,6 +698,56 @@ def _dependency_conflicts_with_placement(
         "tabletop_object",
         "shelf_object",
     }
+
+
+def _orientation_dependency_is_support_prior(
+    subject: dict[str, Any], dependency: dict[str, Any], relation_type: str
+) -> bool:
+    if relation_type != "furniture_faces_furniture":
+        return False
+    target_categories = _dependency_target_categories(dependency)
+    if not target_categories:
+        return False
+    for functional_dependency in _functional_dependency_items(subject):
+        if not _is_support_prior(functional_dependency):
+            continue
+        support_categories = _dependency_target_categories(functional_dependency)
+        if _dependency_categories_overlap(target_categories, support_categories):
+            # 2026-07-09 修改原因：HSSD supports/placed_on 等支撑 prior 会被派生出
+            # front_faces orientation_dependency；支撑物不应因桌面/架上物体被要求正面朝向它。
+            return True
+    return False
+
+
+def _is_support_prior(dependency: dict[str, Any]) -> bool:
+    relation_type = _normalize_relation_token(
+        dependency.get("relation_type") or dependency.get("type")
+    )
+    if relation_type in SUPPORT_PRIOR_RELATIONS:
+        return True
+    height_relation = _normalize_relation_token(dependency.get("height_relation"))
+    if height_relation in SUPPORT_PRIOR_HEIGHTS:
+        return True
+    relative_position = _normalize_relation_token(dependency.get("relative_position"))
+    return relative_position in SUPPORT_PRIOR_POSITIONS
+
+
+def _dependency_categories_overlap(left: list[str], right: list[str]) -> bool:
+    for left_category in left:
+        for right_category in right:
+            if not left_category or not right_category:
+                continue
+            if left_category == right_category:
+                return True
+            if left_category.startswith(right_category + "_"):
+                return True
+            if left_category.endswith("_" + right_category):
+                return True
+            if right_category.startswith(left_category + "_"):
+                return True
+            if right_category.endswith("_" + left_category):
+                return True
+    return False
 
 
 def _dependency_targets(
