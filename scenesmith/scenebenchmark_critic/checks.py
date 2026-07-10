@@ -13,6 +13,7 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry impo
     object_category,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import (
+    BEDS,
     DINING_TABLES,
     LAMP_SUBJECT_REJECT_HINTS,
 )
@@ -595,6 +596,10 @@ def _build_dependency_annotation_checks(
                     subject, dependency, relation_type
                 ):
                     continue
+                if _orientation_dependency_is_bedside_facing_prior(
+                    subject, dependency, relation_type
+                ):
+                    continue
                 if _dependency_conflicts_with_placement(
                     subject, relation_type, source_key
                 ):
@@ -717,6 +722,21 @@ def _orientation_dependency_is_support_prior(
             # front_faces orientation_dependency；支撑物不应因桌面/架上物体被要求正面朝向它。
             return True
     return False
+
+
+def _orientation_dependency_is_bedside_facing_prior(
+    subject: dict[str, Any], dependency: dict[str, Any], relation_type: str
+) -> bool:
+    if relation_type != "furniture_faces_furniture":
+        return False
+    if not _is_nightstand_target(subject):
+        return False
+    target_categories = set(_dependency_target_categories(dependency))
+    if not (target_categories & BEDS):
+        return False
+    # 2026-07-10 修改原因：床头柜与床的核心关系是 bedside_pair/bed_to_nightstand
+    # 和前侧可达；资产 front_faces bed 标注会迫使抽屉正面朝床，导致修复循环。
+    return True
 
 
 def _is_support_prior(dependency: dict[str, Any]) -> bool:

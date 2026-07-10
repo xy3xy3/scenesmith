@@ -3494,6 +3494,46 @@ def test_dependency_annotation_skips_support_prior_front_faces_noise() -> None:
     ]
 
 
+def test_dependency_annotation_skips_nightstand_front_faces_bed_noise() -> None:
+    bed = _benchmark_obj("bed_1", "bed", (2.0, 2.0, 0.35), (1.6, 2.0, 0.7))
+    nightstand = _benchmark_obj(
+        "nightstand_1", "nightstand", (0.9, 2.0, 0.35), (0.45, 0.45, 0.7)
+    )
+    other_nightstand = _benchmark_obj(
+        "nightstand_2", "nightstand", (3.1, 2.0, 0.35), (0.45, 0.45, 0.7)
+    )
+    nightstand["functional_hints"]["orientation_dependencies"] = [
+        {
+            "relation_type": "front_faces",
+            "target_kind": "object",
+            "target_category": ["bed"],
+            "subject_face": "front",
+            "max_distance_m": 1.0,
+        }
+    ]
+
+    checks = build_checks(
+        _benchmark_case_pack([bed, nightstand, other_nightstand]),
+        metrics=["functional_dependency"],
+    )
+
+    # 2026-07-10 修改原因：床头柜不应被要求正面朝床；否则会和抽屉可达、
+    # 靠床头墙布局互相冲突。床-床头柜距离关系仍由 grouped bedside 检查覆盖。
+    assert not [
+        check
+        for check in checks
+        if check.get("check_source") == "asset_orientation_dependency"
+        and check.get("subject_id") == "nightstand_1"
+        and check.get("target_ids") == ["bed_1"]
+    ]
+    assert any(
+        check.get("relation_type") == "bedside_pair"
+        and check.get("subject_id") == "bed_1"
+        and "nightstand_1" in check.get("target_ids", [])
+        for check in checks
+    )
+
+
 def test_rule_functional_dependency_seat_faces_surface_passes_and_fails() -> None:
     desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
     check = {
