@@ -557,6 +557,49 @@ def test_seating_orientation_guard_repairs_backward_side_chairs(
     ) == pytest.approx(90.0)
 
 
+def test_seating_orientation_guard_anchors_standalone_guest_chair_to_wall(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    east_wall = _box_object(
+        "east_wall",
+        "east wall",
+        ObjectType.WALL,
+        center=(2.95, 0.0, 1.5),
+        size=(0.1, 6.0, 3.0),
+    )
+    guest_chair = _box_object(
+        "armchair_0",
+        "guest armchair",
+        ObjectType.FURNITURE,
+        center=(2.15, 0.0, 0.45),
+        size=(0.8, 0.8, 0.9),
+        yaw_deg=0.0,
+    )
+    far_desk = _box_object(
+        "study_desk_0",
+        "study desk",
+        ObjectType.FURNITURE,
+        center=(0.0, 1.8, 0.35),
+        size=(1.5, 0.8, 0.7),
+    )
+    scene.add_object(east_wall)
+    scene.add_object(guest_chair)
+    scene.add_object(far_desk)
+
+    fixes = align_seating_to_nearest_surface(scene)
+
+    # 2026-07-10 修改原因：复现靠墙空闲访客椅被错误工作面/媒体目标拉走；
+    # 没有可用桌面时应回退为背靠最近墙面。
+    assert len(fixes) == 1
+    assert fixes[0].subject_id == "armchair_0"
+    assert fixes[0].target_id == "east_wall"
+    assert math.degrees(
+        RollPitchYaw(guest_chair.transform.rotation()).yaw_angle()
+    ) == pytest.approx(90.0)
+
+
 def test_storage_accessibility_guard_laterally_moves_blocked_cabinet(
     tmp_path: Path,
 ) -> None:
@@ -2029,6 +2072,64 @@ def test_orientation_contract_ignores_noisy_sittable_affordance_on_non_seats(
         if check.get("check_source") == CONTRACT_CHECK_SOURCE
     ]
     assert contract_subjects == ["armchair_0"]
+
+
+def test_orientation_contract_skips_non_actionable_bookshelf_for_guest_chair(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.room_type = "study"
+    scene.text_description = (
+        "A study with a desk, an office chair, two guest chairs against the side wall, "
+        "and a bookshelf on the adjacent wall."
+    )
+    scene.objects.clear()
+    for obj in [
+        _benchmark_obj("west_wall", "wall", (-2.475, 0.0, 1.35), (0.05, 4.5, 2.7)),
+        _box_object(
+            "armchair_0",
+            "guest armchair",
+            ObjectType.FURNITURE,
+            center=(-1.85, 0.0, 0.4),
+            size=(0.8, 0.8, 0.8),
+            yaw_deg=90.0,
+        ),
+        _box_object(
+            "bookshelf_0",
+            "bookshelf",
+            ObjectType.FURNITURE,
+            center=(2.35, 0.15, 0.9),
+            size=(0.9, 0.35, 1.8),
+        ),
+        _box_object(
+            "study_desk_0",
+            "study desk",
+            ObjectType.FURNITURE,
+            center=(0.0, 1.8, 0.35),
+            size=(1.5, 0.8, 0.7),
+        ),
+    ]:
+        if isinstance(obj, dict):
+            continue
+        scene.add_object(obj)
+
+    config = CriticConfig(
+        enabled=True,
+        metrics=("functional_dependency",),
+        extra={"stable_orientation_contracts": True},
+    )
+    case_pack = room_scene_to_case_pack(scene, stage="scene_after_furniture")
+    case_pack["scene_geometry"]["objects"].append(
+        _benchmark_obj("west_wall", "wall", (-2.475, 0.0, 1.35), (0.05, 4.5, 2.7))
+    )
+    stabilize_orientation_contracts(case_pack, scene, config, stage="scene_after_furniture")
+
+    contract_subjects = [
+        check["subject_id"]
+        for check in case_pack["checks"]
+        if check.get("check_source") == CONTRACT_CHECK_SOURCE
+    ]
+    assert contract_subjects == []
 
 
 def _contract_check_for(case_pack: dict[str, Any], subject_id: str) -> dict[str, Any]:

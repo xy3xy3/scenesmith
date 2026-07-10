@@ -53,6 +53,8 @@ def align_seating_to_nearest_surface(
     *,
     max_target_distance_m: float = 2.0,
     repair_angle_threshold_deg: float = 120.0,
+    wall_anchor_gap_m: float = 0.8,
+    standalone_surface_gap_m: float = 0.85,
 ) -> list[SeatingOrientationFix]:
     """Rotate clearly backward seating toward its nearest functional surface."""
     furniture = [
@@ -61,12 +63,52 @@ def align_seating_to_nearest_surface(
     seating = [obj for obj in furniture if _is_seating(obj)]
     surfaces = [obj for obj in furniture if _is_functional_surface(obj)]
     fixes: list[SeatingOrientationFix] = []
-    if not seating or not surfaces:
+    if not seating:
         return fixes
 
     for seat in seating:
+        wall_target = _nearest_wall_anchor(
+            seat, scene.get_objects_by_type(ObjectType.WALL), max_gap_m=wall_anchor_gap_m
+        )
         target = _nearest_surface(seat, surfaces, max_distance_m=max_target_distance_m)
-        if target is None:
+        if target is None or (
+            wall_target is not None
+            and _surface_gap_xy(seat, target) is not None
+            and _surface_gap_xy(seat, target) > standalone_surface_gap_m
+            and _is_wall_anchor_candidate(seat)
+        ):
+            if wall_target is None:
+                continue
+            old_rpy = RollPitchYaw(seat.transform.rotation())
+            seat_center = seat.transform.translation()
+            wall_center = wall_target.transform.translation()
+            new_yaw_deg = compute_optimal_facing_yaw(
+                origin_a=seat_center,
+                target_point=np.array(
+                    [seat_center[0] + (seat_center[0] - wall_center[0]),
+                     seat_center[1] + (seat_center[1] - wall_center[1]),
+                     seat_center[2]]
+                ),
+            )
+            # 2026-07-10 修改原因：独立访客椅不应被强制朝向书柜/显示器；
+            # 当它本来就是靠墙摆放时，兜底为背靠最近墙面、前向室内，保证平行稳定。
+            seat.transform = RigidTransform(
+                rpy=RollPitchYaw(
+                    old_rpy.roll_angle(),
+                    old_rpy.pitch_angle(),
+                    math.radians(new_yaw_deg),
+                ),
+                p=seat.transform.translation(),
+            )
+            fixes.append(
+                SeatingOrientationFix(
+                    subject_id=str(seat.object_id),
+                    target_id=str(wall_target.object_id),
+                    old_yaw_deg=math.degrees(old_rpy.yaw_angle()),
+                    new_yaw_deg=new_yaw_deg,
+                    angle_to_target_deg=180.0,
+                )
+            )
             continue
         angle = _front_angle_to_target_deg(seat, target)
         if angle is None or angle < repair_angle_threshold_deg:
@@ -107,6 +149,59 @@ def align_seating_to_nearest_surface(
             ),
         )
     return fixes
+
+
+def _nearest_wall_anchor(
+    seat: SceneObject,
+    walls: list[SceneObject],
+    *,
+    max_gap_m: float,
+) -> SceneObject | None:
+    if not _is_wall_anchor_candidate(seat):
+        return None
+    ranked: list[tuple[float, str, SceneObject]] = []
+    seat_bounds = seat.compute_world_bounds()
+    if seat_bounds is None:
+        return None
+    seat_min, seat_max = seat_bounds
+    for wall in walls:
+        wall_bounds = wall.compute_world_bounds()
+        if wall_bounds is None:
+            continue
+        wall_min, wall_max = wall_bounds
+        gap = _aabb_gap_xy(seat_min, seat_max, wall_min, wall_max)
+        if gap <= max_gap_m:
+            ranked.append((gap, str(wall.object_id), wall))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return ranked[0][2]
+
+
+def _surface_gap_xy(seat: SceneObject, surface: SceneObject | None) -> float | None:
+    if surface is None:
+        return None
+    seat_bounds = seat.compute_world_bounds()
+    surface_bounds = surface.compute_world_bounds()
+    if seat_bounds is None or surface_bounds is None:
+        return None
+    return _aabb_gap_xy(seat_bounds[0], seat_bounds[1], surface_bounds[0], surface_bounds[1])
+
+
+def _aabb_gap_xy(
+    a_min: np.ndarray,
+    a_max: np.ndarray,
+    b_min: np.ndarray,
+    b_max: np.ndarray,
+) -> float:
+    dx = max(float(b_min[0] - a_max[0]), float(a_min[0] - b_max[0]), 0.0)
+    dy = max(float(b_min[1] - a_max[1]), float(a_min[1] - b_max[1]), 0.0)
+    return math.hypot(dx, dy)
+
+
+def _is_wall_anchor_candidate(obj: SceneObject) -> bool:
+    tokens = _object_tokens(obj)
+    return bool(tokens & {"armchair", "chair", "dining_chair", "office_chair"})
 
 
 def _nearest_surface(

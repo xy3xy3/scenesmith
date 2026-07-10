@@ -14,6 +14,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry impo
     object_affordances,
     object_category,
 )
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.semantics import (
+    _is_actionable_seating_surface_pair,
+)
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.profiles import (
     object_function_profile,
 )
@@ -60,6 +63,8 @@ WORK_SURFACE_CATEGORIES = {
     "side_table",
     "table",
 }
+STANDALONE_WALL_ANCHOR_GAP_M = 0.12
+STANDALONE_SURFACE_GAP_M = 0.85
 
 
 def stabilize_orientation_contracts(
@@ -359,16 +364,22 @@ def _nearest_work_surface(
     candidates = [
         obj
         for obj in objects
-        if obj.get("id") != subject.get("id") and _is_work_surface(obj)
+        if obj.get("id") != subject.get("id")
+        and _is_work_surface(obj)
+        and _is_actionable_seating_surface_pair(subject, obj)
     ]
     if not candidates:
         return None
     candidates.sort(key=lambda obj: _surface_rank(subject, obj))
+    if _is_wall_anchored_standalone_seating(subject, candidates[0], objects):
+        return None
     return candidates[0]
 
 
 def _is_work_surface(obj: dict[str, Any]) -> bool:
     category = object_category(obj)
+    if category in {"bookcase", "bookshelf", "shelf", "wall_shelf"}:
+        return False
     if category in WORK_SURFACE_CATEGORIES:
         return True
     return object_function_profile(obj).is_work_surface and not _is_media_target(obj)
@@ -384,6 +395,46 @@ def _surface_rank(
         dist if dist is not None else 999.0,
         str(target.get("id") or ""),
     )
+
+
+def _is_wall_anchored_standalone_seating(
+    subject: dict[str, Any],
+    target: dict[str, Any],
+    objects: list[dict[str, Any]],
+) -> bool:
+    wall_gap = _nearest_wall_gap(subject, objects)
+    surface_gap = bbox_gap_xy(subject, target)
+    if wall_gap is None or surface_gap is None:
+        return False
+    category = object_category(subject)
+    if category not in {"armchair", "chair", "dining_chair", "office_chair"}:
+        return False
+    # 2026-07-10 修改原因：靠墙空闲椅子不应被稳定 contract 绑定到远处桌面；
+    # 只要已经贴墙摆放且最近桌面并不近，就保留为 standalone chair。
+    return wall_gap <= STANDALONE_WALL_ANCHOR_GAP_M and surface_gap > STANDALONE_SURFACE_GAP_M
+
+
+def _nearest_wall_gap(subject: dict[str, Any], objects: list[dict[str, Any]]) -> float | None:
+    subject_bbox = (subject.get("bbox_world") or {})
+    subject_min = subject_bbox.get("min") or []
+    subject_max = subject_bbox.get("max") or []
+    if len(subject_min) < 2 or len(subject_max) < 2:
+        return None
+    best: float | None = None
+    for obj in objects:
+        if object_category(obj) != "wall":
+            continue
+        wall_bbox = obj.get("bbox_world") or {}
+        wall_min = wall_bbox.get("min") or []
+        wall_max = wall_bbox.get("max") or []
+        if len(wall_min) < 2 or len(wall_max) < 2:
+            continue
+        dx = max(float(wall_min[0] - subject_max[0]), float(subject_min[0] - wall_max[0]), 0.0)
+        dy = max(float(wall_min[1] - subject_max[1]), float(subject_min[1] - wall_max[1]), 0.0)
+        gap = (dx * dx + dy * dy) ** 0.5
+        if best is None or gap < best:
+            best = gap
+    return best
 
 
 def _object_text(obj: dict[str, Any]) -> str:

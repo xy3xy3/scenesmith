@@ -19,6 +19,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_d
 
 def _is_work_surface_target(target: dict[str, Any]) -> bool:
     profile = object_function_profile(target)
+    category = object_category(target)
+    if category in {"bookcase", "bookshelf", "shelf", "wall_shelf"}:
+        return False
     if (
         profile.source == "explicit"
         and profile.is_small_placeable
@@ -33,7 +36,6 @@ def _is_work_surface_target(target: dict[str, Any]) -> bool:
         and not profile.is_media_target
     ):
         return True
-    category = object_category(target)
     category_group = _category_group(target)
     if is_small_object(target):
         return False
@@ -502,6 +504,8 @@ def _scene_object_type(obj: dict[str, Any]) -> str:
 
 def _is_core_work_surface_target(target: dict[str, Any]) -> bool:
     category = object_category(target)
+    if category in {"bookcase", "bookshelf", "shelf", "wall_shelf"}:
+        return False
     category_group = _category_group(target)
     if _raw_text_has_any(target, WORK_SURFACE_TARGET_REJECT_HINTS):
         return False
