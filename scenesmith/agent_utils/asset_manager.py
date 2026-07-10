@@ -185,6 +185,11 @@ class AssetGenerationRequest:
     style_context: str | None = None
     """Style context for consistency (e.g., 'modern minimalist kitchen')."""
 
+    # 2026-07-10 修改原因：HSSD rendered_asset_choice 需要原始房间 prompt，
+    # 不能只依赖工具可选的 style_context。
+    scene_prompt_context: str | None = None
+    """Original room prompt for context-aware retrieval and validation choices."""
+
     operation_type: AssetOperationType = AssetOperationType.INITIAL
     """Type of generation operation."""
 
@@ -1154,6 +1159,7 @@ class AssetManager:
             object_type=request.object_type,
             desired_dimensions=unique_dimensions,
             style_context=request.style_context,
+            scene_prompt_context=request.scene_prompt_context,
             operation_type=request.operation_type,
             scene_id=request.scene_id,
         )
@@ -1532,6 +1538,7 @@ class AssetManager:
             articulated_client=self.articulated_client,
             materials_client=self.materials_client,
             scene_id=request.scene_id,
+            scene_prompt_context=request.scene_prompt_context,
         )
 
     def _convert_generated_to_scene_object(

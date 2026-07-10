@@ -140,6 +140,12 @@ asset_manager:
     retrieval_backend: "embedding" #clip or embedding
     use_top_k: 5  # Number of top CLIP candidates before size ranking
     use_lenient_validation: true  # Use lenient validation for retrieved assets
+    # 2026-07-10 修改原因：床/床头柜回放中 embedding top-1 可能选到外观不合适资产；
+    # 先让 VLM 看 top-N 的 HSSD iso 渲染图并重排候选，失败时保留 embedding 顺序。
+    rendered_asset_choice:
+      enabled: true
+      top_n: 4
+      rendered_assets_dir: "data/hssd_rendered_assets"
     object_type_mapping:
       FURNITURE: "large_objects"
       MANIPULAND: "small_objects"

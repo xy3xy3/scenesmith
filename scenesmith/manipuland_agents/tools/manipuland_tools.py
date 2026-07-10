@@ -518,6 +518,9 @@ class ManipulandTools:
                 object_type=ObjectType.MANIPULAND,
                 desired_dimensions=desired_dimensions,
                 style_context=style_context,
+                # 2026-07-10 修改原因：HSSD top-N iso 选择需要原始场景
+                # prompt 作为上下文，避免只按单个小物体关键词选错资产。
+                scene_prompt_context=self.scene.text_description,
                 scene_id=self.scene.scene_dir.name,
             )
             return self._generate_assets_impl(request)
@@ -1738,6 +1741,7 @@ class ManipulandTools:
                         request.desired_dimensions[idx] for idx in allowed_indices
                     ],
                     style_context=request.style_context,
+                    scene_prompt_context=request.scene_prompt_context,
                     operation_type=request.operation_type,
                     scene_id=request.scene_id,
                 )
