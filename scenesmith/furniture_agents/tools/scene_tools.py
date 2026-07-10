@@ -91,6 +91,9 @@ class SceneTools:
                     - "away": Check if object A faces away from object B.
                       Use for: furniture against walls (drawers, shelves, washing
                       machines, desks with backs to walls).
+                    - "parallel": Check whether the front axes of object A and B
+                      are parallel. Use for bedside tables beside a bed; this does
+                      not require a nightstand front to point at the bed center.
 
             Returns:
                 JSON with:
@@ -237,7 +240,7 @@ class SceneTools:
         )
 
         # Validate direction parameter.
-        if direction not in ["toward", "away"]:
+        if direction not in ["toward", "away", "parallel"]:
             console_logger.error(f"Invalid direction parameter: {direction}")
             return FacingCheckResult(
                 success=False,
@@ -248,7 +251,7 @@ class SceneTools:
                 current_rotation_degrees=0.0,
                 message=(
                     f"Invalid direction parameter: '{direction}'. Valid options "
-                    f"are 'toward' or 'away'. Use 'toward' to check if object "
+                    f"are 'toward', 'away', or 'parallel'. Use 'toward' to check if object "
                     f"faces another object, or 'away' to check if object faces "
                     f"away from another object (e.g., furniture against walls)."
                 ),
@@ -284,6 +287,11 @@ class SceneTools:
                 current_rotation_degrees=0.0,
                 message=f"Object B with ID {object_b_id} not found in scene",
             ).to_json()
+
+        if direction == "toward" and self._is_bedside_pair(obj_a, obj_b):
+            # 2026-07-10 修改原因：床头柜应与床平行并靠床头墙；旧的 toward
+            # 检查按床中心旋转，导致正确的 bedside 布局被误判并反复修改。
+            direction = "parallel"
 
         # Check that both objects have bounding boxes.
         if obj_a.bbox_min is None or obj_a.bbox_max is None:
@@ -351,14 +359,26 @@ class SceneTools:
         # Perform 2D ray-rectangle intersection test in XY plane.
         # This ignores Z-height differences, which is correct for horizontal
         # facing relationships (e.g., chair at different height than table).
-        is_facing = ray_rectangle_intersection_2d(
-            ray_origin_2d=origin_a[:2],
-            ray_direction_2d=world_forward_normalized[:2],
-            rect_min_2d=world_bbox_min_b[:2],
-            rect_max_2d=world_bbox_max_b[:2],
-        )
+        if direction == "parallel":
+            yaw_b_deg = math.degrees(
+                RollPitchYaw(obj_b.transform.rotation()).yaw_angle()
+            )
+            yaw_delta = self._axis_distance_degrees(yaw_a_deg, yaw_b_deg)
+            is_facing = yaw_delta <= 20.0
+            optimal_rotation_delta = self._nearest_parallel_yaw(
+                current_yaw=yaw_a_deg, target_yaw=yaw_b_deg
+            )
+        else:
+            is_facing = ray_rectangle_intersection_2d(
+                ray_origin_2d=origin_a[:2],
+                ray_direction_2d=world_forward_normalized[:2],
+                rect_min_2d=world_bbox_min_b[:2],
+                rect_max_2d=world_bbox_max_b[:2],
+            )
 
-        if direction == "away":
+        if direction == "parallel":
+            pass
+        elif direction == "away":
             wall_away_yaw = self._compute_away_yaw_for_wall(obj=obj_a, target=obj_b)
             if wall_away_yaw is not None:
                 optimal_rotation_delta = wall_away_yaw
@@ -390,7 +410,11 @@ class SceneTools:
         )
 
         # Create informative message based on facing status and direction.
-        direction_desc = "toward" if direction == "toward" else "away from"
+        direction_desc = (
+            "parallel to"
+            if direction == "parallel"
+            else ("toward" if direction == "toward" else "away from")
+        )
         if is_facing:
             action_message = (
                 f"✓ {obj_a.name} is facing {direction_desc} {obj_b.name}. "
@@ -414,6 +438,54 @@ class SceneTools:
             current_rotation_degrees=float(yaw_a_deg),
             message=action_message,
         ).to_json()
+
+    @staticmethod
+    def _angle_distance_degrees(first: float, second: float) -> float:
+        """Return the smallest absolute angle between two yaw values."""
+        return abs((first - second + 180.0) % 360.0 - 180.0)
+
+    @classmethod
+    def _axis_distance_degrees(cls, first: float, second: float) -> float:
+        """Return the smallest angle between two unoriented horizontal axes."""
+        delta = cls._angle_distance_degrees(first, second)
+        return min(delta, abs(180.0 - delta))
+
+    @classmethod
+    def _nearest_parallel_yaw(cls, current_yaw: float, target_yaw: float) -> float:
+        """Choose the closest of the two yaw values that share an axis."""
+        candidates = (target_yaw, target_yaw + 180.0, target_yaw - 180.0)
+        return min(
+            candidates,
+            key=lambda candidate: cls._angle_distance_degrees(current_yaw, candidate),
+        )
+
+    @staticmethod
+    def _is_bedside_pair(obj_a: SceneObject, obj_b: SceneObject) -> bool:
+        """Identify the nightstand-to-bed pair needing axis, not center, facing."""
+        def tokens(obj: SceneObject) -> set[str]:
+            values = [obj.name, obj.description]
+            metadata = obj.metadata or {}
+            values.extend(
+                str(metadata.get(key) or "")
+                for key in ("category", "category_norm", "asset_category")
+            )
+            hints = metadata.get("functional_hints")
+            if isinstance(hints, dict):
+                values.extend(
+                    str(hints.get(key) or "")
+                    for key in ("category", "category_norm", "category_keywords")
+                )
+            return {
+                token.strip().lower().replace("_", " ")
+                for value in values
+                for token in str(value).split()
+            }
+
+        a = tokens(obj_a)
+        b = tokens(obj_b)
+        return bool(a & {"nightstand", "bedside", "bedside table"}) and bool(
+            b & {"bed", "bedframe", "bed frame"}
+        )
 
     def _compute_orientation_target_point(
         self,

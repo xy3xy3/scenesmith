@@ -1211,6 +1211,86 @@ class TestFacingCheck(BaseAgentToolsTest):
             "Chair should be facing toward table when aligned at 0°",
         )
 
+    def test_bedside_nightstand_uses_parallel_axis_instead_of_bed_center(self):
+        """Bedside tables remain parallel to the bed rather than facing its center."""
+        bed = self.create_scene_object_with_bbox(
+            name="bed",
+            position=[0.0, -1.2, 0.0],
+            yaw_degrees=0.0,
+            bbox_min=[-0.8, -0.96, 0.0],
+            bbox_max=[0.8, 0.96, 1.2],
+        )
+        nightstand = self.create_scene_object_with_bbox(
+            name="nightstand",
+            position=[-1.25, -1.85, 0.0],
+            yaw_degrees=0.0,
+            bbox_min=[-0.225, -0.19, 0.0],
+            bbox_max=[0.225, 0.19, 0.45],
+        )
+        self.mock_scene.objects = {
+            bed.object_id: bed,
+            nightstand.object_id: nightstand,
+        }
+
+        result = json.loads(
+            self.scene_tools._check_facing_impl(
+                object_a_id=str(nightstand.object_id),
+                object_b_id=str(bed.object_id),
+                direction="toward",
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["is_facing"])
+        self.assertIn("parallel", result["message"])
+
+    def test_parallel_bedside_check_rejects_perpendicular_nightstand(self):
+        bed = self.create_scene_object_with_bbox(
+            name="bed", position=[0.0, -1.2, 0.0], yaw_degrees=0.0
+        )
+        nightstand = self.create_scene_object_with_bbox(
+            name="nightstand", position=[-1.25, -1.85, 0.0], yaw_degrees=90.0
+        )
+        self.mock_scene.objects = {
+            bed.object_id: bed,
+            nightstand.object_id: nightstand,
+        }
+
+        result = json.loads(
+            self.scene_tools._check_facing_impl(
+                object_a_id=str(nightstand.object_id),
+                object_b_id=str(bed.object_id),
+                direction="parallel",
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["is_facing"])
+        self.assertAlmostEqual(result["optimal_rotation_degrees"], 0.0, delta=5.0)
+
+    def test_parallel_bedside_check_accepts_opposite_same_axis(self):
+        bed = self.create_scene_object_with_bbox(
+            name="bed", position=[0.0, -1.2, 0.0], yaw_degrees=0.0
+        )
+        nightstand = self.create_scene_object_with_bbox(
+            name="nightstand", position=[-1.25, -1.85, 0.0], yaw_degrees=180.0
+        )
+        self.mock_scene.objects = {
+            bed.object_id: bed,
+            nightstand.object_id: nightstand,
+        }
+
+        result = json.loads(
+            self.scene_tools._check_facing_impl(
+                object_a_id=str(nightstand.object_id),
+                object_b_id=str(bed.object_id),
+                direction="parallel",
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["is_facing"])
+
     def test_invalid_direction_parameter(self):
         """Test error handling for invalid direction parameter."""
         obj_a = self.create_scene_object_with_bbox(

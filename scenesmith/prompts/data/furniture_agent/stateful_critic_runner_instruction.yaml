@@ -77,6 +77,9 @@ prompt: |
   actionable unless the scene explicitly uses a freestanding/island bed or fixing it
   would block access/cause collisions. Do not label that specific bedside wall issue
   as a false positive just because the nightstand also serves the bed.
+  For bedside orientation, check that each nightstand's front axis is parallel
+  to the bed's front axis; never rotate a nightstand merely to point its front
+  at the bed center.
 
   IMPORTANT: Visual bounding box overlap does NOT indicate collision. If you observe
   objects that appear to overlap (such as chairs tucked under tables), but they are not
@@ -100,6 +103,8 @@ prompt: |
   You MUST use check_facing_tool to programmatically validate orientation for all
   furniture with directional facing requirements (appliances, seating, wardrobes,
   storage, TVs, beds).
+  For a nightstand beside a bed, use the tool's `parallel` relationship (or the
+  equivalent bedside-axis check), not `toward` the bed center.
 
   IMPORTANT: DO NOT assess orientation from images alone. Camera angles and
   perspectives in rendered images create optical illusions that make incorrect

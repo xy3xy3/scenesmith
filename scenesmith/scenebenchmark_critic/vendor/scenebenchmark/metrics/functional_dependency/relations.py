@@ -585,18 +585,43 @@ def _eval_bedside_pair(
         label, confidence, reason = _eval_bed_to_nightstand(
             bed, target, "bed_to_nightstand"
         )
+        axis_label, axis_confidence, axis_reason = _eval_bedside_axis_alignment(
+            bed, target
+        )
+        label, confidence, reason = _combine_bedside_results(
+            label,
+            confidence,
+            reason,
+            axis_label,
+            axis_confidence,
+            axis_reason,
+        )
         scored.append(
             _target_eval_payload(target, label, confidence, reason, "bedside_pair")
         )
-    best = max(
-        scored, key=lambda item: (_fd_label_rank(item["label"]), item["confidence"])
-    )
-    diagnostics = _fd_diagnostics_from_targets(scored, selected=[best["target_id"]])
+    labels = [str(item.get("label") or "unknown") for item in scored]
+    if "fail" in labels:
+        label, confidence = "fail", 0.88
+    elif "degraded" in labels:
+        label, confidence = "degraded", 0.78
+    elif "unknown" in labels:
+        label, confidence = "unknown", 0.0
+    else:
+        label, confidence = "pass", 0.90
+    selected_ids = [item["target_id"] for item in scored]
+    diagnostics = _fd_diagnostics_from_targets(scored, selected=selected_ids)
     diagnostics["cardinality_score"] = min(len(nightstands) / 2.0, 1.0)
+    failed_ids = [
+        item["target_id"] for item in scored if item.get("label") == "fail"
+    ]
+    if failed_ids:
+        reason = f"bedside target(s) failed adjacency or front-axis alignment: {', '.join(failed_ids)}."
+    else:
+        reason = f"all {len(nightstands)} bedside target(s) satisfy adjacency and front-axis alignment."
     return (
-        best["label"],
-        best["confidence"],
-        f"selected bedside target `{best['target_id']}`; {best['reason']}",
+        label,
+        confidence,
+        reason,
         diagnostics,
     )
 
@@ -779,6 +804,48 @@ def _eval_bed_to_nightstand(
             f"nightstand is nearby but not tight to the bed: {gap:.2f}m gap.",
         )
     return "fail", 0.85, f"nightstand is too far from the bed: {gap:.2f}m gap."
+
+
+BEDSIDE_PARALLEL_MAX_ANGLE_DEG = 20.0
+
+
+def _eval_bedside_axis_alignment(
+    bed: dict[str, Any], nightstand: dict[str, Any]
+) -> tuple[str, float, str]:
+    """Check bedside front axes as unoriented axes, allowing 0 or 180 degrees."""
+    # 2026-07-10 修改原因：床头柜应与床保持同一 front 轴，而不是朝向床中心；
+    # FD 规则需要稳定地识别 0/180 度同轴布局，避免 LLM 触发错误旋转。
+    bed_front = front_vector(bed)
+    nightstand_front = front_vector(nightstand)
+    dot = max(
+        -1.0,
+        min(1.0, abs(bed_front[0] * nightstand_front[0] + bed_front[1] * nightstand_front[1])),
+    )
+    angle = math.degrees(math.acos(dot))
+    if angle <= BEDSIDE_PARALLEL_MAX_ANGLE_DEG:
+        return "pass", 0.90, f"front axes are parallel within {angle:.0f}deg."
+    if angle <= 45.0:
+        return "degraded", 0.70, f"front axes are mildly misaligned by {angle:.0f}deg."
+    return "fail", 0.88, f"front axes are not parallel: {angle:.0f}deg apart."
+
+
+def _combine_bedside_results(
+    distance_label: str,
+    distance_confidence: float,
+    distance_reason: str,
+    axis_label: str,
+    axis_confidence: float,
+    axis_reason: str,
+) -> tuple[str, float, str]:
+    """Combine required bedside distance and axis constraints conservatively."""
+    if "fail" in {distance_label, axis_label}:
+        label = "fail"
+    elif "degraded" in {distance_label, axis_label}:
+        label = "degraded"
+    else:
+        label = "pass"
+    confidence = min(distance_confidence, axis_confidence)
+    return label, confidence, f"{distance_reason} {axis_reason}"
 
 
 def _eval_annotated_dependency_relation(

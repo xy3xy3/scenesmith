@@ -1550,6 +1550,120 @@ def test_grouped_fd_relations_run_through_vendored_evaluator() -> None:
     assert dining_result["label"] in {"pass", "degraded", "fail"}
 
 
+def test_bedside_fd_requires_parallel_front_axes() -> None:
+    bed = _benchmark_obj("bed_1", "bed", (2.0, 2.0, 0.35), (1.6, 2.0, 0.7))
+    aligned = _benchmark_obj(
+        "nightstand_1", "nightstand", (0.9, 0.8, 0.35), (0.45, 0.45, 0.7), yaw=0.0
+    )
+    opposite_axis = _benchmark_obj(
+        "nightstand_2",
+        "nightstand",
+        (3.1, 0.8, 0.35),
+        (0.45, 0.45, 0.7),
+        yaw=180.0,
+    )
+    check = {
+        "check_id": "fd_bedside_parallel",
+        "metric": "functional_dependency",
+        "subject_id": "bed_1",
+        "target_ids": ["nightstand_1", "nightstand_2"],
+        "relation_type": "bedside_pair",
+    }
+
+    result = next(
+        result
+        for result in _run_direct_case_pack(
+            _benchmark_case_pack([bed, aligned, opposite_axis], [check]),
+            metrics=["functional_dependency"],
+        )
+        if result["check_id"] == "fd_bedside_parallel"
+    )
+
+    assert result["label"] == "pass"
+    assert "front-axis alignment" in result["reason"]
+    assert all(
+        "front axes are parallel" in evaluation["reason"]
+        for evaluation in result["diagnostics"]["target_evaluations"]
+    )
+
+
+def test_bedside_fd_fails_when_one_nightstand_is_perpendicular() -> None:
+    bed = _benchmark_obj("bed_1", "bed", (2.0, 2.0, 0.35), (1.6, 2.0, 0.7))
+    aligned = _benchmark_obj(
+        "nightstand_1", "nightstand", (0.9, 0.8, 0.35), (0.45, 0.45, 0.7), yaw=0.0
+    )
+    perpendicular = _benchmark_obj(
+        "nightstand_2",
+        "nightstand",
+        (3.1, 0.8, 0.35),
+        (0.45, 0.45, 0.7),
+        yaw=90.0,
+    )
+    check = {
+        "check_id": "fd_bedside_perpendicular",
+        "metric": "functional_dependency",
+        "subject_id": "bed_1",
+        "target_ids": ["nightstand_1", "nightstand_2"],
+        "relation_type": "bedside_pair",
+    }
+
+    result = next(
+        result
+        for result in _run_direct_case_pack(
+            _benchmark_case_pack([bed, aligned, perpendicular], [check]),
+            metrics=["functional_dependency"],
+        )
+        if result["check_id"] == "fd_bedside_perpendicular"
+    )
+
+    assert result["label"] == "fail"
+    bad_target = next(
+        evaluation
+        for evaluation in result["diagnostics"]["target_evaluations"]
+        if evaluation["target_id"] == "nightstand_2"
+    )
+    assert "not parallel" in bad_target["reason"]
+
+
+def test_bedside_fd_failure_is_visible_to_furniture_prompt_context() -> None:
+    payload = {
+        "results": [
+            {
+                "check_id": "fd_bedside_parallel",
+                "metric": "functional_dependency",
+                "label": "fail",
+                "relation_type": "bedside_pair",
+                "primary_object": "bed_1",
+                "related_objects": ["nightstand_1", "nightstand_2"],
+                "reason": "front axes are not parallel: 90deg apart.",
+            }
+        ],
+        "case_pack": {
+            "scene_geometry": {
+                "objects": [
+                        {"id": "bed_1", "object_type": "furniture", "category": "bed"},
+                    {
+                        "id": "nightstand_1",
+                        "object_type": "furniture",
+                        "category": "nightstand",
+                    },
+                    {
+                        "id": "nightstand_2",
+                        "object_type": "furniture",
+                        "category": "nightstand",
+                    },
+                ]
+            }
+        },
+    }
+
+    filtered = filter_prompt_results_for_agent(
+        payload, agent_type=AgentType.FURNITURE
+    )
+
+    assert filtered == payload["results"]
+
+
 def test_spatial_accessibility_checks_keep_nearby_blocker_targets() -> None:
     sofa = _benchmark_obj("sofa_1", "sofa", (2.0, 2.0, 0.45), (1.8, 0.8, 0.9))
     sofa["functional_hints"]["functional_categories"] = ["sittable"]

@@ -65,6 +65,10 @@ prompt: |
     associated chairs, both orientations matter. The chair should face the
     table AND the table's working side should face the chair. If a worktable's
     front faces away from its chair, this is a facing violation.
+  - **Bed + Nightstands**: A nightstand beside a bed should share the bed's
+    front-axis direction (parallel front arrows) and remain reachable from the
+    bedside. Do NOT require the nightstand front to point at the bed center;
+    that turns a correct wall-backed pair into an unnecessary diagonal rotation.
   - Sofas/seating → TVs (direction="toward") — but conversation areas may have
     sofas facing each other
   - Appliances/wardrobes → walls (direction="away")
