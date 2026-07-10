@@ -395,6 +395,147 @@ class TestHssdRetrieverScaleFiltering(unittest.TestCase):
             [candidate.mesh_id for candidate in candidates], ["good_notebook"]
         )
 
+    def test_retrieve_multiple_skips_unrequested_bunk_beds(self):
+        bunk_metadata = HssdMeshMetadata(
+            mesh_id="bunk_bed",
+            name="Twin Over Twin Bunk Bed",
+            up="",
+            front="",
+            wordnet_key="bunk_bed.n.01",
+        )
+        platform_metadata = HssdMeshMetadata(
+            mesh_id="platform_bed",
+            name="Platform Bed, queen",
+            up="",
+            front="",
+            wordnet_key="double_bed.n.01",
+        )
+        preprocessed_data = HssdPreprocessedData(
+            metadata_by_wordnet={
+                "bunk_bed.n.01": [bunk_metadata],
+                "double_bed.n.01": [platform_metadata],
+            },
+            clip_embeddings=np.zeros((2, 512)),
+            embedding_index=["bunk_bed", "platform_bed"],
+            object_categories={
+                "large_objects": ["bunk_bed.n.01", "double_bed.n.01"]
+            },
+        )
+
+        retriever = object.__new__(HssdRetriever)
+        retriever.config = type(
+            "Config",
+            (),
+            {
+                "object_type_mapping": {"FURNITURE": "large_objects"},
+                "use_top_k": 2,
+            },
+        )()
+        retriever.clip_device = None
+        retriever.preprocessed_data = preprocessed_data
+        retriever.semantic_searcher = type(
+            "SemanticSearcherStub",
+            (),
+            {
+                "get_top_k_similar_meshes": staticmethod(
+                    lambda **kwargs: [
+                        ("bunk_bed", 0.99),
+                        ("platform_bed", 0.95),
+                    ]
+                )
+            },
+        )()
+        meshes = {
+            "bunk_bed": trimesh.creation.box(extents=[1.0, 2.0, 1.6]),
+            "platform_bed": trimesh.creation.box(extents=[1.6, 2.0, 0.6]),
+        }
+        retriever._load_and_process_mesh = lambda mesh_id, metadata: meshes[mesh_id]
+
+        # 2026-07-10 修改原因：普通 bed 检索不应返回 bunk bed；否则 bedroom
+        # furniture 回放会被双层床资产和碰撞问题拖偏。
+        regular_candidates = retriever.retrieve_multiple(
+            description="simple wooden bed with white bedding",
+            object_type="FURNITURE",
+            desired_dimensions=np.array([1.6, 2.0, 0.6]),
+        )
+        bunk_candidates = retriever.retrieve_multiple(
+            description="wooden bunk bed with white bedding",
+            object_type="FURNITURE",
+            desired_dimensions=np.array([1.0, 2.0, 1.6]),
+        )
+
+        self.assertEqual(
+            [candidate.mesh_id for candidate in regular_candidates], ["platform_bed"]
+        )
+        self.assertEqual(
+            [candidate.mesh_id for candidate in bunk_candidates],
+            ["bunk_bed", "platform_bed"],
+        )
+
+    def test_retrieve_multiple_skips_unnamed_generic_bed_for_bed_request(self):
+        unnamed_generic_metadata = HssdMeshMetadata(
+            mesh_id="unnamed_generic_bed",
+            name="",
+            up="",
+            front="",
+            wordnet_key="bed.n.01",
+        )
+        platform_metadata = HssdMeshMetadata(
+            mesh_id="platform_bed",
+            name="Platform Bed, queen",
+            up="",
+            front="",
+            wordnet_key="double_bed.n.01",
+        )
+        preprocessed_data = HssdPreprocessedData(
+            metadata_by_wordnet={
+                "bed.n.01": [unnamed_generic_metadata],
+                "double_bed.n.01": [platform_metadata],
+            },
+            clip_embeddings=np.zeros((2, 512)),
+            embedding_index=["unnamed_generic_bed", "platform_bed"],
+            object_categories={"large_objects": ["bed.n.01", "double_bed.n.01"]},
+        )
+
+        retriever = object.__new__(HssdRetriever)
+        retriever.config = type(
+            "Config",
+            (),
+            {
+                "object_type_mapping": {"FURNITURE": "large_objects"},
+                "use_top_k": 2,
+            },
+        )()
+        retriever.clip_device = None
+        retriever.preprocessed_data = preprocessed_data
+        retriever.semantic_searcher = type(
+            "SemanticSearcherStub",
+            (),
+            {
+                "get_top_k_similar_meshes": staticmethod(
+                    lambda **kwargs: [
+                        ("unnamed_generic_bed", 0.99),
+                        ("platform_bed", 0.95),
+                    ]
+                )
+            },
+        )()
+        meshes = {
+            "unnamed_generic_bed": trimesh.creation.box(extents=[1.8, 2.1, 1.1]),
+            "platform_bed": trimesh.creation.box(extents=[1.6, 2.0, 0.6]),
+        }
+        retriever._load_and_process_mesh = lambda mesh_id, metadata: meshes[mesh_id]
+
+        # 2026-07-10 修改原因：6-view embedding 检索窗中 name 为空的
+        # bed.n.01 候选仍可能排到首位；普通床请求应优先使用有明确名称/子类的床。
+        candidates = retriever.retrieve_multiple(
+            description="queen bed with mattress, pillows, and white duvet",
+            object_type="FURNITURE",
+            desired_dimensions=np.array([1.6, 2.0, 0.9]),
+        )
+
+        self.assertEqual([candidate.mesh_id for candidate in candidates], ["platform_bed"])
+
 
 class TestHssdZvecSearcher(unittest.TestCase):
     """Test Zvec-backed filtering logic without touching live services."""

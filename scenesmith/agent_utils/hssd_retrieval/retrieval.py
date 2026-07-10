@@ -28,6 +28,17 @@ from scenesmith.agent_utils.manipuland_scale import (
 
 console_logger = logging.getLogger(__name__)
 
+_BUNK_BED_REQUEST_TERMS = (
+    "bunk",
+    "loft bed",
+    "lofted bed",
+    "two-tier",
+    "two tier",
+    "stacked bed",
+)
+_BUNK_BED_METADATA_TERMS = ("bunk_bed", "bunk bed", "loft bed", "lofted bed")
+_BED_REQUEST_TERMS = ("bed", "mattress", "duvet", "headboard", "bedding")
+
 
 class SemanticSearcher(Protocol):
     """Protocol for HSSD semantic candidate generation."""
@@ -259,6 +270,26 @@ class HssdRetriever:
             if metadata is None:
                 console_logger.warning(f"Metadata not found for mesh {mesh_id}")
                 continue
+            if _is_unrequested_bunk_bed(description, metadata):
+                # 2026-07-10 修改原因：普通 bed 请求中 bunk bed 候选会被 VLM
+                # 偶发接受并阻塞 bedroom furniture 回放；只有明确请求 bunk/loft
+                # bed 时才允许这类 HSSD 候选进入后续校验。
+                console_logger.info(
+                    "Rejecting HSSD candidate %s for '%s': metadata indicates bunk bed",
+                    mesh_id[:8],
+                    description,
+                )
+                continue
+            if _is_low_information_generic_bed(description, metadata):
+                # 2026-07-10 修改原因：6-view embedding 索引下普通床检索仍会把
+                # name 为空的 bed.n.01 泛化资产排到首位；这类低信息候选容易通过
+                # lenient VLM 校验但在 bedroom furniture 回放中卡住转换/碰撞。
+                console_logger.info(
+                    "Rejecting HSSD candidate %s for '%s': low-information generic bed",
+                    mesh_id[:8],
+                    description,
+                )
+                continue
 
             try:
                 mesh = self._load_and_process_mesh(mesh_id, metadata)
@@ -339,6 +370,24 @@ class HssdRetriever:
         )
 
         return candidates
+
+
+def _is_unrequested_bunk_bed(description: str, metadata: HssdMeshMetadata) -> bool:
+    request_text = str(description or "").lower()
+    if any(term in request_text for term in _BUNK_BED_REQUEST_TERMS):
+        return False
+    metadata_text = f"{metadata.name} {metadata.wordnet_key}".lower().replace(".", "_")
+    return any(term in metadata_text for term in _BUNK_BED_METADATA_TERMS)
+
+
+def _is_low_information_generic_bed(
+    description: str, metadata: HssdMeshMetadata
+) -> bool:
+    request_text = str(description or "").lower()
+    if not any(term in request_text for term in _BED_REQUEST_TERMS):
+        return False
+    metadata_name = str(metadata.name or "").strip()
+    return not metadata_name and str(metadata.wordnet_key or "") == "bed.n.01"
 
 
 class _ClipSemanticSearcher:
