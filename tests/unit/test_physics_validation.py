@@ -20,6 +20,7 @@ from scenesmith.agent_utils.physics_validation import (
     CollisionPair,
     ThinCoveringBoundaryViolation,
     ThinCoveringOverlap,
+    _compute_floor_penetration_depth,
     _get_furniture_id_for_manipuland,
     compute_scene_collisions,
     compute_thin_covering_boundary_violations,
@@ -294,6 +295,50 @@ class TestComputeSceneCollisions(unittest.TestCase):
             len(floor_collisions_deep),
             0,
             "Should report floor collision with penetration > tolerance",
+        )
+
+    def test_floor_penetration_depth_uses_vertical_overlap_not_lateral_exit(self):
+        """Regression: floor slab contacts should use vertical sink depth.
+
+        2026-07-10 修改原因：waste_bin 这类平底小物与 floor slab 接触时，
+        Drake 可能返回沿 X/Y 方向退出 slab 的深度，造成数米级假穿透。
+        """
+        floor = SceneObject(
+            object_id=UniqueID("floor_0"),
+            object_type=ObjectType.FLOOR,
+            name="floor",
+            description="floor",
+            transform=RigidTransform(np.array([0.0, 0.0, -0.05])),
+            bbox_min=np.array([-3.0, -2.0, -0.05]),
+            bbox_max=np.array([3.0, 2.0, 0.05]),
+        )
+        self.scene.room_geometry.floor = floor
+        floor_bounds = floor.compute_world_bounds()
+        self.assertIsNotNone(floor_bounds)
+        floor_top_z = float(floor_bounds[1][2])
+
+        flush_box = SceneObject(
+            object_id=UniqueID("flush_box"),
+            object_type=ObjectType.FURNITURE,
+            name="Flush Box",
+            description="Flush box",
+            transform=RigidTransform(np.array([0.0, 0.0, floor_top_z])),
+            sdf_path=self.box_sdf_path,
+            bbox_min=np.array([-0.25, -0.25, 0.0]),
+            bbox_max=np.array([0.25, 0.25, 0.25]),
+        )
+        self.scene.add_object(flush_box)
+
+        penetration = _compute_floor_penetration_depth(
+            scene=self.scene,
+            object_a_id="room_geometry",
+            object_b_id="flush_box",
+            fallback_depth=2.6,
+        )
+        self.assertEqual(
+            penetration,
+            0.0,
+            "Flush floor contact should not inherit a large lateral fallback depth",
         )
 
     def test_ceiling_to_ceiling_collision_detected(self):

@@ -284,9 +284,14 @@ def compute_scene_collisions(
             object_a_info["name"] == "floor" or object_b_info["name"] == "floor"
         )
         if is_floor_collision:
+            floor_penetration_depth = _compute_floor_penetration_depth(
+                scene=scene,
+                object_a_id=object_a_info["id"],
+                object_b_id=object_b_info["id"],
+                fallback_depth=abs(pair.distance),
+            )
             # Skip floor collisions that are within tolerance.
-            penetration_depth = abs(pair.distance)
-            if penetration_depth <= floor_penetration_tolerance:
+            if floor_penetration_depth <= floor_penetration_tolerance:
                 continue
 
         # Create a unique identifier for this collision pair to avoid duplicates.
@@ -310,7 +315,16 @@ def compute_scene_collisions(
             object_a_id=object_a_info["id"],
             object_b_name=object_b_info["name"],
             object_b_id=object_b_info["id"],
-            penetration_depth=abs(pair.distance),
+            penetration_depth=(
+                _compute_floor_penetration_depth(
+                    scene=scene,
+                    object_a_id=object_a_info["id"],
+                    object_b_id=object_b_info["id"],
+                    fallback_depth=abs(pair.distance),
+                )
+                if is_floor_collision
+                else abs(pair.distance)
+            ),
         )
 
         # Post-computation filtering: Apply distance-based filtering.
@@ -351,6 +365,40 @@ def compute_scene_collisions(
         console_logger.info("=" * 60)
 
     return collisions
+
+
+def _compute_floor_penetration_depth(
+    scene: RoomScene,
+    object_a_id: str,
+    object_b_id: str,
+    fallback_depth: float,
+) -> float:
+    """Estimate floor penetration from world Z bounds instead of pair distance.
+
+    Drake may report a large negative distance for floor slab contacts when a
+    small convex piece sits exactly on the slab top and the minimum separating
+    direction happens to be lateral. For floor tolerance we care about vertical
+    sink into the floor, not the slab exit distance.
+    """
+    floor = scene.room_geometry.floor if scene.room_geometry else None
+    if floor is None:
+        return fallback_depth
+
+    floor_bounds = floor.compute_world_bounds()
+    if floor_bounds is None:
+        return fallback_depth
+    floor_top_z = float(floor_bounds[1][2])
+
+    object_id = object_b_id if object_a_id == "room_geometry" else object_a_id
+    scene_object = scene.get_object(UniqueID(object_id))
+    if scene_object is None:
+        return fallback_depth
+    object_bounds = scene_object.compute_world_bounds()
+    if object_bounds is None:
+        return fallback_depth
+
+    object_min_z = float(object_bounds[0][2])
+    return max(0.0, floor_top_z - object_min_z)
 
 
 def _should_skip_collision_pair(
