@@ -88,6 +88,17 @@ class RenderJobResult:
 _WORKER_RENDERER: Any | None = None
 
 
+def is_usable_image_file(image_path: Path) -> bool:
+    if not image_path.is_file():
+        return False
+    if image_path.suffix.lower() not in IMAGE_SUFFIXES:
+        return False
+    try:
+        return image_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 class LlamaEmbeddingClient:
     """Small client for llama.cpp's native /embeddings endpoint."""
 
@@ -112,6 +123,13 @@ class LlamaEmbeddingClient:
             f"{self.base_url}/props", timeout=self.timeout_seconds
         ) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def slots(self) -> list[dict[str, Any]]:
+        with urllib.request.urlopen(
+            f"{self.base_url}/slots", timeout=self.timeout_seconds
+        ) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data if isinstance(data, list) else []
 
     def embed_image_text(self, image_path: Path, prompt: str) -> list[float]:
         return self.embed_images_text([image_path], prompt)
@@ -150,7 +168,7 @@ class LlamaEmbeddingClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        body = self._urlopen_with_retries(request, image_paths[0])
+        body = self._urlopen_with_retries(request, image_paths)
 
         embedding = _extract_embedding(json.loads(body))
         if not embedding:
@@ -158,8 +176,11 @@ class LlamaEmbeddingClient:
         return embedding
 
     def _urlopen_with_retries(
-        self, request: urllib.request.Request, image_path: Path
+        self, request: urllib.request.Request, image_paths: list[Path]
     ) -> str:
+        image_summary = ", ".join(str(path) for path in image_paths[:3])
+        if len(image_paths) > 3:
+            image_summary = f"{image_summary}, ... ({len(image_paths)} images)"
         last_error: Exception | None = None
         for attempt in range(self.request_retries + 1):
             try:
@@ -170,14 +191,14 @@ class LlamaEmbeddingClient:
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
                 last_error = RuntimeError(
-                    f"Embedding request failed for {image_path}: "
+                    f"Embedding request failed for {image_summary}: "
                     f"HTTP {exc.code}: {detail[:500]}"
                 )
                 if 400 <= exc.code < 500 and exc.code not in {408, 429}:
                     raise last_error from exc
             except (TimeoutError, urllib.error.URLError) as exc:
                 last_error = RuntimeError(
-                    f"Embedding request failed for {image_path}: {exc}"
+                    f"Embedding request failed for {image_summary}: {exc}"
                 )
 
             if attempt < self.request_retries:
@@ -185,7 +206,7 @@ class LlamaEmbeddingClient:
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError(f"Embedding request failed for {image_path}")
+        raise RuntimeError(f"Embedding request failed for {image_summary}")
 
 
 def _extract_embedding(response: Any) -> list[float]:
@@ -264,8 +285,12 @@ def discover_rendered_assets(
     require_metadata: bool = True,
 ) -> list[RenderedAsset]:
     grouped: dict[str, dict[str, Path]] = {}
+    skipped_invalid_images = 0
     for image_path in sorted(render_root.rglob("*")):
         if not image_path.is_file() or image_path.suffix.lower() not in IMAGE_SUFFIXES:
+            continue
+        if not is_usable_image_file(image_path):
+            skipped_invalid_images += 1
             continue
         asset_id, view = infer_asset_id_and_view(image_path, render_root)
         if include_views is not None and view not in include_views:
@@ -299,6 +324,13 @@ def discover_rendered_assets(
         LOGGER.info(
             "Skipped %d rendered asset directories without HSSD metadata",
             skipped_without_metadata,
+        )
+    if skipped_invalid_images:
+        # 2026-07-10 修改原因：共享盘渲染结果里可能残留 0 字节/损坏图片，
+        # 不应让单张坏图把整个 embedding 任务打断。
+        LOGGER.warning(
+            "Skipped %d unusable rendered image files (missing/empty/corrupt candidates)",
+            skipped_invalid_images,
         )
     return assets
 
@@ -381,7 +413,7 @@ def missing_render_views(
     missing: list[str] = []
     for view_name in render_views:
         output_path = asset_dir / f"{view_name}.png"
-        if not output_path.exists():
+        if not is_usable_image_file(output_path):
             missing.append(view_name)
     return missing
 
@@ -546,6 +578,30 @@ def build_asset_content(asset: RenderedAsset) -> str:
     return " ".join(parts)
 
 
+def build_multi_image_prompt(
+    asset: RenderedAsset, media_marker: str = "<__media__>"
+) -> str:
+    content = build_asset_content(asset)
+    view_markers = " ".join(
+        f"{view} view: {media_marker}" for view in asset.image_paths
+    )
+    return (
+        "Represent this rendered HSSD asset for semantic visual retrieval. "
+        "All images are different views of the same physical object. "
+        f"{content} {view_markers}"
+    )
+
+
+def build_single_view_prompt(
+    asset: RenderedAsset, view: str, media_marker: str = "<__media__>"
+) -> str:
+    content = build_asset_content(asset)
+    return (
+        "Represent this rendered HSSD asset for semantic visual retrieval. "
+        f"{content} Current rendered view: {view}. image: {media_marker}"
+    )
+
+
 def embed_asset_views(
     asset: RenderedAsset,
     client: LlamaEmbeddingClient,
@@ -555,17 +611,9 @@ def embed_asset_views(
     if not asset.image_paths:
         raise ValueError(f"No rendered views found for asset {asset.asset_id}")
 
-    content = build_asset_content(asset)
     if view_embedding_strategy == "multi_image":
         image_paths = list(asset.image_paths.values())
-        view_markers = " ".join(
-            f"{view} view: {client.media_marker}" for view in asset.image_paths
-        )
-        prompt = (
-            "Represent this rendered HSSD asset for semantic visual retrieval. "
-            "All images are different views of the same physical object. "
-            f"{content} {view_markers}"
-        )
+        prompt = build_multi_image_prompt(asset, client.media_marker)
         vector = np.asarray(
             client.embed_images_text(image_paths, prompt), dtype=np.float32
         )
@@ -583,10 +631,7 @@ def embed_asset_views(
 
     vectors: list[np.ndarray] = []
     for view, image_path in asset.image_paths.items():
-        prompt = (
-            "Represent this rendered HSSD asset for semantic visual retrieval. "
-            f"{content} Current rendered view: {view}. image: {client.media_marker}"
-        )
+        prompt = build_single_view_prompt(asset, view, client.media_marker)
         vector = np.asarray(
             client.embed_image_text(image_path, prompt), dtype=np.float32
         )
@@ -602,6 +647,101 @@ def embed_asset_views(
     if norm > 0.0:
         averaged = averaged / norm
     return averaged.astype(np.float32).tolist()
+
+
+def select_preflight_asset(
+    assets: list[RenderedAsset], view_embedding_strategy: str, media_marker: str
+) -> RenderedAsset:
+    if view_embedding_strategy == "multi_image":
+        return max(
+            assets,
+            key=lambda asset: (
+                len(asset.image_paths),
+                len(build_multi_image_prompt(asset, media_marker)),
+            ),
+        )
+
+    if view_embedding_strategy != "average":
+        raise ValueError(
+            f"Unsupported view embedding strategy: {view_embedding_strategy}"
+        )
+
+    return max(
+        assets,
+        key=lambda asset: max(
+            len(build_single_view_prompt(asset, view, media_marker))
+            for view in asset.image_paths
+        ),
+    )
+
+
+def preflight_embedding_check(
+    assets: list[RenderedAsset],
+    client: LlamaEmbeddingClient,
+    expected_dimension: int,
+    view_embedding_strategy: str,
+) -> None:
+    slot_contexts: list[int] = []
+    try:
+        slots = client.slots()
+    except Exception as exc:
+        LOGGER.warning("Failed to read embedding server /slots: %s", exc)
+    else:
+        slot_contexts = [
+            int(slot["n_ctx"])
+            for slot in slots
+            if isinstance(slot, dict) and isinstance(slot.get("n_ctx"), int)
+        ]
+        if slot_contexts:
+            LOGGER.info(
+                "Embedding server slot contexts: %s",
+                sorted(set(slot_contexts)),
+            )
+
+    riskiest_asset = select_preflight_asset(
+        assets, view_embedding_strategy, client.media_marker
+    )
+    prompt_chars: int
+    if view_embedding_strategy == "multi_image":
+        prompt = build_multi_image_prompt(riskiest_asset, client.media_marker)
+        prompt_chars = len(prompt)
+        embedding = client.embed_images_text(
+            list(riskiest_asset.image_paths.values()), prompt
+        )
+    else:
+        view = max(
+            riskiest_asset.image_paths,
+            key=lambda item: len(
+                build_single_view_prompt(
+                    riskiest_asset, item, client.media_marker
+                )
+            ),
+        )
+        prompt = build_single_view_prompt(
+            riskiest_asset, view, client.media_marker
+        )
+        prompt_chars = len(prompt)
+        embedding = client.embed_image_text(
+            riskiest_asset.image_paths[view], prompt
+        )
+
+    if len(embedding) != expected_dimension:
+        raise RuntimeError(
+            "Embedding preflight returned unexpected dimension for "
+            f"{riskiest_asset.asset_id}: got {len(embedding)}, "
+            f"expected {expected_dimension}"
+        )
+
+    # 2026-07-10 修改原因：之前高并发 slot 上下文过小会在索引中途因长标题资产报 400；
+    # 这里提前用高风险样本做一次真实 embedding 试跑，尽早暴露 n_ctx 配置问题。
+    LOGGER.info(
+        "Embedding preflight passed for asset %s with strategy=%s, views=%d, prompt_chars=%d, min_slot_n_ctx=%s",
+        riskiest_asset.asset_id,
+        view_embedding_strategy,
+        len(riskiest_asset.image_paths),
+        prompt_chars,
+        min(slot_contexts) if slot_contexts else "unknown",
+    )
 
 
 def make_schema(
@@ -744,6 +884,51 @@ def flush_docs(collection: zvec.Collection, docs: list[zvec.Doc]) -> int:
             f"Zvec upsert failed for {len(failures)} docs: {failures[:3]}"
         )
     return len(docs)
+
+
+def flush_collection_and_verify(
+    collection: zvec.Collection, expected_min_docs: int
+) -> None:
+    LOGGER.info("Flushing Zvec collection to disk")
+    collection.flush()
+
+    stats = collection.stats
+    doc_count = getattr(stats, "doc_count", None)
+    if doc_count is None:
+        LOGGER.warning("Unable to verify Zvec doc_count after flush: %s", stats)
+        return
+    if doc_count < expected_min_docs:
+        raise RuntimeError(
+            "Zvec flush did not persist all indexed docs: "
+            f"doc_count={doc_count}, expected_at_least={expected_min_docs}"
+        )
+    # 2026-07-10 修改原因：zvec optimize 会读取已落盘的 scalar IPC；
+    # 先显式 flush 并校验 doc_count，避免 optimize 在 0 字节 scalar 文件上失败后留下空库。
+    LOGGER.info("Zvec flush verified doc_count=%d", doc_count)
+
+
+def optimize_collection_or_warn(
+    collection: zvec.Collection, expected_min_docs: int
+) -> None:
+    try:
+        LOGGER.info("Calling collection.optimize()")
+        collection.optimize()
+    except Exception as exc:
+        stats = collection.stats
+        doc_count = getattr(stats, "doc_count", None)
+        if doc_count is None or doc_count < expected_min_docs:
+            raise RuntimeError(
+                "Zvec optimize failed and collection doc_count could not be "
+                f"verified: doc_count={doc_count}, "
+                f"expected_at_least={expected_min_docs}"
+            ) from exc
+        # 2026-07-10 修改原因：optimize 是性能优化步骤；数据已经 flush 并通过数量校验时，
+        # 不应让 zvec 的 optimize/IPC 边界问题把完整索引任务判为失败。
+        LOGGER.warning(
+            "Zvec optimize failed after successful flush; keeping usable collection with doc_count=%d: %s",
+            doc_count,
+            exc,
+        )
 
 
 def status_ok(status: Any) -> bool:
@@ -1050,6 +1235,16 @@ def main(argv: list[str] | None = None) -> int:
         if modalities.get("vision") is not True:
             LOGGER.error("Embedding server does not report vision=true")
             return 4
+        try:
+            preflight_embedding_check(
+                assets=assets,
+                client=client,
+                expected_dimension=args.embedding_dimension,
+                view_embedding_strategy=args.view_embedding_strategy,
+            )
+        except Exception as exc:
+            LOGGER.error("Embedding preflight failed: %s", exc)
+            return 4
 
     schema = make_schema(
         collection_name=args.collection_name,
@@ -1118,9 +1313,9 @@ def main(argv: list[str] | None = None) -> int:
         pending_docs.clear()
 
         LOGGER.info("Indexed %d assets into %s", indexed, args.collection_path)
+        flush_collection_and_verify(collection, indexed)
         if not args.no_optimize:
-            LOGGER.info("Calling collection.optimize()")
-            collection.optimize()
+            optimize_collection_or_warn(collection, indexed)
         LOGGER.info("Collection stats: %s", collection.stats)
     finally:
         del collection
