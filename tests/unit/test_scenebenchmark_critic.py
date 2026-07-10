@@ -1042,7 +1042,9 @@ def test_room_scene_adapter_uses_access_direction_for_interaction_face(
         face for face in cabinet_record["interaction_faces"] if face["name"] == "front"
     )
 
-    assert cabinet_record["functional_hints"]["front_hint"] == "right"
+    # 2026-07-10 修改原因：front 轴已统一为 yaw=0 指向 +Y；世界 -Y
+    # 访问方向对应本地 back，而不是旧 +X 约定下的 right。
+    assert cabinet_record["functional_hints"]["front_hint"] == "back"
     assert front_face["normal_xy"] == pytest.approx([0.0, -1.0])
     assert front_face["center"][1] == pytest.approx(-0.3)
 
@@ -2374,6 +2376,7 @@ def test_base_experiment_config_defaults_are_report_only_template_mode() -> None
     assert critic_config.metrics == (
         "spatial_accessibility",
         "functional_dependency",
+        "interaction_clearance",
     )
     assert critic_config.room_stage_hooks == ("scene_after_furniture", "final_scene")
     assert critic_config.house_stage_hooks == ()
@@ -2441,12 +2444,12 @@ def test_readme_documents_memsafe_config_wrapper_without_secrets() -> None:
     assert "hydra.run.dir=/path/to/existing/output_dir" in readme
     assert "fd_proposer_checks" in readme
     assert "scenebenchmark_critic.json" in readme
-    assert "single-room" in readme
+    assert "单房间" in readme
     assert "RoomScene" in readme
-    assert "explicit opt-in" in readme
-    assert "grouped functional-dependency" in readme
+    assert "显式启用" in readme
+    assert "分组功能依赖检查" in readme
     assert "access_direction" in readme
-    assert "interaction faces" in readme
+    assert "交互面" in readme
     assert "benchmark_relevance" in readme
     assert "category_keywords" in readme
     assert "support_region_summary" in readme
@@ -2555,6 +2558,7 @@ def test_vendored_scenebenchmark_fd_sa_rule_source_manifest_is_complete() -> Non
         "__init__.py",
         "critic/__init__.py",
         "critic/accessibility.py",
+        "critic/agent.py",
         "critic/config.py",
         "critic/dependency.py",
         "critic/geometry.py",
@@ -2993,13 +2997,20 @@ def test_report_case_pack_keeps_fd_proposer_augmented_checks(
         if result.get("metric") == "functional_dependency"
     }
 
+    # 2026-07-10 修改原因：稳定 orientation contract 会替代同一座椅的
+    # proposer 检查，避免跨 stage 更换目标；测试应验证 contract，而非旧 proposer。
+    contract_checks = [
+        check
+        for check in payload["case_pack"]["checks"]
+        if check.get("check_source") == CONTRACT_CHECK_SOURCE
+    ]
     assert any(
         check["relation_type"] == "seating_to_work_surface"
         and check["subject_id"] == "chair_0"
         and check["target_ids"] == ["desk_0"]
-        for check in proposer_checks
+        for check in contract_checks
     )
-    assert {check["check_id"] for check in proposer_checks} <= proposer_result_ids
+    assert {check["check_id"] for check in contract_checks} <= proposer_result_ids
 
 
 def test_single_room_offline_smoke_runs_fd_sa_and_template_proposer(
@@ -3086,8 +3097,10 @@ def test_single_room_offline_smoke_runs_fd_sa_and_template_proposer(
         and check["target_ids"] == ["nightstand_0"]
         for check in checks
     )
+    # 2026-07-10 修改原因：稳定 orientation contract 已成为座椅朝向的
+    # 跨 stage 主检查，不能再要求被 contract 过滤掉的 proposer check。
     assert any(
-        check.get("check_source") == "fd_relation_proposer"
+        check.get("check_source") == CONTRACT_CHECK_SOURCE
         and check.get("relation_type") == "seating_to_work_surface"
         and check.get("subject_id") == "chair_0"
         and check.get("target_ids") == ["desk_0"]
@@ -3471,7 +3484,9 @@ def test_rule_functional_dependency_fails_when_chair_back_faces_desk() -> None:
     chair = _benchmark_obj(
         "chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0), yaw=180.0
     )
-    desk = _benchmark_obj("desk_1", "desk", (2.9, 2.0, 0.4), (1.0, 0.8, 0.8))
+    # 2026-07-10 修改原因：yaw=180 的 front 轴在当前约定指向 -Y；把桌子
+    # 放到 +Y 保持该 fixture 的“椅背朝向桌子”语义。
+    desk = _benchmark_obj("desk_1", "desk", (2.0, 2.9, 0.4), (1.0, 0.8, 0.8))
     check = {
         "check_id": "fd_back_facing",
         "metric": "functional_dependency",
@@ -4063,7 +4078,9 @@ def test_rule_functional_dependency_front_hint_rotates_seating_orientation() -> 
             "front_hint": "left",
         }
     )
-    table = _benchmark_obj("table_1", "dining_table", (2.0, 2.9, 0.4), (1.2, 0.8, 0.8))
+    # 2026-07-10 修改原因：front_hint=left 在 +Y 基准下指向 -X；桌子移到
+    # 西侧以保留原测试的正向面对关系。
+    table = _benchmark_obj("table_1", "dining_table", (1.1, 2.0, 0.4), (1.2, 0.8, 0.8))
     check = {
         "check_id": "fd_front_hint_left",
         "metric": "functional_dependency",
@@ -4085,7 +4102,9 @@ def test_rule_functional_dependency_front_hint_rotates_seating_orientation() -> 
 
 def test_rule_functional_dependency_dining_chair_depth_axis_fallback() -> None:
     chair = _benchmark_obj(
-        "chair_1", "chair", (2.0, 2.0, 0.5), (0.5, 0.85, 1.0), yaw=180.0
+        # 2026-07-10 修改原因：在 yaw=0 的 +Y front 约定下，座椅局部 X
+        # 轴是较长的侧向轴，目标位于 +X，用于稳定覆盖 depth-axis fallback。
+        "chair_1", "chair", (2.0, 2.0, 0.5), (0.85, 0.5, 1.0), yaw=0.0
     )
     chair["functional_hints"].update(
         {
@@ -4200,7 +4219,9 @@ def test_rule_functional_dependency_long_table_uses_nearest_edge_per_chair() -> 
 
 
 def test_rule_functional_dependency_allows_oblique_media_view() -> None:
-    sofa = _benchmark_obj("sofa_1", "sofa", (2.5, 2.5, 0.5), (2.0, 0.9, 1.0), yaw=180.0)
+    # 2026-07-10 修改原因：在 +Y front 约定下 yaw=90 让沙发正面沿 -X，
+    # 电视仍位于南侧，从而继续覆盖 living-room 的斜向观影放宽规则。
+    sofa = _benchmark_obj("sofa_1", "sofa", (2.5, 2.5, 0.5), (2.0, 0.9, 1.0), yaw=90.0)
     sofa["functional_hints"]["functional_categories"] = ["sittable"]
     television = _benchmark_obj("tv_1", "television", (2.5, 0.0, 1.2), (1.2, 0.1, 0.7))
     check = {

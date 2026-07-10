@@ -75,7 +75,7 @@ critic 默认使用环境变量配置 VLM（当 `asset_annotation.backend=vlm` �
 
 ```yaml
 # config.yml
-openai_api_key: "sk-xxx"
+openai_api_key: "<your-api-key>"
 openai_base_url: "https://your-api.com/v1"
 openai_use_responses: false  # 可选，默认 false
 ```

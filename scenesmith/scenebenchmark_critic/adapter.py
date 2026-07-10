@@ -733,12 +733,14 @@ def _semantic_yaw_deg(obj: SceneObject) -> float:
 
 
 def _front_hint_from_access_direction(raw: Any, *, yaw_deg: float) -> str | None:
+    # 2026-07-10 修改原因：23f21a8 将 SceneBenchmark front 轴统一为 yaw=0
+    # 指向 +Y；访问方向推导也必须使用同一基准，否则交互面会旋转 90 度。
     direction = _access_direction_xy(raw)
     if direction is None:
         return None
     dx, dy = direction
     yaw = math.radians(yaw_deg)
-    fx, fy = math.cos(yaw), math.sin(yaw)
+    fx, fy = -math.sin(yaw), math.cos(yaw)
     candidates = {
         "front": (fx, fy),
         "back": (-fx, -fy),
