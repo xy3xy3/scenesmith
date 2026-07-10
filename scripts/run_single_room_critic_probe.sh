@@ -80,6 +80,15 @@ AVOID_FORK_BPY="${AVOID_FORK_BPY:-true}"
 CRITIC_REPORT_STAGE_LABEL=""
 BRANCH_START_STAGE=""
 PORT_ARGS=()
+EXTRA_HYDRA_ARGS="${EXTRA_HYDRA_ARGS:-}"
+EXTRA_HYDRA_ARGS_ARRAY=()
+
+if [ -n "$EXTRA_HYDRA_ARGS" ]; then
+    # 2026-07-10 修改原因：回放时需要临时覆盖 HSSD backend=openclip/clip
+    # 等 Hydra 参数，避免为了单次验证改共享默认配置或触碰 zvec 索引。
+    # shellcheck disable=SC2206
+    EXTRA_HYDRA_ARGS_ARRAY=($EXTRA_HYDRA_ARGS)
+fi
 
 normalize_bool() {
     case "${1,,}" in
@@ -378,6 +387,7 @@ echo "CRITIC_PROBE_INNER_PARALLELISM: $CRITIC_PROBE_INNER_PARALLELISM"
 echo "CRITIC_PROBE_PORT_BASE: $CRITIC_PROBE_PORT_BASE"
 echo "CRITIC_PROBE_PORT_BLOCK_SIZE: $CRITIC_PROBE_PORT_BLOCK_SIZE"
 echo "AVOID_FORK_BPY: $AVOID_FORK_BPY"
+echo "EXTRA_HYDRA_ARGS: ${EXTRA_HYDRA_ARGS:-<none>}"
 echo "OPENAI_BASE_URL: $OPENAI_BASE_URL"
 echo "=========================================="
 echo
@@ -620,6 +630,7 @@ run_batch() {
         "+name=${exp_name}"
         "${COMMON_ARGS[@]}"
         "${PORT_ARGS[@]}"
+        "${EXTRA_HYDRA_ARGS_ARRAY[@]}"
         "experiment.tasks=${tasks_override}"
         "experiment.pipeline.stop_stage=${stop_stage_override}"
         "experiment.scenebenchmark_critic.enabled=${critic_enabled}"
