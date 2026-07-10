@@ -308,23 +308,33 @@ def _build_violation_message(
         )
     )
 
-    total = (
+    # 2026-07-10 修改原因：窗户 clearance 对 furniture agent 是可见提示，
+    # 不是必须修复的硬 physics violation；否则 dresser/wardrobe 会在挡窗
+    # warning 中反复换位，拖慢 bedroom furniture 回放。
+    hard_total = (
         len(collisions)
         + len(thin_covering_overlaps)
         + len(thin_covering_boundary_violations)
         + len(door_violations)
         + len(open_violations)
         + len(height_violations)
-        + len(window_violations)
     )
 
-    if total == 0:
+    if hard_total == 0 and not window_violations:
         return "No physics violations detected. All objects are properly placed."
 
+    if hard_total == 0:
+        return (
+            "No physics violations detected. Window access warnings were found "
+            f"({len(window_violations)} warning(s)); treat them as advisory and only "
+            f"adjust if they conflict with the design intent:\n"
+            f"{chr(10).join(messages)}"
+        )
+
     return (
-        f"Physics violations detected ({total} issue(s)):\n"
+        f"Physics violations detected ({hard_total} issue(s)):\n"
         f"{chr(10).join(messages)}\n\n"
-        f"Please resolve these issues before concluding the design."
+        f"Please resolve the blocking physics issues before concluding the design."
     )
 
 
