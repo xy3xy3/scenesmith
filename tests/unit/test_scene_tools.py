@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import trimesh
@@ -267,6 +267,56 @@ class TestSnapToObject(unittest.TestCase):
         # Rotation should not be applied (unless for other reasons like wall).
         # Since target is not a wall, rotation_applied should be False.
         self.assertFalse(result["rotation_applied"])
+
+    def test_snap_preserves_furniture_floor_height(self):
+        """Contract: furniture snapping does not inherit vertical mesh offsets."""
+        obj = SceneObject(
+            object_id=UniqueID("nightstand"),
+            object_type=ObjectType.FURNITURE,
+            name="Nightstand",
+            description="Bedroom Nightstand",
+            transform=RigidTransform(p=[-1.0, -1.4, 0.0]),
+            bbox_min=np.array([-0.25, -0.25, 0.0]),
+            bbox_max=np.array([0.25, 0.25, 0.6]),
+        )
+        target = SceneObject(
+            object_id=UniqueID("bed"),
+            object_type=ObjectType.FURNITURE,
+            name="Bed",
+            description="Bedroom Bed",
+            transform=RigidTransform(p=[0.0, -1.4, 0.0]),
+            bbox_min=np.array([-0.8, -0.9, 0.0]),
+            bbox_max=np.array([0.8, 0.9, 0.8]),
+        )
+
+        self.mock_scene.objects = {obj.object_id: obj, target.object_id: target}
+        self.mock_scene.get_object = lambda uid: self.mock_scene.objects.get(uid)
+        self.mock_scene.move_object = Mock(return_value=True)
+
+        with (
+            patch(
+                "scenesmith.furniture_agents.tools.scene_tools."
+                "resolve_collision_if_penetrating",
+                return_value=np.zeros(3),
+            ),
+            patch(
+                "scenesmith.furniture_agents.tools.scene_tools."
+                "select_and_execute_snap_algorithm",
+                return_value=(np.array([0.1, 0.0, -0.03]), 0.1),
+            ),
+        ):
+            result_json = self.scene_tools._snap_to_object_impl(
+                object_id=str(obj.object_id),
+                target_id=str(target.object_id),
+                orientation="none",
+            )
+
+        result = json.loads(result_json)
+
+        self.assertTrue(result["success"])
+        new_transform = self.mock_scene.move_object.call_args[1]["new_transform"]
+        self.assertAlmostEqual(new_transform.translation()[2], 0.0)
+        self.assertAlmostEqual(result["new_position"]["z"], 0.0)
 
     def test_orientation_toward_round_table(self):
         """Contract: orientation='toward' works for round tables."""

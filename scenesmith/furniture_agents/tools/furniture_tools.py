@@ -265,6 +265,9 @@ class FurnitureTools:
                 object_type=ObjectType.FURNITURE,
                 desired_dimensions=desired_dimensions,
                 style_context=style_context,
+                # 2026-07-10 修改原因：HSSD top-N iso 选择需要原始场景
+                # prompt 作为上下文，避免只按单个家具关键词选错资产。
+                scene_prompt_context=self.scene.text_description,
                 scene_id=self.scene.scene_dir.name,
             )
             return self._generate_assets_impl(request)
@@ -312,13 +315,13 @@ class FurnitureTools:
             object_id: str,
             x: float,
             y: float,
-            yaw: float = 0.0,
+            yaw: float | None = None,
         ) -> str:
             """Move existing furniture to a new floor position.
 
             Furniture sits flat on the floor at z=0 with upright orientation.
-            You can only control the x, y position and yaw rotation (rotation
-            around the vertical axis).
+            You can control the x, y position and optionally the yaw rotation
+            (rotation around the vertical axis).
 
             Use this to relocate furniture that's already in the room. You need
             the object ID from when you placed it or from 'get_current_scene_state'.
@@ -327,7 +330,8 @@ class FurnitureTools:
                 object_id: ID of the furniture item to move.
                 x: New X position in the room (meters).
                 y: New Y position in the room (meters).
-                yaw: New yaw rotation in degrees around vertical axis (default: 0.0).
+                yaw: New yaw rotation in degrees around vertical axis. Omit this to
+                    preserve the furniture's current rotation during position-only moves.
                     Positive values rotate counterclockwise in top-down view.
 
             Returns:
@@ -556,7 +560,7 @@ class FurnitureTools:
         z: float,
         roll: float,
         pitch: float,
-        yaw: float,
+        yaw: float | None,
     ) -> str:
         """
         Implementation for moving furniture to absolute pose. Rotations are in degrees.
@@ -607,7 +611,6 @@ class FurnitureTools:
             current_rpy = RollPitchYaw(current_transform.rotation())
 
             new_position = np.array([x, y, z])
-            new_rotation = np.array([roll, pitch, yaw])
             current_rotation = np.array(
                 [
                     math.degrees(current_rpy.roll_angle()),
@@ -615,6 +618,12 @@ class FurnitureTools:
                     math.degrees(current_rpy.yaw_angle()),
                 ]
             )  # Current rotation in degrees for comparison
+            if yaw is None:
+                # 2026-07-10: Position-only corrective moves should not reset
+                # wall-snapped orientations. This prevented bedside-table repairs
+                # from flipping the drawer/front face back toward the wall.
+                yaw = float(current_rotation[2])
+            new_rotation = np.array([roll, pitch, yaw])
 
             # Check if both position and rotation are unchanged.
             position_unchanged = np.allclose(current_position, new_position, atol=1e-6)
@@ -654,12 +663,9 @@ class FurnitureTools:
             )
             new_transform = RigidTransform(rpy=new_rpy, p=[x, y, z])
 
-            # Apply placement noise for realistic variation.
-            new_transform = apply_placement_noise(
-                transform=new_transform,
-                position_xy_std_meters=self.active_noise_profile.position_xy_std_meters,
-                rotation_yaw_std_degrees=self.active_noise_profile.rotation_yaw_std_degrees,
-            )
+            # 2026-07-10: Keep furniture moves exact. Critic repair loops for
+            # bed/nightstand layouts were reintroducing centimeter-scale collisions
+            # because corrective move_furniture_tool calls were perturbed by noise.
 
             # Update object to new absolute pose.
             self.scene.move_object(object_id=unique_id, new_transform=new_transform)

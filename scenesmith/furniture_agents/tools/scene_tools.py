@@ -737,6 +737,11 @@ class SceneTools:
         # Create new transform (rotation may have been updated above).
         # Use current position (after collision resolution and orientation).
         new_position = obj.transform.translation() + movement_vector
+        if obj.object_type == ObjectType.FURNITURE:
+            # 2026-07-10: Furniture snap should stay on its current floor height.
+            # Mesh closest-point directions can contain a small Z component, which
+            # pushed bedside tables below the floor during bed/nightstand repairs.
+            new_position[2] = original_pos[2]
         new_transform = RigidTransform(R=obj.transform.rotation(), p=new_position)
 
         # Move object.

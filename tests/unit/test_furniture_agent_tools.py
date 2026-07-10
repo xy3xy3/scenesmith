@@ -612,6 +612,82 @@ class TestFurnitureTools(BaseAgentToolsTest):
         )
         self.assertIn("out of floor plan bounds", result["message"])
 
+    def test_move_furniture_uses_exact_requested_pose(self):
+        """Test that corrective furniture moves are not perturbed by placement noise."""
+        self.mock_scene.room_geometry = Mock()
+        self.mock_scene.room_geometry.length = 10.0
+        self.mock_scene.room_geometry.width = 8.0
+
+        furniture_obj = SceneObject(
+            object_id=UniqueID("nightstand_0"),
+            object_type=ObjectType.FURNITURE,
+            name="Nightstand",
+            description="A movable nightstand",
+            transform=RigidTransform(),
+            immutable=False,
+        )
+
+        self.mock_scene.get_object.return_value = furniture_obj
+        self.mock_scene.move_object = Mock(return_value=True)
+
+        result_str = self.furniture_tools._move_furniture_impl(
+            object_id=str(furniture_obj.object_id),
+            x=-1.1,
+            y=-1.35,
+            z=0.0,
+            roll=0.0,
+            pitch=0.0,
+            yaw=15.0,
+        )
+
+        result = json.loads(result_str)
+        self.assertTrue(result["success"], f"Move failed: {result}")
+
+        new_transform = self.mock_scene.move_object.call_args[1]["new_transform"]
+        self.assertTrue(
+            np.allclose(new_transform.translation(), [-1.1, -1.35, 0.0], atol=1e-12)
+        )
+        new_yaw = math.degrees(new_transform.rotation().ToRollPitchYaw().yaw_angle())
+        self.assertAlmostEqual(new_yaw, 15.0, places=12)
+
+    def test_move_furniture_preserves_yaw_when_omitted(self):
+        """Test position-only moves keep existing wall-snapped orientation."""
+        self.mock_scene.room_geometry = Mock()
+        self.mock_scene.room_geometry.length = 10.0
+        self.mock_scene.room_geometry.width = 8.0
+
+        initial_yaw = math.radians(180.0)
+        furniture_obj = SceneObject(
+            object_id=UniqueID("nightstand_0"),
+            object_type=ObjectType.FURNITURE,
+            name="Nightstand",
+            description="A wall-backed nightstand",
+            transform=RigidTransform(
+                rpy=RollPitchYaw(0.0, 0.0, initial_yaw), p=[-1.15, 1.95, 0.0]
+            ),
+            immutable=False,
+        )
+
+        self.mock_scene.get_object.return_value = furniture_obj
+        self.mock_scene.move_object = Mock(return_value=True)
+
+        result_str = self.furniture_tools._move_furniture_impl(
+            object_id=str(furniture_obj.object_id),
+            x=-1.35,
+            y=1.95,
+            z=0.0,
+            roll=0.0,
+            pitch=0.0,
+            yaw=None,
+        )
+
+        result = json.loads(result_str)
+        self.assertTrue(result["success"], f"Move failed: {result}")
+
+        new_transform = self.mock_scene.move_object.call_args[1]["new_transform"]
+        new_yaw = math.degrees(new_transform.rotation().ToRollPitchYaw().yaw_angle())
+        self.assertAlmostEqual(abs(new_yaw), 180.0, places=12)
+
     def test_bounds_check_before_noise_application(self):
         """Test that bounds are checked before placement noise is applied."""
         self.mock_scene.room_geometry = Mock()
