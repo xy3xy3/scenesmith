@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
         HssdRetriever,
         RetrievalCandidate,
     )
+    from scenesmith.agent_utils.vlm_service import VLMService
 
 
 LOGGER = logging.getLogger("probe_hssd_vs_openclip_retrieval")
@@ -77,6 +79,13 @@ DEFAULT_CASE_PROMPTS: dict[str, str] = {
 QUERY_VARIANT_LABELS = {
     "keyword_only": "Keyword only",
     "context_plus_keyword": "Scene context + keyword",
+}
+
+METHOD_LABELS = {
+    "hssd_embedding": "HSSD embedding",
+    "hssd_embedding_vlm": "HSSD embedding + VLM",
+    "openclip": "OpenCLIP",
+    "openclip_vlm": "OpenCLIP + VLM",
 }
 
 PROMPT_OBJECTS: list[dict[str, str]] = [
@@ -474,7 +483,10 @@ def prioritize_specs_for_sampling(specs: list[QuerySpec]) -> list[QuerySpec]:
 
 
 def build_query_specs(
-    max_queries: int, cases: dict[str, dict[str, str]]
+    max_queries: int,
+    cases: dict[str, dict[str, str]],
+    case_ids: set[str] | None = None,
+    object_names: set[str] | None = None,
 ) -> list[QuerySpec]:
     specs = [
         QuerySpec(
@@ -488,6 +500,10 @@ def build_query_specs(
         )
         for item in PROMPT_OBJECTS
     ]
+    if case_ids:
+        specs = [spec for spec in specs if spec.case_id in case_ids]
+    if object_names:
+        specs = [spec for spec in specs if spec.object_name in object_names]
     if max_queries > 0:
         return prioritize_specs_for_sampling(specs)[:max_queries]
     return specs
@@ -762,9 +778,9 @@ def make_montage(
     return output_path
 
 
-def render_results(
+def render_candidates(
     *,
-    retriever: HssdRetriever,
+    candidates: list[RetrievalCandidate],
     renderer: BlenderRenderer,
     spec: QuerySpec,
     variant: QueryVariant,
@@ -775,11 +791,6 @@ def render_results(
     cache_root: Path | None,
     render_views: list[str],
 ) -> list[RenderedResult]:
-    candidates = retriever.retrieve_multiple(
-        description=variant.query,
-        object_type=spec.object_type,
-        max_candidates=retriever.config.use_top_k,
-    )
     rendered_results: list[RenderedResult] = []
 
     for rank, candidate in enumerate(candidates, start=1):
@@ -829,6 +840,73 @@ def render_results(
         result.montage_path = montage_path
 
     return rendered_results
+
+
+def rank_candidates_with_vlm(
+    *,
+    candidates: list[RetrievalCandidate],
+    spec: QuerySpec,
+    variant: QueryVariant,
+    vlm_service: VLMService,
+    model: str,
+    top_n: int,
+    rendered_assets_dir: Path,
+) -> tuple[list[RetrievalCandidate], dict[str, Any]]:
+    """Reorder one retrieval pool with the production iso-image VLM chooser."""
+    from scenesmith.agent_utils.asset_router.rendered_asset_choice import (
+        choose_hssd_candidate_from_iso_renders,
+    )
+    from scenesmith.agent_utils.hssd_retrieval_server.dataclasses import (
+        HssdRetrievalResult,
+    )
+
+    # 2026-07-10 修改原因：probe 要比较同一批 semantic/size 候选在 VLM
+    # 重排前后的差异，不能为了 VLM 分支重新发起检索而混入随机或索引变化。
+    chooser_candidates = [
+        HssdRetrievalResult(
+            mesh_path="",
+            hssd_id=candidate.mesh_id,
+            object_name=candidate.metadata.name,
+            similarity_score=float(candidate.clip_score),
+            size=tuple(float(axis) for axis in candidate.mesh.extents),
+            category=spec.object_type.lower(),
+        )
+        for candidate in candidates
+    ]
+    choice = choose_hssd_candidate_from_iso_renders(
+        candidates=chooser_candidates,
+        object_description=spec.keyword,
+        scene_context=spec.context_prompt,
+        vlm_service=vlm_service,
+        model=model,
+        reasoning_effort="low",
+        verbosity="low",
+        vision_detail="low",
+        rendered_assets_dir=rendered_assets_dir,
+        top_n=top_n,
+    )
+    selected_id = choice.selected_hssd_id
+    reordered = list(candidates)
+    if selected_id:
+        selected_candidate = next(
+            (candidate for candidate in candidates if candidate.mesh_id == selected_id),
+            None,
+        )
+        if selected_candidate is not None:
+            reordered = [selected_candidate] + [
+                candidate
+                for candidate in candidates
+                if candidate.mesh_id != selected_candidate.mesh_id
+            ]
+
+    return reordered, {
+        "enabled": True,
+        "outcome": "selected" if selected_id else "fallback",
+        "selected_hssd_id": selected_id,
+        "selected_original_rank": choice.selected_index,
+        "reason": choice.reason,
+        "used_iso_image_count": choice.used_image_count,
+    }
 
 
 def result_to_json(result: RenderedResult, output_dir: Path) -> dict[str, Any]:
@@ -886,6 +964,9 @@ def write_markdown(
         f"- Render cache root: `{args.render_cache_root}`",
         f"- Render views: `{', '.join(args.render_views)}`",
         f"- Query variants: `{', '.join(QUERY_VARIANT_LABELS.values())}`",
+        f"- VLM model: `{args.vlm_model}`",
+        f"- VLM top N: `{args.vlm_top_n}`",
+        f"- VLM iso source: `{args.vlm_rendered_assets_dir}`",
         "",
         "## Prompt Cases",
         "",
@@ -918,6 +999,12 @@ def write_markdown(
         )
 
         for variant_id, variant_payload in item["variants"].items():
+            method_keys = [
+                "hssd_embedding",
+                "hssd_embedding_vlm",
+                "openclip",
+                "openclip_vlm",
+            ]
             lines.extend(
                 [
                     f"#### {variant_payload['label']}",
@@ -925,34 +1012,54 @@ def write_markdown(
                     f"- Variant ID: `{variant_id}`",
                     f"- Query: `{variant_payload['query']}`",
                     "",
-                    "| HSSD embedding retrieval | OpenCLIP retrieval |",
-                    "| --- | --- |",
+                    "| Embedding | Embedding + VLM | OpenCLIP | OpenCLIP + VLM |",
+                    "| --- | --- | --- | --- |",
                 ]
             )
+            montage_cells = []
+            for method_key in method_keys:
+                montage = variant_payload["methods"][method_key].get("montage_path")
+                montage_cells.append(
+                    f"![{method_key}]({relative_to_report(output_dir / montage, report_path)})"
+                    if montage
+                    else "No render"
+                )
+            lines.extend([f"| {' | '.join(montage_cells)} |", ""])
 
-            embedding_montage = variant_payload["methods"]["hssd_embedding"].get(
-                "montage_path"
-            )
-            openclip_montage = variant_payload["methods"]["openclip"].get(
-                "montage_path"
-            )
-            embedding_cell = (
-                f"![hssd embedding]({relative_to_report(output_dir / embedding_montage, report_path)})"
-                if embedding_montage
-                else "No render"
-            )
-            openclip_cell = (
-                f"![openclip]({relative_to_report(output_dir / openclip_montage, report_path)})"
-                if openclip_montage
-                else "No render"
-            )
-            lines.extend([f"| {embedding_cell} | {openclip_cell} |", ""])
-
-            for method_key, method_label in [
-                ("hssd_embedding", "HSSD embedding"),
-                ("openclip", "OpenCLIP"),
-            ]:
+            for method_key in method_keys:
+                method_label = METHOD_LABELS[method_key]
                 lines.extend([f"**{method_label} top results**", ""])
+                method_error = variant_payload["methods"][method_key].get("error")
+                if method_error:
+                    lines.extend([f"- Retrieval error: `{method_error}`", ""])
+                selection = variant_payload["methods"][method_key].get("vlm_selection")
+                if selection and selection.get("enabled"):
+                    if selection.get("outcome") == "selected":
+                        lines.extend(
+                            [
+                                "- VLM selection: "
+                                f"original rank `{selection['selected_original_rank']}`, "
+                                f"asset `{str(selection['selected_hssd_id'])[:12]}`, "
+                                f"iso images `{selection['used_iso_image_count']}`.",
+                                f"- Reason: {selection.get('reason') or '(none)'}",
+                                "",
+                            ]
+                        )
+                    elif selection.get("outcome") == "unavailable":
+                        lines.extend(
+                            [
+                                "- VLM selection unavailable because retrieval did not return candidates.",
+                                "",
+                            ]
+                        )
+                    else:
+                        lines.extend(
+                            [
+                                "- VLM selection: fallback to retrieval order "
+                                f"(usable iso images: `{selection['used_iso_image_count']}`).",
+                                "",
+                            ]
+                        )
                 rows = variant_payload["methods"][method_key]["results"]
                 if not rows:
                     lines.extend(["No candidates.", ""])
@@ -1004,6 +1111,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--zvec-base-url", default="http://127.0.0.1:8014")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument(
+        "--case-id",
+        action="append",
+        help="Restrict the probe to one or more case IDs.",
+    )
+    parser.add_argument(
+        "--object-name",
+        action="append",
+        help="Restrict the probe to one or more object names.",
+    )
+    parser.add_argument(
+        "--vlm-model",
+        default=os.environ.get("MODEL_NAME", "Qwen3.6-27B-Q8_0"),
+        help="OpenAI-compatible VLM model used for iso candidate selection.",
+    )
+    parser.add_argument(
+        "--vlm-base-url",
+        default=os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8002/v1"),
+        help="OpenAI-compatible VLM base URL.",
+    )
+    parser.add_argument(
+        "--vlm-api-key",
+        default=os.environ.get("OPENAI_API_KEY", "sk-123"),
+        help="API key for the OpenAI-compatible VLM server.",
+    )
+    parser.add_argument(
+        "--vlm-top-n",
+        type=int,
+        default=4,
+        help="Number of retrieval candidates shown to the VLM for each A/B comparison.",
+    )
+    parser.add_argument(
+        "--vlm-rendered-assets-dir",
+        type=Path,
+        default=DEFAULT_RENDER_CACHE_ROOT,
+        help="Directory containing <hssd_id>/iso.png for VLM candidate selection.",
+    )
+    parser.add_argument(
         "--max-queries",
         type=int,
         default=0,
@@ -1051,6 +1195,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--top-k must be >= 1")
     if args.max_queries < 0:
         raise ValueError("--max-queries must be >= 0")
+    if args.vlm_top_n < 2:
+        raise ValueError("--vlm-top-n must be >= 2 for an A/B VLM comparison")
     if args.render_width < 64 or args.render_height < 64:
         raise ValueError("--render-width and --render-height must be >= 64")
     normalized_views: list[str] = []
@@ -1094,7 +1240,14 @@ def main() -> int:
             "critic_goal": meta.get("critic_goal", ""),
             "prompt": meta.get("prompt", DEFAULT_CASE_PROMPTS.get(case_id, "")),
         }
-    specs = build_query_specs(args.max_queries, cases)
+    specs = build_query_specs(
+        args.max_queries,
+        cases,
+        case_ids=set(args.case_id) if args.case_id else None,
+        object_names=set(args.object_name) if args.object_name else None,
+    )
+    if not specs:
+        raise ValueError("No probe objects match --case-id/--object-name filters")
     LOGGER.info("Writing probe output to %s", args.output_dir)
     LOGGER.info("Running %d object queries", len(specs))
     if args.render_cache_root.exists():
@@ -1113,6 +1266,14 @@ def main() -> int:
 
     # 2026-07-09 修改原因：让 --help/参数校验先完成，再加载 OpenCLIP/Torch，避免轻量命令也卡在重依赖导入上。
     from scenesmith.agent_utils.hssd_retrieval.retrieval import HssdRetriever
+    from scenesmith.agent_utils.vlm_service import VLMService
+
+    # 2026-07-10 修改原因：probe 直接比较 VLM 重排前后，需要独立指定与
+    # production 相同的 OpenAI-compatible 服务，避免依赖调用者临时 export 环境变量。
+    os.environ["OPENAI_BASE_URL"] = args.vlm_base_url
+    os.environ["OPENAI_API_KEY"] = args.vlm_api_key
+    os.environ["OPENAI_USE_RESPONSES"] = "false"
+    vlm_service = VLMService()
 
     embedding_retriever = HssdRetriever(
         make_hssd_config(
@@ -1152,33 +1313,109 @@ def main() -> int:
                 variant.query,
             )
             method_payloads: dict[str, dict[str, Any]] = {}
-            for method_key, retriever in [
+            for base_method_key, retriever in [
                 ("hssd_embedding", embedding_retriever),
                 ("openclip", openclip_retriever),
             ]:
-                method_dir = query_dir / variant.variant_id / method_key
-                results = render_results(
-                    retriever=retriever,
+                try:
+                    candidates = retriever.retrieve_multiple(
+                        description=variant.query,
+                        object_type=spec.object_type,
+                        max_candidates=retriever.config.use_top_k,
+                    )
+                except Exception as exc:
+                    # 2026-07-10 修改原因：OpenCLIP 权重可能尚未缓存且网络暂时
+                    # 不可用；embedding/VLM 对照仍应写入报告，不能因一个 backend
+                    # 初始化失败而丢掉整个 probe 结果。
+                    LOGGER.exception(
+                        "Retrieval failed for method=%s query=%s",
+                        base_method_key,
+                        variant.query,
+                    )
+                    error_payload = {
+                        "montage_path": None,
+                        "results": [],
+                        "error": str(exc),
+                        "vlm_selection": {"enabled": False},
+                    }
+                    method_payloads[base_method_key] = error_payload
+                    method_payloads[f"{base_method_key}_vlm"] = {
+                        **error_payload,
+                        "vlm_selection": {
+                            "enabled": True,
+                            "outcome": "unavailable",
+                            "used_iso_image_count": 0,
+                        },
+                    }
+                    continue
+                raw_method_dir = query_dir / variant.variant_id / base_method_key
+                raw_results = render_candidates(
+                    candidates=candidates,
                     renderer=renderer,
                     spec=spec,
                     variant=variant,
-                    method_dir=method_dir,
-                    method_key=method_key,
+                    method_dir=raw_method_dir,
+                    method_key=base_method_key,
                     width=args.render_width,
                     height=args.render_height,
                     cache_root=render_cache_root,
                     render_views=args.render_views,
                 )
-                montage = results[0].montage_path if results else None
-                method_payloads[method_key] = {
+                raw_montage = raw_results[0].montage_path if raw_results else None
+                method_payloads[base_method_key] = {
                     "montage_path": (
-                        montage.resolve().relative_to(args.output_dir.resolve()).as_posix()
-                        if montage is not None
+                        raw_montage.resolve()
+                        .relative_to(args.output_dir.resolve())
+                        .as_posix()
+                        if raw_montage is not None
                         else None
                     ),
                     "results": [
-                        result_to_json(result, args.output_dir) for result in results
+                        result_to_json(result, args.output_dir)
+                        for result in raw_results
                     ],
+                    "vlm_selection": {"enabled": False},
+                    "error": None,
+                }
+
+                vlm_candidates, selection = rank_candidates_with_vlm(
+                    candidates=candidates,
+                    spec=spec,
+                    variant=variant,
+                    vlm_service=vlm_service,
+                    model=args.vlm_model,
+                    top_n=args.vlm_top_n,
+                    rendered_assets_dir=args.vlm_rendered_assets_dir,
+                )
+                vlm_method_key = f"{base_method_key}_vlm"
+                vlm_method_dir = query_dir / variant.variant_id / vlm_method_key
+                vlm_results = render_candidates(
+                    candidates=vlm_candidates,
+                    renderer=renderer,
+                    spec=spec,
+                    variant=variant,
+                    method_dir=vlm_method_dir,
+                    method_key=vlm_method_key,
+                    width=args.render_width,
+                    height=args.render_height,
+                    cache_root=render_cache_root,
+                    render_views=args.render_views,
+                )
+                vlm_montage = vlm_results[0].montage_path if vlm_results else None
+                method_payloads[vlm_method_key] = {
+                    "montage_path": (
+                        vlm_montage.resolve()
+                        .relative_to(args.output_dir.resolve())
+                        .as_posix()
+                        if vlm_montage is not None
+                        else None
+                    ),
+                    "results": [
+                        result_to_json(result, args.output_dir)
+                        for result in vlm_results
+                    ],
+                    "vlm_selection": selection,
+                    "error": None,
                 }
             variant_payloads[variant.variant_id] = {
                 "label": variant.label,
