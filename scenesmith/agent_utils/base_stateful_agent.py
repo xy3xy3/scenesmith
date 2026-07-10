@@ -171,6 +171,32 @@ class BaseStatefulAgent(ABC):
         # Initialize checkpoint state (N-1 and N pattern for rollback).
         initialize_checkpoint_attributes(target=self)
 
+        # 2026-07-10 修改原因：planner 只靠 prompt 记录 critique 轮数时，
+        # 本地 Qwen 会忽略停止条件并反复调用 designer/critic；在工具层保存硬预算。
+        self._reset_planner_workflow_tracking()
+
+    def _reset_planner_workflow_tracking(self) -> None:
+        """Reset hard limits for one planner/designer/critic workflow."""
+        self._planner_critique_calls = 0
+        self._planner_design_change_calls = 0
+        self._planner_last_critique_scene_hash: str | None = None
+        self._planner_unchanged_design_changes = 0
+        self._planner_stop_reason: str | None = None
+
+    def _planner_hard_stop(self, reason: str) -> str:
+        """Return a stable message that tells the planner to finish immediately."""
+        self._planner_stop_reason = reason
+        console_logger.warning(f"Planner workflow hard stop: {reason}")
+        return (
+            "HARD STOP: The workflow budget is exhausted. Do not call any more "
+            "tools. Keep the best current checkpoint and return your final summary. "
+            f"Reason: {reason}"
+        )
+
+    def _configured_no_progress_limit(self) -> int:
+        """Return the optional consecutive unchanged-design limit."""
+        return max(0, int(getattr(self.cfg, "max_no_progress_rounds", 0)))
+
     def _get_model_settings(
         self,
         settings_key: str | None = None,
@@ -712,7 +738,28 @@ class BaseStatefulAgent(ABC):
             Returns:
                 Critic's detailed evaluation with specific improvement suggestions.
             """
-            return await self._request_critique_impl()
+            if self._planner_stop_reason is not None:
+                return self._planner_hard_stop(self._planner_stop_reason)
+
+            max_rounds = max(0, int(self.cfg.max_critique_rounds))
+            if self._planner_critique_calls >= max_rounds:
+                return self._planner_hard_stop(
+                    f"reached max_critique_rounds={max_rounds}"
+                )
+
+            current_hash = self.scene.content_hash()
+            if (
+                self._planner_last_critique_scene_hash is not None
+                and current_hash == self._planner_last_critique_scene_hash
+            ):
+                return self._planner_hard_stop(
+                    "scene is unchanged since the previous critique"
+                )
+
+            self._planner_critique_calls += 1
+            result = await self._request_critique_impl()
+            self._planner_last_critique_scene_hash = self.scene.content_hash()
+            return result
 
         @function_tool
         async def request_design_change(instruction: str) -> str:
@@ -728,7 +775,39 @@ class BaseStatefulAgent(ABC):
             Returns:
                 Designer's report of what was changed.
             """
-            return await self._request_design_change_impl(instruction)
+            if self._planner_stop_reason is not None:
+                return self._planner_hard_stop(self._planner_stop_reason)
+
+            # Allow one extra call for the documented "initial response was only a
+            # plan" recovery, while still bounding a model that ignores cycle limits.
+            max_changes = max(0, int(self.cfg.max_critique_rounds)) + 1
+            if self._planner_design_change_calls >= max_changes:
+                return self._planner_hard_stop(
+                    f"reached design-change budget={max_changes}"
+                )
+
+            before_hash = self.scene.content_hash()
+            self._planner_design_change_calls += 1
+            result = await self._request_design_change_impl(instruction)
+            after_hash = self.scene.content_hash()
+
+            if after_hash == before_hash:
+                self._planner_unchanged_design_changes += 1
+            else:
+                self._planner_unchanged_design_changes = 0
+
+            no_progress_limit = self._configured_no_progress_limit()
+            if (
+                no_progress_limit > 0
+                and self._planner_unchanged_design_changes >= no_progress_limit
+            ):
+                stop_message = self._planner_hard_stop(
+                    "designer produced no scene-state change in "
+                    f"{self._planner_unchanged_design_changes} consecutive calls"
+                )
+                return f"{result}\n\n{stop_message}"
+
+            return result
 
         tools: list[FunctionTool] = [request_initial_design]
 
@@ -827,7 +906,9 @@ class BaseStatefulAgent(ABC):
     ) -> tuple[bool, set[str]]:
         """Return whether critic called the required observation/state tools."""
         called_tools: set[str] = set()
-        for item in result.new_items:
+        # 2026-07-10 修改原因：本地 OpenAI 兼容层或测试替身可能不提供
+        # new_items；按“未记录工具调用”处理，后续再依据 critique 有效性决定重试。
+        for item in getattr(result, "new_items", []):
             if not isinstance(item, ToolCallItem):
                 continue
 
@@ -1052,9 +1133,12 @@ class BaseStatefulAgent(ABC):
         critic_used_required_tools, called_tools = (
             self._critic_called_required_read_only_tools(result)
         )
-        needs_inline_retry = (
-            not critic_used_required_tools
-            or self._critic_response_needs_inline_retry(response)
+        all_zero_scores = all(score.grade == 0 for score in response.get_scores())
+        # 2026-07-10 修改原因：llama.cpp/Qwen 经常返回有效非零 critique，
+        # 但 SDK 未记录只读工具调用；过去会因此无条件再跑一次完整 VLM 请求。
+        # 仅在输出本身显示缺少上下文，或零分且确实没调用工具时重试。
+        needs_inline_retry = self._critic_response_needs_inline_retry(response) or (
+            not critic_used_required_tools and all_zero_scores
         )
 
         if needs_inline_retry:
@@ -1101,6 +1185,18 @@ class BaseStatefulAgent(ABC):
 
         # Save scores to YAML next to scene renders (from observe_scene call).
         images_dir = self.rendering_manager.last_render_dir
+        if images_dir is None:
+            fallback_render_dir = getattr(self, "final_render_dir", None) or getattr(
+                self, "checkpoint_render_dir", None
+            )
+            if fallback_render_dir is not None and fallback_render_dir.exists():
+                # 2026-07-10 修改原因：本地 Qwen 有时跳过只读 observe_scene，
+                # 但返回有效 critique；复用最近 checkpoint render 写分数，避免重跑 VLM。
+                console_logger.warning(
+                    "Critic produced no new render; reusing existing render "
+                    f"directory: {fallback_render_dir}"
+                )
+                images_dir = fallback_render_dir
         if images_dir:
             scores_dict = scores_to_dict(response)
             scores_path = images_dir / "scores.yaml"

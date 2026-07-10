@@ -1197,6 +1197,55 @@ class TestApplyFloorPenetrationFallback(PhysicalFeasibilityTestCase):
                 np.allclose(box_after.transform.translation(), initial_pos, atol=1e-6)
             )
 
+    def test_floor_fallback_uses_vertical_bounds_for_flush_furniture(self) -> None:
+        """Large lateral floor distance must not lift flush furniture by meters."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            original_floor = self.room_geometry.floor
+            try:
+                # 2026-07-10 修改原因：复现厚 floor slab 接触返回横向退出深度，
+                # 但对象 bbox 底部实际与 floor top 齐平的情况。
+                self.room_geometry.floor = SceneObject(
+                    object_id=UniqueID("floor_0"),
+                    object_type=ObjectType.FLOOR,
+                    name="floor",
+                    description="floor",
+                    transform=RigidTransform(p=[0.0, 0.0, -0.05]),
+                    bbox_min=np.array([-5.0, -5.0, -0.05]),
+                    bbox_max=np.array([5.0, 5.0, 0.05]),
+                )
+                scene = RoomScene(
+                    room_geometry=self.room_geometry,
+                    scene_dir=Path(tmp_dir),
+                    text_description="Flush furniture floor fallback regression",
+                )
+                flush_box = SceneObject(
+                    object_id=UniqueID("flush_box_0"),
+                    object_type=ObjectType.FURNITURE,
+                    name="floor_lamp",
+                    description="Furniture whose name contains floor",
+                    transform=RigidTransform(p=[0.0, 0.0, 0.0]),
+                    sdf_path=TEST_DATA_DIR / "simple_box.sdf",
+                    bbox_min=np.array([-0.25, -0.25, 0.0]),
+                    bbox_max=np.array([0.25, 0.25, 0.5]),
+                )
+                scene.add_object(flush_box)
+
+                initial_z = flush_box.transform.translation()[2]
+                updated_scene, lifted_count = _apply_floor_penetration_fallback(
+                    scene=scene, margin_m=0.001
+                )
+
+                self.assertEqual(lifted_count, 0)
+                self.assertAlmostEqual(
+                    updated_scene.get_object(
+                        UniqueID("flush_box_0")
+                    ).transform.translation()[2],
+                    initial_z,
+                    places=6,
+                )
+            finally:
+                self.room_geometry.floor = original_floor
+
 
 class TestGetCollidingObjectIds(PhysicalFeasibilityTestCase):
     """Tests for _get_colliding_object_ids helper function."""

@@ -6491,6 +6491,9 @@ async def test_request_critique_disabled_does_not_change_physics_context(
     agent.critic_session = object()
     agent.rendering_manager = type("RenderingManager", (), {"last_render_dir": None})()
     agent.previous_scores = None
+    prior_render_dir = tmp_path / "prior_render"
+    prior_render_dir.mkdir()
+    agent.checkpoint_render_dir = prior_render_dir
     agent.final_render_dir = None
     agent._create_run_config = lambda: None
 
@@ -6498,6 +6501,7 @@ async def test_request_critique_disabled_does_not_change_physics_context(
 
     assert result == "ok"
     assert captured["physics_context"] == "physics-only"
+    assert (prior_render_dir / "scores.yaml").exists()
 
 
 @pytest.mark.asyncio

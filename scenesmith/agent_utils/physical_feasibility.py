@@ -47,7 +47,11 @@ from pydrake.geometry.optimization import HPolyhedron, VPolytope
 from scenesmith.agent_utils.drake_utils import (
     create_drake_plant_and_scene_graph_from_scene,
 )
-from scenesmith.agent_utils.physics_validation import compute_scene_collisions
+from scenesmith.agent_utils.physics_validation import (
+    _compute_floor_penetration_depth,
+    _get_object_info_from_geometry_id,
+    compute_scene_collisions,
+)
 from scenesmith.agent_utils.room import (
     ObjectType,
     RoomScene,
@@ -917,46 +921,44 @@ def _apply_floor_penetration_fallback(
 
     # Track max penetration per furniture piece.
     furniture_penetrations: dict[UniqueID, float] = {}
-    inspector = query_object.inspector()
-
     for pair in all_pairs:
-        # Get object names from geometry IDs.
-        name_a = inspector.GetName(pair.id_A)
-        name_b = inspector.GetName(pair.id_B)
-
-        # Check if this is a floor collision (floor may be named "floor" or "ground").
-        name_a_lower = name_a.lower()
-        name_b_lower = name_b.lower()
-        is_floor_a = "floor" in name_a_lower or "ground" in name_a_lower
-        is_floor_b = "floor" in name_b_lower or "ground" in name_b_lower
+        # 2026-07-10 修改原因：字符串包含判断会把 floor_lamp 当作地板；
+        # 使用 Drake frame 映射得到精确 scene object/floor 身份。
+        object_a_info = _get_object_info_from_geometry_id(
+            geometry_id=pair.id_A, scene=scene, query_object=query_object
+        )
+        object_b_info = _get_object_info_from_geometry_id(
+            geometry_id=pair.id_B, scene=scene, query_object=query_object
+        )
+        is_floor_a = object_a_info["name"] == "floor"
+        is_floor_b = object_b_info["name"] == "floor"
 
         if not (is_floor_a or is_floor_b):
             continue  # Not a floor collision.
 
-        # Get the non-floor object name.
-        other_name = name_b if is_floor_a else name_a
-        penetration_depth = abs(pair.distance)
+        other_info = object_b_info if is_floor_a else object_a_info
+        furn_id = UniqueID(other_info["id"])
+        obj = scene.get_object(furn_id)
+        if obj is None or obj.object_type != ObjectType.FURNITURE:
+            continue
 
-        # Find furniture ID from geometry name.
-        for obj in scene.objects.values():
-            if obj.object_type != ObjectType.FURNITURE:
-                continue
-            # Match by checking if object ID is in the geometry name.
-            obj_id_str = str(obj.object_id)
-            if (
-                obj_id_str in other_name
-                or obj.name.lower().replace(" ", "_") in other_name.lower()
-            ):
-                furn_id = obj.object_id
-                # Track max penetration for this furniture.
-                current_max = furniture_penetrations.get(furn_id, 0.0)
-                furniture_penetrations[furn_id] = max(current_max, penetration_depth)
-                break
+        # 2026-07-10 修改原因：Drake 对厚 floor slab 的 signed distance 可能选择
+        # 横向退出方向，返回数米假穿透；家具落地只使用 world-Z 重叠深度。
+        penetration_depth = _compute_floor_penetration_depth(
+            scene=scene,
+            object_a_id=object_a_info["id"],
+            object_b_id=object_b_info["id"],
+            fallback_depth=abs(pair.distance),
+        )
+        current_max = furniture_penetrations.get(furn_id, 0.0)
+        furniture_penetrations[furn_id] = max(current_max, penetration_depth)
 
     # Lift each penetrating furniture piece.
     lifted_count = 0
     for furn_id, penetration in furniture_penetrations.items():
-        if penetration > 0:
+        # 2026-07-10 修改原因：落地 bbox 常有 1e-16--1e-6m 数值误差，
+        # 不应把正常接触算作穿透并额外抬高；margin 同时作为最小处理阈值。
+        if penetration > margin_m:
             lift_amount = penetration + margin_m
             obj = scene.get_object(furn_id)
             if obj is None:

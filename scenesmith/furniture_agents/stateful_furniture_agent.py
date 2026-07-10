@@ -268,6 +268,9 @@ class StatefulFurnitureAgent(BaseStatefulAgent, BaseFurnitureAgent):
         """
         # Store everything as instance variables for closure access.
         self.scene = scene
+        # 2026-07-10 修改原因：同一个 agent 实例回放多个房间时，每个家具工作流
+        # 必须重新获得独立的 critique/no-progress 预算。
+        self._reset_planner_workflow_tracking()
 
         # Generate context image if configured. If generation fails, continue without it.
         if self.cfg.context_image_generation.enabled:

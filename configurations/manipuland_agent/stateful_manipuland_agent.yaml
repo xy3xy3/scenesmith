@@ -7,15 +7,18 @@ defaults:
 agents:
   designer_agent:
     name: "designer"
-    max_turns: 2000
+    # 2026-07-10 修改原因：覆盖书架等复杂表面的正常调用量，同时限制单轮膨胀。
+    max_turns: 120
     prompt: MANIPULAND_DESIGNER_AGENT
 
   planner_agent:
     name: "planner"
-    max_turns: 1000
+    # 2026-07-10 修改原因：每件家具最多 2 个 critique 回合，限制 planner 失控。
+    max_turns: 48
     prompt: MANIPULAND_PLANNER_AGENT
 
   critic_agent:
     name: "critic"
-    max_turns: 500
+    # 2026-07-10 修改原因：critic 只读观察后应直接输出，限制异常工具循环。
+    max_turns: 12
     prompt: MANIPULAND_CRITIC_AGENT

@@ -5,15 +5,18 @@ defaults:
 agents:
   designer_agent:
     name: "designer_agent"
-    max_turns: 2000
+    # 2026-07-10 修改原因：历史正常家具初始布局不超过 80 requests，限制单次失控。
+    max_turns: 120
     prompt: DESIGNER_AGENT
 
   planner_agent:
     name: "planner_agent"
-    max_turns: 500
+    # 2026-07-10 修改原因：工具层最多 4 个 critique 回合，48 turns 足够收尾。
+    max_turns: 48
     prompt: STATEFUL_PLANNER_AGENT
 
   critic_agent:
     name: "critic_agent"
-    max_turns: 500
+    # 2026-07-10 修改原因：critic 只读观察后应直接输出，限制异常工具循环。
+    max_turns: 12
     prompt: STATEFUL_CRITIC_AGENT

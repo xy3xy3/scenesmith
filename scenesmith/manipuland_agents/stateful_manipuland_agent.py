@@ -575,6 +575,9 @@ class StatefulManipulandAgent(BaseStatefulAgent, BaseManipulandAgent):
         self.previous_checkpoint_render_dir = None
         self.checkpoint_render_dir = None
         # Keep placement_style as-is (it persists across furniture iterations).
+        # 2026-07-10 修改原因：manipuland 是逐件家具运行 planner，防止上一件家具
+        # 用尽 critique/no-progress 预算后影响下一件家具。
+        self._reset_planner_workflow_tracking()
 
     def _setup_furniture_agents(
         self, furniture_id: UniqueID, furniture_description: str

@@ -274,8 +274,14 @@ collision_geometry:
 # Maximum number of agent turns before stopping (applies to all agent interactions)
 max_turns: 1000
 
-# Maximum number of critique-and-improve rounds before stopping
-max_critique_rounds: 3
+# Maximum number of critique-and-improve rounds before stopping.
+# 2026-07-10 修改原因：study 第 3 轮才补齐 trash can，需要第 4 轮检查并修复
+# 新物件的可达性问题；工具层仍会在第 4 轮后硬停止。
+max_critique_rounds: 4
+
+# 2026-07-10 修改原因：连续无场景变化说明 designer 无法落实 critic 反馈，
+# 在工具层提前结束，避免反复渲染和模型调用。
+max_no_progress_rounds: 2
 
 # Scene reset thresholds for detecting quality degradation
 # Reset is suggested when EITHER threshold is exceeded
