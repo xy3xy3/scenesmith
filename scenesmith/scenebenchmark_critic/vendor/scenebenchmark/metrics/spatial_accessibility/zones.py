@@ -132,11 +132,13 @@ def _blocking_objects_for_zone(
     *,
     limit: int,
     height_threshold_m: float,
+    ignored_object_ids: set[str] | None = None,
 ) -> list[str]:
     zx0, zy0, zx1, zy1 = zone_aabb
     scored: list[tuple[float, str]] = []
+    ignored = ignored_object_ids or set()
     for obj_id, obj in store.objects.items():
-        if obj_id == subject_id:
+        if obj_id == subject_id or obj_id in ignored:
             continue
         if not is_walkway_obstacle(obj, height_threshold_m=height_threshold_m):
             continue

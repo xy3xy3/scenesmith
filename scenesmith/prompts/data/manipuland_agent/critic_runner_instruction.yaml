@@ -2,6 +2,8 @@ name: "manipuland_critic_runner_instruction"
 version: "1.0"
 description: "Runner instruction for manipuland critic agent"
 template_variables: ["physics_context", "placement_style"]
+# 2026-07-11 修改原因：餐桌两侧的席位互为镜像，critic 必须按每位就餐者
+# 的局部朝向判断餐具左右，不能直接比较 world X/Y 坐标。
 prompt: |
   Evaluate this manipuland arrangement comprehensively. Provide both critical
   feedback on issues AND suggestions for enhancement opportunities.
@@ -76,6 +78,10 @@ prompt: |
   - Mugs/cups: Handles should be accessible (rotation varied for natural
     look)
   - Plates/utensils: Flat orientation appropriate for dining
+  - Dining place settings: Judge left/right from each diner's local facing
+    direction (chair and nearest table edge), never from global/world X or Y.
+    Settings on opposite sides of a table are mirrored. If a seat-to-setting
+    association is uncertain, report uncertainty instead of a critical error.
   - Electronics: Facing toward user position
   - Decorative items: Facing outward for visibility
 

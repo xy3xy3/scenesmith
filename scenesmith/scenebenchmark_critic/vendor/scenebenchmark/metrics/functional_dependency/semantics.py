@@ -70,14 +70,14 @@ def _is_work_surface_target(target: dict[str, Any]) -> bool:
 
 
 def _is_media_target(target: dict[str, Any]) -> bool:
-    profile = object_function_profile(target)
-    if profile.source == "explicit" and profile.is_media_target:
-        return True
-    category = object_category(target)
     if _raw_text_has_any(target, MEDIA_TARGET_REJECT_HINTS):
         return False
     if _text_has_any(target, ("remote", "controller", "device")):
         return False
+    profile = object_function_profile(target)
+    if profile.source == "explicit" and profile.is_media_target:
+        return True
+    category = object_category(target)
     if category in MEDIA:
         return True
     if is_small_object(target):
@@ -289,6 +289,15 @@ def _is_mounted_lamp_subject(subject: dict[str, Any]) -> bool:
 
 
 def _is_seating_subject(subject: dict[str, Any]) -> bool:
+    # 2026-07-11 修改原因：living final 的 throw pillow 带错误 explicit
+    # sittable/media 标注，模板 proposer 因而生成 pillow -> TV remote FD。
+    # manipuland/wall/ceiling objects 不能成为 seating relation 的 subject。
+    if _scene_object_type(subject) in {
+        "manipuland",
+        "wall_mounted",
+        "ceiling_mounted",
+    }:
+        return False
     profile = object_function_profile(subject)
     if profile.source == "explicit" and profile.is_seating:
         return not _raw_text_has_any(subject, SEATING_SUBJECT_REJECT_HINTS)

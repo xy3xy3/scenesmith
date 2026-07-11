@@ -71,24 +71,26 @@ def align_seating_to_nearest_surface(
             seat, scene.get_objects_by_type(ObjectType.WALL), max_gap_m=wall_anchor_gap_m
         )
         target = _nearest_surface(seat, surfaces, max_distance_m=max_target_distance_m)
+        surface_gap = _surface_gap_xy(seat, target)
+        effective_standalone_gap = (
+            0.45 if _is_guest_seating(seat) else standalone_surface_gap_m
+        )
         if target is None or (
             wall_target is not None
-            and _surface_gap_xy(seat, target) is not None
-            and _surface_gap_xy(seat, target) > standalone_surface_gap_m
+            and surface_gap is not None
+            and surface_gap > effective_standalone_gap
             and _is_wall_anchor_candidate(seat)
         ):
             if wall_target is None:
                 continue
             old_rpy = RollPitchYaw(seat.transform.rotation())
             seat_center = seat.transform.translation()
-            wall_center = wall_target.transform.translation()
+            target_point = _wall_away_target_point(seat, wall_target)
+            if target_point is None:
+                continue
             new_yaw_deg = compute_optimal_facing_yaw(
                 origin_a=seat_center,
-                target_point=np.array(
-                    [seat_center[0] + (seat_center[0] - wall_center[0]),
-                     seat_center[1] + (seat_center[1] - wall_center[1]),
-                     seat_center[2]]
-                ),
+                target_point=target_point,
             )
             # 2026-07-10 修改原因：独立访客椅不应被强制朝向书柜/显示器；
             # 当它本来就是靠墙摆放时，兜底为背靠最近墙面、前向室内，保证平行稳定。
@@ -188,6 +190,29 @@ def _surface_gap_xy(seat: SceneObject, surface: SceneObject | None) -> float | N
     return _aabb_gap_xy(seat_bounds[0], seat_bounds[1], surface_bounds[0], surface_bounds[1])
 
 
+def _wall_away_target_point(
+    seat: SceneObject, wall: SceneObject
+) -> np.ndarray | None:
+    seat_bounds = seat.compute_world_bounds()
+    wall_bounds = wall.compute_world_bounds()
+    if seat_bounds is None or wall_bounds is None:
+        return None
+    wall_min, wall_max = wall_bounds
+    wall_span = wall_max - wall_min
+    seat_center = seat.transform.translation()
+    wall_center = wall.transform.translation()
+    target = np.array(seat_center, dtype=float)
+
+    # 2026-07-11 修改原因：沿长墙摆放的多把空闲椅必须沿墙法线朝室内；
+    # 若按“远离墙中心点”计算，会让不同位置的椅子呈扇形而无法保持平行。
+    normal_axis = 0 if float(wall_span[0]) < float(wall_span[1]) else 1
+    direction = float(seat_center[normal_axis] - wall_center[normal_axis])
+    if abs(direction) < 1e-6:
+        return None
+    target[normal_axis] += 1.0 if direction > 0.0 else -1.0
+    return target
+
+
 def _aabb_gap_xy(
     a_min: np.ndarray,
     a_max: np.ndarray,
@@ -202,6 +227,14 @@ def _aabb_gap_xy(
 def _is_wall_anchor_candidate(obj: SceneObject) -> bool:
     tokens = _object_tokens(obj)
     return bool(tokens & {"armchair", "chair", "dining_chair", "office_chair"})
+
+
+def _is_guest_seating(obj: SceneObject) -> bool:
+    text = " ".join(
+        str(value or "").lower()
+        for value in (obj.object_id, obj.name, obj.description)
+    )
+    return "guest" in text or "visitor" in text
 
 
 def _nearest_surface(

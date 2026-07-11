@@ -925,7 +925,10 @@ def _eval_face_against_wall(
 
     scored: list[tuple[float, str]] = []
     for face in faces:
-        angle = _face_angle_to_target_deg(subject, target, face)
+        # 2026-07-11 修改原因：长墙不能用“家具中心 -> 整面墙中心”的斜向量
+        # 评估 back_against_wall。沿同一墙不同位置、yaw 完全相同的两把椅子会
+        # 因此得到不同角度；墙关系必须只比较该墙的局部法线。
+        angle = _face_angle_to_wall_deg(subject, target, face)
         if angle is not None:
             scored.append((angle, face))
     if not scored:
@@ -1224,6 +1227,28 @@ def _face_angle_to_target_deg(
     if norm <= 1e-6:
         return 0.0
     dot = max(-1.0, min(1.0, (axis[0] * tx + axis[1] * ty) / norm))
+    return abs(math.degrees(math.acos(dot)))
+
+
+def _face_angle_to_wall_deg(
+    subject: dict[str, Any], target: dict[str, Any], face: str
+) -> float | None:
+    axis = _face_axis(subject, face)
+    subject_center = bbox_center_xy(subject)
+    wall_center = bbox_center_xy(target)
+    wall_axis = _wall_normal_axis(target)
+    if axis is None or subject_center is None or wall_center is None:
+        return None
+    if wall_axis == "x":
+        wall_direction = (1.0 if wall_center[0] >= subject_center[0] else -1.0, 0.0)
+    elif wall_axis == "y":
+        wall_direction = (0.0, 1.0 if wall_center[1] >= subject_center[1] else -1.0)
+    else:
+        return _face_angle_to_target_deg(subject, target, face)
+    dot = max(
+        -1.0,
+        min(1.0, axis[0] * wall_direction[0] + axis[1] * wall_direction[1]),
+    )
     return abs(math.degrees(math.acos(dot)))
 
 

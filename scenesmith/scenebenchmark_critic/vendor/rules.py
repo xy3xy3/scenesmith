@@ -20,6 +20,9 @@ from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_d
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
     evaluate_functional_dependency,
 )
+from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.semantics import (
+    _is_actionable_seating_surface_pair,
+)
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.spatial_accessibility.core import (
     evaluate_spatial_accessibility,
 )
@@ -73,6 +76,11 @@ def run_case_pack_checks(
     if store is None:
         return []
 
+    # 2026-07-11 修改原因：桌/餐桌的 spatial accessibility 不应把与其存在
+    # 有效 seating_to_work_surface 功能依赖的配套椅子当作普通障碍；否则书桌
+    # 会排斥办公椅、餐桌会排斥餐椅，设计器会为追逐指标破坏正确布局。
+    _attach_expected_access_companions(case_pack, store.objects)
+
     results: list[dict[str, Any]] = []
     for check in case_pack.get("checks") or []:
         metric = str(check.get("metric") or "")
@@ -89,6 +97,41 @@ def run_case_pack_checks(
         if result is not None:
             results.append(_normalize_result(result, check))
     return results
+
+
+def _attach_expected_access_companions(
+    case_pack: dict[str, Any], objects: dict[str, dict[str, Any]]
+) -> None:
+    companions_by_surface: dict[str, set[str]] = {}
+    for check in case_pack.get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("metric") != "functional_dependency":
+            continue
+        if check.get("relation_type") != "seating_to_work_surface":
+            continue
+        seat_id = str(check.get("subject_id") or "")
+        seat = objects.get(seat_id)
+        if seat is None:
+            continue
+        for target_id in check.get("target_ids") or []:
+            surface_id = str(target_id or "")
+            surface = objects.get(surface_id)
+            if surface is None or not _is_actionable_seating_surface_pair(
+                seat, surface
+            ):
+                continue
+            companions_by_surface.setdefault(surface_id, set()).add(seat_id)
+
+    if not companions_by_surface:
+        return
+    for check in case_pack.get("checks") or []:
+        if not isinstance(check, dict) or check.get("metric") != "spatial_accessibility":
+            continue
+        subject_id = str(check.get("subject_id") or "")
+        companion_ids = companions_by_surface.get(subject_id)
+        if companion_ids:
+            check["expected_companion_ids"] = sorted(companion_ids)
 
 
 def aggregate_results(

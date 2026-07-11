@@ -11,7 +11,12 @@ from unittest.mock import Mock
 import yaml
 
 from scenesmith import prompts
-from scenesmith.prompts import FurnitureAgentPrompts, prompt_manager, prompt_registry
+from scenesmith.prompts import (
+    FurnitureAgentPrompts,
+    ManipulandAgentPrompts,
+    prompt_manager,
+    prompt_registry,
+)
 from scenesmith.prompts.manager import PromptManager, PromptNotFoundError
 from scenesmith.prompts.registry import PromptEnum, PromptRegistry
 
@@ -369,6 +374,73 @@ class TestPromptSystem(unittest.TestCase):
 
         for expected in expected_prompts:
             self.assertIn(expected, prompts)
+
+    def test_manipuland_critic_uses_diner_local_coordinates(self):
+        """Dining left/right guidance must not use global scene axes."""
+        prompt = prompt_manager.get_prompt(
+            ManipulandAgentPrompts.MANIPULAND_CRITIC_RUNNER_INSTRUCTION,
+            physics_context="",
+            placement_style="perfect",
+        )
+
+        # 2026-07-11 修改原因：防止 opposing place settings 因 world X/Y
+        # 镜像关系被 critic 错判为叉子放反。
+        self.assertIn("local facing", prompt)
+        self.assertIn("never from global/world X or Y", prompt)
+
+    def test_furniture_critic_preserves_explicit_side_assignments(self):
+        """Clearance fixes must not erase prompt-requested furniture topology."""
+        prompt = prompt_manager.get_prompt(
+            FurnitureAgentPrompts.STATEFUL_CRITIC_RUNNER_INSTRUCTION,
+            physics_context="",
+            placement_style="natural",
+            reachability_context="",
+            robot_width=0.6,
+        )
+
+        # 2026-07-11 修改原因：防止“四边各一把”被优化成“两侧各两把”后，
+        # critic 仍错误给出 Prompt Following 满分。
+        self.assertIn("one on each side", prompt)
+        self.assertIn("four distinct table sides", prompt)
+        self.assertIn("moving each chair outward", prompt)
+
+    def test_furniture_critic_prioritizes_wall_contract_for_guest_chairs(self):
+        """Wall-anchored guest chairs must not be redirected toward a desk."""
+        prompt = prompt_manager.get_prompt(
+            FurnitureAgentPrompts.STATEFUL_CRITIC_RUNNER_INSTRUCTION,
+            physics_context="",
+            placement_style="natural",
+            reachability_context="",
+            robot_width=0.6,
+        )
+
+        # 2026-07-11 修改原因：锁定 study 两把空闲椅背靠侧墙、front 沿墙
+        # 法线且相互平行的语义，防止 critic 再用 desk-facing 覆盖 wall contract。
+        self.assertIn("authoritative directional topology", prompt)
+        self.assertIn("Do NOT call `check_facing_tool`", prompt)
+        self.assertIn("their fronts should be parallel", prompt)
+        self.assertIn("chair whose active contract is", prompt)
+        self.assertIn("Do not suggest angling same-wall contracted chairs", prompt)
+
+    def test_furniture_designer_keeps_remote_guest_chairs_wall_normal(self):
+        """Initial and critique designers must preserve standalone wall seating."""
+        initial_prompt = prompt_manager.get_prompt(
+            FurnitureAgentPrompts.DESIGNER_AGENT,
+            has_reference_image=False,
+        )
+        critique_prompt = prompt_manager.get_prompt(
+            FurnitureAgentPrompts.DESIGNER_CRITIQUE_INSTRUCTION_STATEFUL,
+            instruction="Review the study guest chairs.",
+        )
+
+        # 2026-07-11 修改原因：回放显示 initial designer 在首次 critic 前就把
+        # 两把靠墙椅旋向 desk，并因斜放碰撞反复移动；两条 designer 路径均需锁定。
+        self.assertIn("Standalone wall guest/visitor chairs", initial_prompt)
+        self.assertIn("within about 0.45m", initial_prompt)
+        self.assertIn("same wall-normal yaw", initial_prompt)
+        self.assertIn("Do not subsequently rotate it toward the desk", initial_prompt)
+        self.assertIn("stable wall-backed topology", critique_prompt)
+        self.assertIn("Do NOT rotate or validate", critique_prompt)
 
     def test_all_enum_prompts_have_files(self):
         """Test that all prompt enum values have corresponding YAML files."""

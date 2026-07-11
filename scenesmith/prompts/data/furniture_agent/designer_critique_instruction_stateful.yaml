@@ -5,6 +5,8 @@ template_variables: ["instruction"]
 # 2026-07-08 Modification reason: SceneBenchmark critic feedback should repair
 # existing layout first and avoid duplicate primary furniture when fixing
 # orientation, distance, clearance, support, or wall-backing issues.
+# 2026-07-11 修改原因：critic 修复阶段不得把已靠侧墙的远端 guest chairs
+# 再旋向 desk；它们应保持 wall-normal 朝内且同墙相互平行。
 prompt: |
   Address the following feedback: {{ instruction }}
 
@@ -24,6 +26,11 @@ prompt: |
   - If the critique asks for an addition but the room already contains a matching
     primary furniture role, treat the task as a reposition/rotation/replacement
     problem and mention that choice in your final summary.
+  - For remote guest/visitor chairs already assigned to a side wall, preserve the
+    stable wall-backed topology: snap with `orientation="away"`, keep their fronts
+    normal to the wall and same-wall chairs parallel. Do NOT rotate or validate those
+    standalone chairs toward a desk/table. Only a chair within active desk-use distance
+    (about 0.45m from the desk bounding box) should face the desk.
 
   ## Critique Resolution Workflow:
   1. Review the critique instructions provided by the planner

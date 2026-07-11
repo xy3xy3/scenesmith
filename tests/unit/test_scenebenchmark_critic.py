@@ -600,6 +600,50 @@ def test_seating_orientation_guard_anchors_standalone_guest_chair_to_wall(
     ) == pytest.approx(90.0)
 
 
+def test_seating_orientation_guard_keeps_wall_guest_chairs_parallel(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.objects.clear()
+    east_wall = _box_object(
+        "east_wall",
+        "east wall",
+        ObjectType.WALL,
+        center=(2.95, 0.0, 1.5),
+        size=(0.1, 6.0, 3.0),
+    )
+    chairs = [
+        _box_object(
+            f"armchair_{index}",
+            "guest armchair",
+            ObjectType.FURNITURE,
+            center=(2.15, y, 0.45),
+            size=(0.8, 0.8, 0.9),
+            yaw_deg=yaw,
+        )
+        for index, (y, yaw) in enumerate(((0.6, -20.0), (-0.6, 35.0)))
+    ]
+    far_desk = _box_object(
+        "study_desk_0",
+        "study desk",
+        ObjectType.FURNITURE,
+        center=(0.0, 1.8, 0.35),
+        size=(1.5, 0.8, 0.7),
+    )
+    for obj in (east_wall, *chairs, far_desk):
+        scene.add_object(obj)
+
+    fixes = align_seating_to_nearest_surface(scene)
+
+    # 2026-07-11 修改原因：书房侧墙的空闲访客椅应背靠同一面墙，front
+    # 垂直墙面朝室内，并保持相互平行，而不是分别旋向远处书桌。
+    assert {fix.target_id for fix in fixes} == {"east_wall"}
+    assert [
+        math.degrees(RollPitchYaw(chair.transform.rotation()).yaw_angle())
+        for chair in chairs
+    ] == pytest.approx([90.0, 90.0])
+
+
 def test_storage_accessibility_guard_laterally_moves_blocked_cabinet(
     tmp_path: Path,
 ) -> None:
@@ -2240,12 +2284,170 @@ def test_orientation_contract_skips_non_actionable_bookshelf_for_guest_chair(
     )
     stabilize_orientation_contracts(case_pack, scene, config, stage="scene_after_furniture")
 
-    contract_subjects = [
-        check["subject_id"]
+    contract = _contract_check_for(case_pack, "armchair_0")
+    assert contract["relation_type"] == "back_against_wall"
+    assert contract["target_ids"] == ["west_wall"]
+
+
+def test_orientation_contract_switches_guest_chair_from_desk_to_wall(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.room_type = "study"
+    scene.text_description = (
+        "A study with an office chair at the desk and two guest chairs against "
+        "the side wall."
+    )
+    scene.objects.clear()
+    east_wall = _box_object(
+        "east_wall",
+        "east wall",
+        ObjectType.WALL,
+        center=(2.475, 0.0, 1.35),
+        size=(0.05, 4.5, 2.7),
+    )
+    guest_chair = _box_object(
+        "armchair_0",
+        "guest armchair",
+        ObjectType.FURNITURE,
+        center=(0.9, 1.0, 0.4),
+        size=(0.8, 0.8, 0.8),
+        yaw_deg=180.0,
+    )
+    desk = _box_object(
+        "study_desk_0",
+        "study desk",
+        ObjectType.FURNITURE,
+        center=(0.0, 1.8, 0.35),
+        size=(1.5, 0.8, 0.7),
+    )
+    for obj in (east_wall, guest_chair, desk):
+        scene.add_object(obj)
+
+    config = CriticConfig(
+        enabled=True,
+        metrics=("functional_dependency",),
+        extra={"stable_orientation_contracts": True},
+    )
+    first = room_scene_to_case_pack(scene, stage="scene_after_furniture")
+    stabilize_orientation_contracts(first, scene, config, stage="scene_after_furniture")
+    assert _contract_check_for(first, "armchair_0")["target_ids"] == ["study_desk_0"]
+
+    # 2026-07-11 修改原因：复现访客椅先绑定书桌、后按 prompt 移到侧墙时，
+    # 旧 contract 仍强制其朝桌面的局部循环。
+    guest_chair.transform = RigidTransform(
+        rpy=RollPitchYaw(0.0, 0.0, math.radians(90.0)),
+        p=[2.05, -0.8, 0.4],
+    )
+    television = _box_object(
+        "television_0",
+        "television monitor",
+        ObjectType.WALL_MOUNTED,
+        center=(0.0, -2.0, 1.2),
+        size=(1.4, 0.1, 0.8),
+    )
+    scene.add_object(television)
+    scene.text_description += " A television monitor is mounted on another wall."
+    second = room_scene_to_case_pack(scene, stage="final_scene")
+    stabilize_orientation_contracts(second, scene, config, stage="final_scene")
+
+    second_contract = _contract_check_for(second, "armchair_0")
+    assert second_contract["relation_type"] == "back_against_wall"
+    assert second_contract["target_ids"] == ["east_wall"]
+    assert not any(
+        check.get("relation_type")
+        in {"seating_to_work_surface", "seat_faces_surface", "furniture_faces_furniture"}
+        and (
+            check.get("subject_id") == "armchair_0"
+            or "armchair_0" in (check.get("target_ids") or [])
+        )
+        for check in second["checks"]
+    )
+
+
+def test_orientation_contract_excludes_throw_pillow_and_tv_remote(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    scene.room_type = "living_room"
+    scene.text_description = "A living room with a sofa facing a television."
+    scene.objects.clear()
+    sofa = _box_object(
+        "sofa_0",
+        "sofa",
+        ObjectType.FURNITURE,
+        center=(0.0, -1.0, 0.45),
+        size=(1.8, 0.8, 0.9),
+    )
+    television = _box_object(
+        "television_0",
+        "television",
+        ObjectType.WALL_MOUNTED,
+        center=(0.0, 1.8, 1.2),
+        size=(1.4, 0.1, 0.8),
+    )
+    pillow = _box_object(
+        "throw_pillow_0",
+        "throw pillow",
+        ObjectType.MANIPULAND,
+        center=(0.0, -1.0, 0.9),
+        size=(0.4, 0.15, 0.4),
+    )
+    pillow.metadata["functional_hints"] = {
+        "functional_categories": ["sittable"],
+        "candidate_affordances": ["sittable"],
+        "target_relation": "seating_to_media",
+    }
+    remote = _box_object(
+        "tv_remote_control_0",
+        "TV remote control",
+        ObjectType.MANIPULAND,
+        center=(0.0, 0.0, 0.5),
+        size=(0.18, 0.05, 0.03),
+    )
+    for obj in (sofa, television, pillow, remote):
+        scene.add_object(obj)
+
+    config = CriticConfig(
+        enabled=True,
+        metrics=("functional_dependency",),
+        extra={"stable_orientation_contracts": True},
+    )
+    case_pack = room_scene_to_case_pack(scene, stage="final_scene")
+    # 复现错误资产标注：pillow 即使带 sittable，也仍是 manipuland。
+    pillow_case = next(
+        obj
+        for obj in case_pack["scene_geometry"]["objects"]
+        if obj["id"] == "throw_pillow_0"
+    )
+    pillow_case["functional_hints"]["functional_categories"] = ["sittable"]
+    stabilize_orientation_contracts(case_pack, scene, config, stage="final_scene")
+
+    # 2026-07-11 修改原因：四房间 final 回放中 pillow 被绑定到 TV remote；
+    # 只有 sofa 家具应获得 media contract，remote 也不能成为 media focus。
+    assert _contract_check_for(case_pack, "sofa_0")["target_ids"] == ["television_0"]
+    assert not any(
+        check.get("check_source") == CONTRACT_CHECK_SOURCE
+        and check.get("subject_id") == "throw_pillow_0"
         for check in case_pack["checks"]
-        if check.get("check_source") == CONTRACT_CHECK_SOURCE
-    ]
-    assert contract_subjects == []
+    )
+    payload = evaluate_room_scene(
+        scene,
+        config={
+            "scenebenchmark_critic": {
+                "enabled": True,
+                "metrics": ["functional_dependency"],
+                "fd_relation_proposer_mode": "template",
+                "stable_orientation_contracts": True,
+            }
+        },
+        stage="final_scene",
+    )
+    assert not any(
+        result.get("primary_object") == "throw_pillow_0"
+        and result.get("relation_type") == "seating_to_media"
+        for result in payload["results"]
+    )
 
 
 def _contract_check_for(case_pack: dict[str, Any], subject_id: str) -> dict[str, Any]:
@@ -3275,6 +3477,52 @@ def test_rule_spatial_accessibility_partially_blocked_zone_is_degraded() -> None
     assert result["label"] == "degraded"
 
 
+def test_rule_spatial_accessibility_ignores_expected_seat_at_work_surface() -> None:
+    desk = _benchmark_obj(
+        "study_desk_0", "desk", (2.0, 2.0, 0.4), (1.2, 0.8, 0.8), yaw=180.0
+    )
+    desk["functional_hints"]["functional_categories"] = ["supportable"]
+    chair = _benchmark_obj(
+        "office_chair_0", "office_chair", (2.0, 1.25, 0.5), (0.6, 0.6, 1.0)
+    )
+    chair["functional_hints"]["functional_categories"] = ["sittable"]
+    blockers = [
+        _benchmark_obj(
+            "left_cabinet", "cabinet", (1.05, 2.0, 0.5), (0.7, 1.2, 1.0)
+        ),
+        _benchmark_obj(
+            "right_cabinet", "cabinet", (2.95, 2.0, 0.5), (0.7, 1.2, 1.0)
+        ),
+    ]
+    checks = [
+        {
+            "check_id": "sa_study_desk",
+            "metric": "spatial_accessibility",
+            "subject_id": "study_desk_0",
+            "affordance": "supportable",
+        },
+        {
+            "check_id": "fd_office_chair_desk",
+            "metric": "functional_dependency",
+            "subject_id": "office_chair_0",
+            "target_ids": ["study_desk_0"],
+            "relation_type": "seating_to_work_surface",
+        },
+    ]
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([desk, chair, *blockers], checks),
+        metrics=["spatial_accessibility", "functional_dependency"],
+    )
+
+    # 2026-07-11 修改原因：配套办公椅是书桌的预期使用位置，不应作为普通
+    # accessibility 障碍迫使设计器把椅子移走。
+    result = next(item for item in results if item["check_id"] == "sa_study_desk")
+    assert result["label"] == "pass"
+    assert result["diagnostics"]["expected_companion_ids"] == ["office_chair_0"]
+    assert "office_chair_0" not in result["blocking_objects"]
+
+
 def test_rule_spatial_accessibility_threshold_overrides_affect_label() -> None:
     cabinet = _benchmark_obj("cabinet_1", "cabinet", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     cabinet["functional_hints"]["functional_categories"] = ["openable"]
@@ -3864,6 +4112,49 @@ def test_rule_functional_dependency_back_against_wall_passes_and_fails() -> None
     assert fail_result["label"] == "fail"
 
 
+def test_rule_back_against_wall_uses_wall_normal_not_wall_center() -> None:
+    wall = _benchmark_obj(
+        "west_wall", "wall", (-2.475, 0.0, 1.5), (0.05, 4.5, 3.0)
+    )
+    chairs = [
+        _benchmark_obj(
+            f"guest_armchair_{index}",
+            "armchair",
+            (-1.85, y, 0.45),
+            (0.9, 0.66, 0.9),
+            yaw=-90.0,
+        )
+        for index, y in enumerate((1.45, 0.45))
+    ]
+    checks = [
+        {
+            "check_id": f"fd_wall_chair_{index}",
+            "metric": "functional_dependency",
+            "subject_id": chair["id"],
+            "target_ids": ["west_wall"],
+            "relation_type": "back_against_wall",
+            "evidence": {
+                "dependency": {
+                    "subject_face": "back",
+                    "max_angle_deg": 45.0,
+                    "max_distance_m": 0.25,
+                }
+            },
+        }
+        for index, chair in enumerate(chairs)
+    ]
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([*chairs, wall], checks),
+        metrics=["functional_dependency"],
+    )
+
+    # 2026-07-11 修改原因：复现 study 同墙两椅 yaw 都为 -90°，旧实现却因
+    # 指向 wall center 的斜向量分别报不同角度。应统一按 west wall 的 -X 法线通过。
+    assert [result["label"] for result in results] == ["pass", "pass"]
+    assert all("angle 0deg" in result["reason"] for result in results)
+
+
 def test_rule_functional_dependency_wall_mounted_thin_axis_fallback() -> None:
     wall = _benchmark_obj("north_wall", "wall", (0.0, 2.0, 1.5), (4.0, 0.1, 3.0))
     check = {
@@ -4010,14 +4301,14 @@ def test_rule_functional_dependency_sideboard_back_against_north_wall_passes() -
         "sideboard",
         (1.6, 1.65, 0.35),
         (1.2, 0.6, 0.7),
-        yaw=-90.0,
+        yaw=180.0,
     )
     fail_sideboard = _benchmark_obj(
         "sideboard_1",
         "sideboard",
         (1.6, 1.65, 0.35),
         (1.2, 0.6, 0.7),
-        yaw=90.0,
+        yaw=0.0,
     )
 
     pass_result = _run_direct_case_pack(
@@ -4029,6 +4320,8 @@ def test_rule_functional_dependency_sideboard_back_against_north_wall_passes() -
         metrics=["functional_dependency"],
     )[0]
 
+    # 2026-07-11 修改原因：north wall 的 back 应沿 +Y 墙法线，不应因家具
+    # 位于墙中心右侧而错误沿 -X 指向整面墙中心；对应 front yaw=180°。
     assert pass_result["label"] == "pass"
     assert fail_result["label"] == "fail"
 
@@ -6317,6 +6610,52 @@ def test_agent_prompt_context_keeps_furniture_layout_issues() -> None:
     assert "spatial_desk" in check_ids
     assert "fd_monitor_on_desk" not in check_ids
     assert "fd_mouse_faces_monitor" not in check_ids
+
+
+def test_agent_prompt_context_includes_passing_wall_orientation_contract() -> None:
+    guest_chair = _benchmark_obj(
+        "guest_armchair_0", "guest_armchair", (2.0, 0.0, 0.45), (0.8, 0.8, 0.9)
+    )
+    guest_chair["object_type"] = "furniture"
+    guest_chair["functional_hints"]["scene_object_type"] = "furniture"
+    east_wall = _benchmark_obj(
+        "east_wall", "wall", (2.5, 0.0, 1.35), (0.05, 4.5, 2.7)
+    )
+    east_wall["object_type"] = "wall"
+    east_wall["functional_hints"]["scene_object_type"] = "wall"
+    case_pack = _benchmark_case_pack([guest_chair, east_wall])
+    case_pack["checks"] = [
+        {
+            "check_id": "fd_contract_guest_armchair_0_east_wall_back_against_wall",
+            "metric": "functional_dependency",
+            "subject_id": "guest_armchair_0",
+            "target_ids": ["east_wall"],
+            "relation_type": "back_against_wall",
+            "check_source": CONTRACT_CHECK_SOURCE,
+        }
+    ]
+    payload = {
+        "case_pack": case_pack,
+        "results": [
+            {
+                "check_id": case_pack["checks"][0]["check_id"],
+                "metric": "functional_dependency",
+                "label": "pass",
+                "primary_object": "guest_armchair_0",
+                "related_objects": ["east_wall"],
+                "relation_type": "back_against_wall",
+                "reason": "wall contract passes",
+            }
+        ],
+    }
+
+    context = format_agent_prompt_context(payload, agent_type=AgentType.FURNITURE)
+
+    # 2026-07-11 修改原因：passing contract 也必须进入 critic 上下文，否则
+    # LLM 只看到 room prompt，会把靠墙 guest chair 错误转向远处 desk。
+    assert "authoritative directional topology" in context
+    assert "`guest_armchair_0`: `back_against_wall` -> `east_wall`" in context
+    assert "Do not test or rotate this standalone wall chair toward a desk/table" in context
 
 
 def test_agent_prompt_context_filters_invalid_seating_relation_targets() -> None:

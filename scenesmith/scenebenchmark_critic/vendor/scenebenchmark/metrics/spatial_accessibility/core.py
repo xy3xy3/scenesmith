@@ -76,6 +76,11 @@ def evaluate_spatial_accessibility(
             f"Rule accessibility could not infer an access zone for `{subject_id}`.",
         )
 
+    # 2026-07-11 修改原因：功能依赖确认的配套座椅属于桌面的预期使用拓扑，
+    # 仅从该桌面的通行障碍与 blocker 诊断中排除，仍保留座椅自身的可达性检查。
+    expected_companion_ids = {
+        str(item) for item in (check.get("expected_companion_ids") or []) if str(item)
+    }
     profile_results = [
         _evaluate_profile(
             store,
@@ -89,6 +94,7 @@ def evaluate_spatial_accessibility(
             zones,
             params,
             profile,
+            expected_companion_ids,
         )
         for profile in profiles
     ]
@@ -125,6 +131,7 @@ def evaluate_spatial_accessibility(
                 for item in profile_results
             },
             "zone_scores": aggregate["zone_scores"],
+            "expected_companion_ids": sorted(expected_companion_ids),
         },
     )
 
@@ -141,8 +148,17 @@ def _evaluate_profile(
     zones: list[tuple[str, dict[str, Any]]],
     params: dict[str, float],
     profile: dict[str, Any],
+    expected_companion_ids: set[str],
 ) -> dict[str, Any]:
-    obstacle_mask = _obstacle_mask(store, subject_id, xs, ys, params, profile)
+    obstacle_mask = _obstacle_mask(
+        store,
+        subject_id,
+        xs,
+        ys,
+        params,
+        profile,
+        ignored_object_ids=expected_companion_ids,
+    )
     walkable = floor_mask & ~obstacle_mask
     component = _entry_component(store, walkable, xs, ys, floor_polygon)
     if component is None:
@@ -201,6 +217,7 @@ def _evaluate_profile(
         best_aabb,
         limit=5,
         height_threshold_m=params["height_threshold_m"],
+        ignored_object_ids=expected_companion_ids,
     )
     return {
         "profile_id": profile["id"],

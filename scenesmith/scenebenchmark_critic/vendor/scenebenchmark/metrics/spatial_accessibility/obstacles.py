@@ -25,12 +25,15 @@ def _obstacle_mask(
     ys: np.ndarray,
     params: dict[str, float],
     profile: dict[str, Any],
+    *,
+    ignored_object_ids: set[str] | None = None,
 ) -> np.ndarray:
     mask = np.zeros(xs.shape, dtype=bool)
     inflation = float(profile["clearance_width_m"]) * 0.5
     dilation_cells = int(math.ceil(inflation / params["grid_resolution_m"]))
+    ignored = ignored_object_ids or set()
     for obj_id, obj in store.objects.items():
-        if obj_id == subject_id:
+        if obj_id == subject_id or obj_id in ignored:
             continue
         if not is_walkway_obstacle(
             obj, height_threshold_m=params["height_threshold_m"]

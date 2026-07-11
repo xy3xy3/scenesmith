@@ -27,6 +27,11 @@ CONTRACT_CHECK_SOURCE = "scenesmith_orientation_contract"
 CONTRACT_ATTR = "_scenebenchmark_orientation_contracts"
 
 SEATING_RELATIONS = {"seating_to_media", "seating_to_work_surface"}
+CONTRACT_RELATIONS = SEATING_RELATIONS | {"back_against_wall"}
+CONFLICTING_ORIENTATION_RELATIONS = CONTRACT_RELATIONS | {
+    "furniture_faces_furniture",
+    "seat_faces_surface",
+}
 MEDIA_CATEGORIES = {
     "display",
     "display_board",
@@ -49,7 +54,14 @@ MEDIA_TEXT_HINTS = (
     "television",
     "tv",
 )
-MEDIA_REJECT_HINTS = ("coffee table", "side table", "end table", "lamp")
+MEDIA_REJECT_HINTS = (
+    "coffee table",
+    "side table",
+    "end table",
+    "lamp",
+    "remote control",
+    "remote_control",
+)
 MEDIA_INTENT_HINTS = MEDIA_TEXT_HINTS + ("viewing", "watch", "watching")
 MEDIA_ROOM_HINTS = ("family", "living", "media", "theater", "tv")
 LIVING_SEATING = {"armchair", "chair", "loveseat", "sofa"}
@@ -65,6 +77,9 @@ WORK_SURFACE_CATEGORIES = {
 }
 STANDALONE_WALL_ANCHOR_GAP_M = 0.12
 STANDALONE_SURFACE_GAP_M = 0.85
+GUEST_WALL_ANCHOR_GAP_M = 0.8
+GUEST_SURFACE_GAP_M = 0.45
+GUEST_SEATING_HINTS = ("guest", "visitor")
 
 
 def stabilize_orientation_contracts(
@@ -110,7 +125,14 @@ def stabilize_orientation_contracts(
             continue
 
         existing = memory.get(subject_id)
-        if _contract_is_usable(existing, objects_by_id, media_intent, media_focus):
+        if _contract_is_usable(
+            existing,
+            objects_by_id,
+            subject,
+            objects,
+            media_intent,
+            media_focus,
+        ):
             contract = dict(existing)
             contract["stage_last_seen"] = stage
         else:
@@ -147,7 +169,7 @@ def orientation_contract_subjects(case_pack: dict[str, Any]) -> set[str]:
             continue
         if check.get("check_source") != CONTRACT_CHECK_SOURCE:
             continue
-        if str(check.get("relation_type") or "") not in SEATING_RELATIONS:
+        if str(check.get("relation_type") or "") not in CONTRACT_RELATIONS:
             continue
         subject_id = str(check.get("subject_id") or "")
         if subject_id:
@@ -165,6 +187,8 @@ def _enabled(config: CriticConfig) -> bool:
 def _contract_is_usable(
     contract: Any,
     objects_by_id: dict[str, dict[str, Any]],
+    subject: dict[str, Any],
+    objects: list[dict[str, Any]],
     media_intent: bool,
     media_focus: dict[str, Any] | None,
 ) -> bool:
@@ -176,11 +200,28 @@ def _contract_is_usable(
     ):
         return False
     relation_type = str(contract.get("relation_type") or "")
-    if relation_type not in SEATING_RELATIONS:
+    if relation_type not in CONTRACT_RELATIONS:
         return False
 
-    # A newly available semantic focal point is a legitimate topology change.
-    if media_intent and media_focus is not None and relation_type != "seating_to_media":
+    # 2026-07-11 修改原因：书房访客椅可能先被临时绑定到书桌，随后才按
+    # prompt 移到侧墙。椅子已经贴墙且远离桌面时必须废弃旧 contract，
+    # 否则稳定目标会持续强迫空闲椅朝向书桌，破坏背靠墙且相互平行的布局。
+    if relation_type == "seating_to_work_surface":
+        target = objects_by_id[target_ids[0]]
+        if _is_wall_anchored_standalone_seating(subject, target, objects):
+            return False
+    elif relation_type == "back_against_wall":
+        wall = _standalone_wall_target(subject, objects)
+        if wall is None or str(wall.get("id") or "") != target_ids[0]:
+            return False
+
+    # A newly available semantic focal point is a legitimate topology change for
+    # ordinary seating, but not for a guest chair whose explicit topology is the wall.
+    if (
+        media_intent
+        and media_focus is not None
+        and relation_type not in {"seating_to_media", "back_against_wall"}
+    ):
         return False
     return True
 
@@ -193,6 +234,22 @@ def _plan_contract(
     media_intent: bool,
     stage: str,
 ) -> dict[str, Any] | None:
+    wall = _standalone_wall_target(subject, objects)
+    if wall is not None:
+        return _contract(
+            subject,
+            wall,
+            relation_type="back_against_wall",
+            stage=stage,
+            reason=(
+                "wall-anchored guest seating is standalone; keep its back at the "
+                "wall and its front normal to the wall"
+            ),
+        )
+
+    # 2026-07-11 修改原因：study wall 阶段新增 tv_0 后，fresh evaluate_scenes
+    # 曾把两把远端 guest chairs 从 wall contract 改绑到 TV。standalone wall
+    # guest seating 的显式拓扑必须优先于后来出现的 media focus。
     if media_intent and media_focus is not None and _should_face_media(subject):
         return _contract(
             subject,
@@ -251,7 +308,7 @@ def _replace_contract_check(
     subject_id = str(contract.get("subject_id") or subject.get("id") or "")
     target_ids = [str(item) for item in contract.get("target_ids") or [] if str(item)]
     relation_type = str(contract.get("relation_type") or "")
-    if not subject_id or not target_ids or relation_type not in SEATING_RELATIONS:
+    if not subject_id or not target_ids or relation_type not in CONTRACT_RELATIONS:
         return
 
     checks = [
@@ -259,8 +316,13 @@ def _replace_contract_check(
         for check in case_pack.get("checks") or []
         if not (
             isinstance(check, dict)
-            and check.get("check_source") == CONTRACT_CHECK_SOURCE
-            and str(check.get("subject_id") or "") == subject_id
+            and (
+                (
+                    check.get("check_source") == CONTRACT_CHECK_SOURCE
+                    and str(check.get("subject_id") or "") == subject_id
+                )
+                or _check_conflicts_with_orientation_contract(check, subject_id)
+            )
         )
     ]
     check_id = f"fd_contract_{subject_id}_{'_'.join(target_ids)}_{relation_type}"
@@ -292,9 +354,28 @@ def _replace_contract_check(
     case_pack["checks"] = checks
 
 
+def _check_conflicts_with_orientation_contract(
+    check: dict[str, Any], contract_subject_id: str
+) -> bool:
+    relation_type = str(check.get("relation_type") or "")
+    if relation_type not in CONFLICTING_ORIENTATION_RELATIONS:
+        return False
+    check_subject_id = str(check.get("subject_id") or "")
+    target_ids = {str(item) for item in check.get("target_ids") or [] if str(item)}
+    involved = check_subject_id == contract_subject_id or contract_subject_id in target_ids
+    if not involved:
+        return False
+    # 2026-07-11 修改原因：稳定 wall contract 不能与资产标注/模板残留的
+    # guest-chair<->desk 朝向 FD 并存；否则远端椅仍会被计作 desk companion，
+    # 后续 critic/SA 又可能把它拉回书桌。稳定 contract 应替换冲突拓扑。
+    return check.get("check_source") != CONTRACT_CHECK_SOURCE
+
+
 def _expected_use(relation_type: str) -> str:
     if relation_type == "seating_to_media":
         return "sit and view the room's chosen media focal point"
+    if relation_type == "back_against_wall":
+        return "remain wall-backed with the seating front normal to the wall"
     return "sit at and use the chosen table or work surface"
 
 
@@ -348,6 +429,15 @@ def _media_rank(obj: dict[str, Any]) -> tuple[int, float]:
 def _is_seating(obj: dict[str, Any]) -> bool:
     # 2026-07-08 修改原因：asset affordances 会把部分非座椅误标成 sittable，
     # orientation contract 必须使用归一化后的功能画像，避免给桌、灯、小物生成 seating 关系。
+    hints = obj.get("functional_hints") or {}
+    scene_object_type = str(
+        obj.get("object_type") or hints.get("scene_object_type") or ""
+    ).strip().lower()
+    # 2026-07-11 修改原因：final living 回放中 throw pillow 因错误 sittable
+    # affordance 被当成 seating，并生成 pillow -> TV remote 的稳定 contract。
+    # 朝向 contract 仅适用于家具，不能作用于 manipuland/cushion/decor。
+    if scene_object_type != "furniture":
+        return False
     return object_function_profile(obj).is_seating and (
         "sittable" in object_affordances(obj) or object_category(obj) in LIVING_SEATING
     )
@@ -409,9 +499,63 @@ def _is_wall_anchored_standalone_seating(
     category = object_category(subject)
     if category not in {"armchair", "chair", "dining_chair", "office_chair"}:
         return False
-    # 2026-07-10 修改原因：靠墙空闲椅子不应被稳定 contract 绑定到远处桌面；
-    # 只要已经贴墙摆放且最近桌面并不近，就保留为 standalone chair。
-    return wall_gap <= STANDALONE_WALL_ANCHOR_GAP_M and surface_gap > STANDALONE_SURFACE_GAP_M
+    guest_seating = _is_guest_seating(subject)
+    wall_gap_limit = (
+        GUEST_WALL_ANCHOR_GAP_M if guest_seating else STANDALONE_WALL_ANCHOR_GAP_M
+    )
+    surface_gap_limit = (
+        GUEST_SURFACE_GAP_M if guest_seating else STANDALONE_SURFACE_GAP_M
+    )
+    # 2026-07-11 修改原因：书房 guest chair 即使离墙约 0.2--0.8m、离 desk
+    # bbox 约 0.5--0.8m，也仍是沿侧墙的空闲座椅，不应被 desk FD 拉走。
+    return wall_gap <= wall_gap_limit and surface_gap > surface_gap_limit
+
+
+def _standalone_wall_target(
+    subject: dict[str, Any], objects: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    if not _is_wall_anchor_candidate(subject):
+        return None
+    surfaces = [
+        obj
+        for obj in objects
+        if obj.get("id") != subject.get("id") and _is_work_surface(obj)
+    ]
+    surfaces.sort(key=lambda obj: _surface_rank(subject, obj))
+    if surfaces and not _is_wall_anchored_standalone_seating(
+        subject, surfaces[0], objects
+    ):
+        return None
+    walls = [obj for obj in objects if object_category(obj) == "wall"]
+    walls.sort(
+        key=lambda obj: (
+            _wall_gap(subject, obj) if _wall_gap(subject, obj) is not None else 999.0,
+            str(obj.get("id") or ""),
+        )
+    )
+    if not walls:
+        return None
+    wall_gap = _wall_gap(subject, walls[0])
+    gap_limit = (
+        GUEST_WALL_ANCHOR_GAP_M
+        if _is_guest_seating(subject)
+        else STANDALONE_WALL_ANCHOR_GAP_M
+    )
+    return walls[0] if wall_gap is not None and wall_gap <= gap_limit else None
+
+
+def _is_wall_anchor_candidate(subject: dict[str, Any]) -> bool:
+    return object_category(subject) in {
+        "armchair",
+        "chair",
+        "dining_chair",
+        "office_chair",
+    }
+
+
+def _is_guest_seating(subject: dict[str, Any]) -> bool:
+    text = _object_text(subject)
+    return any(hint in text for hint in GUEST_SEATING_HINTS)
 
 
 def _nearest_wall_gap(subject: dict[str, Any], objects: list[dict[str, Any]]) -> float | None:
@@ -435,6 +579,28 @@ def _nearest_wall_gap(subject: dict[str, Any], objects: list[dict[str, Any]]) ->
         if best is None or gap < best:
             best = gap
     return best
+
+
+def _wall_gap(subject: dict[str, Any], wall: dict[str, Any]) -> float | None:
+    subject_bbox = subject.get("bbox_world") or {}
+    wall_bbox = wall.get("bbox_world") or {}
+    subject_min = subject_bbox.get("min") or []
+    subject_max = subject_bbox.get("max") or []
+    wall_min = wall_bbox.get("min") or []
+    wall_max = wall_bbox.get("max") or []
+    if min(len(subject_min), len(subject_max), len(wall_min), len(wall_max)) < 2:
+        return None
+    dx = max(
+        float(wall_min[0] - subject_max[0]),
+        float(subject_min[0] - wall_max[0]),
+        0.0,
+    )
+    dy = max(
+        float(wall_min[1] - subject_max[1]),
+        float(subject_min[1] - wall_max[1]),
+        0.0,
+    )
+    return (dx * dx + dy * dy) ** 0.5
 
 
 def _object_text(obj: dict[str, Any]) -> str:

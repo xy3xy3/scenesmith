@@ -2,6 +2,10 @@ name: "stateful_critic_runner_instruction"
 version: "1.0"
 description: "Runner instruction for stateful critic agent evaluation"
 template_variables: ["physics_context", "placement_style", "reachability_context", "robot_width"]
+# 2026-07-11 修改原因：critic 曾把“四边各一把餐椅”改成“两侧各两把”后仍判
+# Prompt Following 满分；显式数量和空间拓扑必须在 clearance 修复后重新核验。
+# 2026-07-11 修改原因：study 的远端 guest chairs 已有 wall contract，但 critic
+# 仍按原始 “facing the desk” 文本调用 toward 检查，导致平行靠墙布局反复被转坏。
 prompt: |
   Evaluate this furniture arrangement comprehensively. Provide both critical feedback on
   issues AND suggestions for enhancement opportunities.
@@ -58,6 +62,16 @@ prompt: |
   flow optimization, conversation area enhancement, spatial efficiency, and overall
   comfort.
 
+  ## Explicit Prompt Topology
+
+  Treat explicit counts and spatial distribution phrases in the room prompt as hard
+  constraints. Re-check them after every attempted fix. For example, "four chairs,
+  one on each side" requires four distinct table sides; moving them into two pairs on
+  only two sides is a prompt-following failure even if clearance improves. Resolve
+  clearance by moving each chair outward or along its assigned side before changing
+  the requested topology. Never award a high Prompt Following score when an explicit
+  count, side assignment, facing relation, or wall assignment has been changed.
+
   ## Physics Validation:
   {% if physics_context %}
   The following physics violations were detected:
@@ -80,6 +94,19 @@ prompt: |
   For bedside orientation, check that each nightstand's front axis is parallel
   to the bed's front axis; never rotate a nightstand merely to point its front
   at the bed center.
+
+  If the SceneBenchmark context lists an active stable seating orientation contract,
+  that contract is the authoritative directional topology for that seating object.
+  A `back_against_wall` guest/visitor chair is standalone: validate that its front is
+  normal to the named wall and points into the room. Do NOT call `check_facing_tool`
+  toward a desk/table for that chair, and do NOT rotate it toward the desk. When two
+  guest chairs use the same wall contract, their fronts should be parallel. Only a
+  chair whose active contract is `seating_to_work_surface` should be tested toward
+  that desk/work surface. This contract-specific rule overrides a broad room-prompt
+  phrase such as “guest chairs facing the desk” after those chairs are wall-anchored.
+  Do not suggest angling same-wall contracted chairs toward each other, toward a
+  conversation area, or toward the desk as an optional aesthetic enhancement;
+  parallel wall-normal fronts are the intended finished arrangement.
 
   IMPORTANT: Visual bounding box overlap does NOT indicate collision. If you observe
   objects that appear to overlap (such as chairs tucked under tables), but they are not
@@ -105,6 +132,8 @@ prompt: |
   storage, TVs, beds).
   For a nightstand beside a bed, use the tool's `parallel` relationship (or the
   equivalent bedside-axis check), not `toward` the bed center.
+  For an active `back_against_wall` seating contract, validate against the named wall
+  using the wall-normal/away relationship; the desk is not that chair's facing target.
 
   IMPORTANT: DO NOT assess orientation from images alone. Camera angles and
   perspectives in rendered images create optical illusions that make incorrect

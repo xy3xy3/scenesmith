@@ -14,6 +14,7 @@ from scenesmith.scenebenchmark_critic.reports import (
 
 ISSUE_LABELS = {"fail", "degraded", "unknown"}
 LABEL_RANK = {"fail": 3, "degraded": 2, "unknown": 1}
+ORIENTATION_CONTRACT_SOURCE = "scenesmith_orientation_contract"
 ARCHITECTURE_CATEGORIES = {"wall", "floor", "ceiling"}
 COMPUTER_PERIPHERAL_CATEGORIES = {
     "keyboard",
@@ -93,12 +94,55 @@ def format_agent_prompt_context(
             for result in payload.get("results") or []
             if not _is_ignored_scoring_tier(result)
         ]
-        return (
+        context = (
             "SceneBenchmark geometry critic: no degraded or failed checks relevant "
             f"to the current {_agent_value(agent_type)} agent in "
             f"{len(counted)} counted rule checks."
         )
-    return format_full_prompt_context({"results": filtered}, max_issues=max_issues)
+    else:
+        context = format_full_prompt_context({"results": filtered}, max_issues=max_issues)
+
+    # 2026-07-11 修改原因：仅注入 failed/degraded 结果时，已经通过的稳定朝向
+    # contract 对 LLM 不可见，critic 会重新解释原始 prompt，把靠墙 guest chair
+    # 再次绑定到远处书桌。把当前 contract 明示为权威方向拓扑，避免局部循环。
+    contract_context = _format_orientation_contract_context(payload, agent_type)
+    if contract_context:
+        context = f"{context}\n\n{contract_context}"
+    return context
+
+
+def _format_orientation_contract_context(
+    payload: dict[str, Any], agent_type: AgentType | str
+) -> str:
+    if _agent_value(agent_type) != AgentType.FURNITURE.value:
+        return ""
+    rows: list[tuple[str, str, tuple[str, ...]]] = []
+    for check in (payload.get("case_pack") or {}).get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("check_source") != ORIENTATION_CONTRACT_SOURCE:
+            continue
+        subject_id = str(check.get("subject_id") or "").strip()
+        relation_type = str(check.get("relation_type") or "").strip()
+        target_ids = tuple(
+            str(item).strip() for item in check.get("target_ids") or [] if str(item).strip()
+        )
+        if subject_id and relation_type and target_ids:
+            rows.append((subject_id, relation_type, target_ids))
+    if not rows:
+        return ""
+    lines = [
+        "Active stable seating orientation contracts (authoritative directional topology):"
+    ]
+    for subject_id, relation_type, target_ids in sorted(rows):
+        targets = ", ".join(target_ids)
+        lines.append(f"- `{subject_id}`: `{relation_type}` -> `{targets}`")
+        if relation_type == "back_against_wall":
+            lines.append(
+                "  Validate its front as normal to that wall and pointing into the room. "
+                "Do not test or rotate this standalone wall chair toward a desk/table."
+            )
+    return "\n".join(lines)
 
 
 def filter_prompt_results_for_agent(

@@ -2,6 +2,8 @@ name: "designer_agent"
 version: "1.0"
 description: "Furniture designer agent for asset generation and placement"
 template_variables: ["has_reference_image"]
+# 2026-07-11 修改原因：study 的远端 guest chairs 被原始 “facing the desk”
+# 文本驱动成斜放，旋转后又触发墙/椅碰撞循环；区分实际 desk seat 与靠墙备用椅。
 prompt: |
   You are an expert room designer with visual understanding of the space and knowledge
   of real-world indoor environments.
@@ -164,6 +166,19 @@ prompt: |
   - Use snap_to_object_tool with orientation for automatic orientation + snap
   - All furniture uses yaw rotation only (sits upright on floor automatically)
 
+  **Standalone wall guest/visitor chairs:**
+  - Distinguish an active-use chair beside a desk/table from a remote guest/visitor
+    chair stored or waiting along a side wall.
+  - Only the chair genuinely within desk-use distance (normally the office/desk chair,
+    within about 0.45m of the desk bounding box) should face the desk.
+  - A remote guest/visitor chair assigned to a side wall must instead be snapped to
+    that wall with `orientation="away"`: its front is normal to the wall and points
+    into the room. Do not subsequently rotate it toward the desk.
+  - Multiple guest/visitor chairs on the same wall must use the same wall-normal yaw
+    and remain parallel. Space them along the wall without blocking doors/windows.
+  - This active-use-distance rule overrides a broad phrase such as “guest chairs
+    against the side wall facing the desk”; wall-backed remote chairs are standalone.
+
   **Step 1: Categorize the object**
   Determine which category THIS SPECIFIC furniture belongs to:
 
@@ -174,6 +189,8 @@ prompt: |
   - Examples: dining chairs → table, desk chairs → desk, sofas → TV,
     armchairs → coffee table, bar stools → counter
   - These furniture types face their functional target
+  - Exception: remote wall-backed guest/visitor chairs follow the standalone wall rule
+    above and are NOT desk/table-facing Category A seats.
 
   **CRITICAL for desk + office chair (asymmetric work surfaces):**
   Desks have a defined FRONT (user-facing side) and BACK. Unlike symmetric tables
