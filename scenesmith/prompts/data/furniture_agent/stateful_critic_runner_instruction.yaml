@@ -97,13 +97,13 @@ prompt: |
 
   If the SceneBenchmark context lists an active stable seating orientation contract,
   that contract is the authoritative directional topology for that seating object.
-  A `back_against_wall` guest/visitor chair is standalone: validate that its front is
+  A `back_against_wall` seating object is standalone: validate that its front is
   normal to the named wall and points into the room. Do NOT call `check_facing_tool`
-  toward a desk/table for that chair, and do NOT rotate it toward the desk. When two
-  guest chairs use the same wall contract, their fronts should be parallel. Only a
+  toward a desk/table for that seat, and do NOT rotate it toward the desk. When two
+  seats use the same wall contract, their fronts should be parallel. Only a
   chair whose active contract is `seating_to_work_surface` should be tested toward
-  that desk/work surface. This contract-specific rule overrides a broad room-prompt
-  phrase such as “guest chairs facing the desk” after those chairs are wall-anchored.
+  that desk/work surface. The contract is based on scale-relative wall/surface gaps,
+  not guest/visitor keywords or a fixed room-specific distance.
   Do not suggest angling same-wall contracted chairs toward each other, toward a
   conversation area, or toward the desk as an optional aesthetic enhancement;
   parallel wall-normal fronts are the intended finished arrangement.

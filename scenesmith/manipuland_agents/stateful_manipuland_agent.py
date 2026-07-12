@@ -313,6 +313,11 @@ class StatefulManipulandAgent(BaseStatefulAgent, BaseManipulandAgent):
             cfg=self.cfg,
             current_furniture_id=current_furniture_id,
             support_surfaces=support_surfaces,
+            prompt_constraints=(
+                self.current_furniture_selection.prompt_constraints
+                if self.current_furniture_selection
+                else ""
+            ),
         )
         workflow_tools = WorkflowTools()
 

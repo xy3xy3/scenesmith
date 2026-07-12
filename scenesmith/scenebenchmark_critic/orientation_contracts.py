@@ -75,11 +75,11 @@ WORK_SURFACE_CATEGORIES = {
     "side_table",
     "table",
 }
-STANDALONE_WALL_ANCHOR_GAP_M = 0.12
-STANDALONE_SURFACE_GAP_M = 0.85
-GUEST_WALL_ANCHOR_GAP_M = 0.8
-GUEST_SURFACE_GAP_M = 0.45
-GUEST_SEATING_HINTS = ("guest", "visitor")
+# 2026-07-12 修改原因：墙边独立座椅判定应随资产尺寸缩放，避免用 guest/visitor
+# 名称和单个书房回放标定的绝对米制阈值决定功能关系。
+WALL_ANCHOR_GAP_RATIO = 0.45
+SURFACE_SEPARATION_RATIO = 0.5
+WALL_PREFERENCE_MARGIN_RATIO = 0.2
 
 
 def stabilize_orientation_contracts(
@@ -242,7 +242,7 @@ def _plan_contract(
             relation_type="back_against_wall",
             stage=stage,
             reason=(
-                "wall-anchored guest seating is standalone; keep its back at the "
+                "wall-anchored standalone seating keeps its back at the "
                 "wall and its front normal to the wall"
             ),
         )
@@ -362,7 +362,9 @@ def _check_conflicts_with_orientation_contract(
         return False
     check_subject_id = str(check.get("subject_id") or "")
     target_ids = {str(item) for item in check.get("target_ids") or [] if str(item)}
-    involved = check_subject_id == contract_subject_id or contract_subject_id in target_ids
+    involved = (
+        check_subject_id == contract_subject_id or contract_subject_id in target_ids
+    )
     if not involved:
         return False
     # 2026-07-11 修改原因：稳定 wall contract 不能与资产标注/模板残留的
@@ -430,9 +432,11 @@ def _is_seating(obj: dict[str, Any]) -> bool:
     # 2026-07-08 修改原因：asset affordances 会把部分非座椅误标成 sittable，
     # orientation contract 必须使用归一化后的功能画像，避免给桌、灯、小物生成 seating 关系。
     hints = obj.get("functional_hints") or {}
-    scene_object_type = str(
-        obj.get("object_type") or hints.get("scene_object_type") or ""
-    ).strip().lower()
+    scene_object_type = (
+        str(obj.get("object_type") or hints.get("scene_object_type") or "")
+        .strip()
+        .lower()
+    )
     # 2026-07-11 修改原因：final living 回放中 throw pillow 因错误 sittable
     # affordance 被当成 seating，并生成 pillow -> TV remote 的稳定 contract。
     # 朝向 contract 仅适用于家具，不能作用于 manipuland/cushion/decor。
@@ -499,16 +503,17 @@ def _is_wall_anchored_standalone_seating(
     category = object_category(subject)
     if category not in {"armchair", "chair", "dining_chair", "office_chair"}:
         return False
-    guest_seating = _is_guest_seating(subject)
-    wall_gap_limit = (
-        GUEST_WALL_ANCHOR_GAP_M if guest_seating else STANDALONE_WALL_ANCHOR_GAP_M
+    footprint_scale = _seat_footprint_scale(subject)
+    if footprint_scale is None:
+        return False
+    # 2026-07-12 修改原因：以座椅短边为尺度，同时要求墙面明显比工作面更近。
+    # 这样可覆盖不同房间尺度、chair/stool 同义类别和旋转布局，也不会把靠墙但
+    # 实际紧邻桌面的工作椅误判为空闲墙椅。
+    return (
+        wall_gap <= footprint_scale * WALL_ANCHOR_GAP_RATIO
+        and surface_gap >= footprint_scale * SURFACE_SEPARATION_RATIO
+        and wall_gap + footprint_scale * WALL_PREFERENCE_MARGIN_RATIO < surface_gap
     )
-    surface_gap_limit = (
-        GUEST_SURFACE_GAP_M if guest_seating else STANDALONE_SURFACE_GAP_M
-    )
-    # 2026-07-11 修改原因：书房 guest chair 即使离墙约 0.2--0.8m、离 desk
-    # bbox 约 0.5--0.8m，也仍是沿侧墙的空闲座椅，不应被 desk FD 拉走。
-    return wall_gap <= wall_gap_limit and surface_gap > surface_gap_limit
 
 
 def _standalone_wall_target(
@@ -536,12 +541,10 @@ def _standalone_wall_target(
     if not walls:
         return None
     wall_gap = _wall_gap(subject, walls[0])
-    gap_limit = (
-        GUEST_WALL_ANCHOR_GAP_M
-        if _is_guest_seating(subject)
-        else STANDALONE_WALL_ANCHOR_GAP_M
-    )
-    return walls[0] if wall_gap is not None and wall_gap <= gap_limit else None
+    footprint_scale = _seat_footprint_scale(subject)
+    if wall_gap is None or footprint_scale is None:
+        return None
+    return walls[0] if wall_gap <= footprint_scale * WALL_ANCHOR_GAP_RATIO else None
 
 
 def _is_wall_anchor_candidate(subject: dict[str, Any]) -> bool:
@@ -553,13 +556,18 @@ def _is_wall_anchor_candidate(subject: dict[str, Any]) -> bool:
     }
 
 
-def _is_guest_seating(subject: dict[str, Any]) -> bool:
-    text = _object_text(subject)
-    return any(hint in text for hint in GUEST_SEATING_HINTS)
+def _seat_footprint_scale(subject: dict[str, Any]) -> float | None:
+    size = (subject.get("bbox_world") or {}).get("size") or []
+    if len(size) < 2:
+        return None
+    footprint = [float(value) for value in size[:2] if float(value) > 1e-6]
+    return min(footprint) if footprint else None
 
 
-def _nearest_wall_gap(subject: dict[str, Any], objects: list[dict[str, Any]]) -> float | None:
-    subject_bbox = (subject.get("bbox_world") or {})
+def _nearest_wall_gap(
+    subject: dict[str, Any], objects: list[dict[str, Any]]
+) -> float | None:
+    subject_bbox = subject.get("bbox_world") or {}
     subject_min = subject_bbox.get("min") or []
     subject_max = subject_bbox.get("max") or []
     if len(subject_min) < 2 or len(subject_max) < 2:
@@ -573,8 +581,16 @@ def _nearest_wall_gap(subject: dict[str, Any], objects: list[dict[str, Any]]) ->
         wall_max = wall_bbox.get("max") or []
         if len(wall_min) < 2 or len(wall_max) < 2:
             continue
-        dx = max(float(wall_min[0] - subject_max[0]), float(subject_min[0] - wall_max[0]), 0.0)
-        dy = max(float(wall_min[1] - subject_max[1]), float(subject_min[1] - wall_max[1]), 0.0)
+        dx = max(
+            float(wall_min[0] - subject_max[0]),
+            float(subject_min[0] - wall_max[0]),
+            0.0,
+        )
+        dy = max(
+            float(wall_min[1] - subject_max[1]),
+            float(subject_min[1] - wall_max[1]),
+            0.0,
+        )
         gap = (dx * dx + dy * dy) ** 0.5
         if best is None or gap < best:
             best = gap

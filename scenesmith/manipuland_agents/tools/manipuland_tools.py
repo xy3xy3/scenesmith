@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import re
 import time
 
 from dataclasses import asdict
@@ -68,6 +69,110 @@ from scenesmith.manipuland_agents.tools.window_clearance_guard import (
 
 console_logger = logging.getLogger(__name__)
 
+GENERIC_CUTLERY_PATTERN = re.compile(
+    r"\b(?:cutlery|flatware|silverware|utensils?)\b", re.IGNORECASE
+)
+SPECIFIC_CUTLERY_PATTERN = re.compile(
+    # 2026-07-12 修改原因：模型常用 teaspoon/tablespoon 等复合词扩写 generic
+    # cutlery；只匹配独立的 spoon 会漏掉这些同类器具，仍生成冗余资产。
+    r"\b(?:forks?|knives?|knife|spoons?|(?:tea|table|dessert|soup)spoons?|chopsticks?)\b",
+    re.IGNORECASE,
+)
+SETTING_COUNT_WORDS = {
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+
+def _generic_cutlery_place_limit(assignment_text: str) -> int | None:
+    """Return the explicit place-setting count for a generic cutlery request."""
+    text = assignment_text.lower().replace("_", " ")
+    if not GENERIC_CUTLERY_PATTERN.search(text):
+        return None
+    if SPECIFIC_CUTLERY_PATTERN.search(text):
+        return None
+
+    number = r"\d+|" + "|".join(SETTING_COUNT_WORDS)
+    patterns = (
+        rf"\b(?:table|place)?\s*settings?\s+for\s+({number})\b",
+        rf"\b({number})\s+(?:table|place)?\s*settings?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match is None:
+            continue
+        token = match.group(1)
+        value = int(token) if token.isdigit() else SETTING_COUNT_WORDS[token]
+        return value if value >= 2 else None
+    return None
+
+
+def _normalize_generic_cutlery_requests(
+    *,
+    object_descriptions: list[str],
+    short_names: list[str],
+    desired_dimensions: list[list[float]],
+    assignment_text: str,
+) -> tuple[list[str], list[str], list[list[float]]]:
+    """Collapse model-expanded generic cutlery into one reusable utensil asset."""
+    if not GENERIC_CUTLERY_PATTERN.search(assignment_text):
+        return object_descriptions, short_names, desired_dimensions
+    if SPECIFIC_CUTLERY_PATTERN.search(assignment_text):
+        return object_descriptions, short_names, desired_dimensions
+    if not (len(object_descriptions) == len(short_names) == len(desired_dimensions)):
+        return object_descriptions, short_names, desired_dimensions
+
+    cutlery_indices = [
+        index
+        for index, (description, short_name) in enumerate(
+            zip(object_descriptions, short_names, strict=True)
+        )
+        if SPECIFIC_CUTLERY_PATTERN.search(
+            f"{description.replace('_', ' ')} {short_name.replace('_', ' ')}"
+        )
+    ]
+    if not cutlery_indices:
+        return object_descriptions, short_names, desired_dimensions
+
+    first_index = cutlery_indices[0]
+    cutlery_index_set = set(cutlery_indices)
+    normalized_descriptions: list[str] = []
+    normalized_names: list[str] = []
+    normalized_dimensions: list[list[float]] = []
+    for index, (description, short_name, dimensions) in enumerate(
+        zip(object_descriptions, short_names, desired_dimensions, strict=True)
+    ):
+        if index not in cutlery_index_set:
+            normalized_descriptions.append(description)
+            normalized_names.append(short_name)
+            normalized_dimensions.append(dimensions)
+            continue
+        if index != first_index:
+            continue
+        # 2026-07-12 修改原因：模型会把 generic cutlery 扩写成 fork+knife+spoon，
+        # 造成文化假设、桌面过密和同类碰撞循环。工具层收敛为一个可复用类别资产；
+        # 明确点名具体器具的 prompt 不经过此分支。
+        normalized_descriptions.append(
+            "simple flat dining utensil appropriate for the requested meal"
+        )
+        normalized_names.append("dining_utensil")
+        normalized_dimensions.append(list(dimensions))
+
+    console_logger.info(
+        "Normalized %d model-expanded cutlery request(s) to one generic utensil asset",
+        len(cutlery_indices),
+    )
+    return normalized_descriptions, normalized_names, normalized_dimensions
+
 
 class FillAssetItem(TypedDict):
     """Typed dict for fill asset items in create_arrangement.
@@ -105,6 +210,7 @@ class ManipulandTools:
         cfg: DictConfig,
         current_furniture_id: UniqueID,
         support_surfaces: dict[str, SupportSurface],
+        prompt_constraints: str = "",
     ):
         """Initialize manipuland tools.
 
@@ -121,6 +227,7 @@ class ManipulandTools:
         self.cfg = cfg
         self.current_furniture_id = current_furniture_id
         self.support_surfaces = support_surfaces
+        self.prompt_constraints = prompt_constraints
 
         # Initialize placement noise configuration.
         # Start with natural profile as default until planner sets it.
@@ -512,6 +619,19 @@ class ManipulandTools:
                 IDs and details of created manipuland models.
             """
             console_logger.info("Tool called: generate_manipuland_assets")
+            (
+                object_descriptions,
+                short_names,
+                desired_dimensions,
+            ) = _normalize_generic_cutlery_requests(
+                object_descriptions=object_descriptions,
+                short_names=short_names,
+                desired_dimensions=desired_dimensions,
+                assignment_text=(
+                    f"{self.prompt_constraints} "
+                    f"{getattr(self.scene, 'text_description', '')}"
+                ),
+            )
             request = AssetGenerationRequest(
                 object_descriptions=object_descriptions,
                 short_names=short_names,
@@ -1055,6 +1175,48 @@ class ManipulandTools:
                     ),
                     error_type=ManipulandErrorType.ASSET_NOT_FOUND,
                 )
+
+            assignment_text = (
+                f"{self.prompt_constraints} "
+                f"{getattr(self.scene, 'text_description', '')}"
+            )
+            generic_cutlery_limit = _generic_cutlery_place_limit(assignment_text)
+            asset_text = (
+                (f"{original_asset.name} {original_asset.description}")
+                .lower()
+                .replace("_", " ")
+            )
+            if generic_cutlery_limit is not None and re.search(
+                r"\bdining utensil\b", asset_text
+            ):
+                surface_ids = {
+                    surface.surface_id for surface in self.support_surfaces.values()
+                }
+                placed_generic_cutlery = sum(
+                    1
+                    for obj in self.scene.get_manipulands()
+                    if obj.placement_info is not None
+                    and obj.placement_info.parent_surface_id in surface_ids
+                    and re.search(
+                        r"\bdining utensil\b",
+                        f"{obj.name} {obj.description}".lower().replace("_", " "),
+                    )
+                )
+                if placed_generic_cutlery >= generic_cutlery_limit:
+                    # 2026-07-12 修改原因：generic cutlery 的资产折叠后，模型仍可能
+                    # 每席重复放两件同类器具。按 prompt 明确席位数限制实例，避免桌面
+                    # 过密和碰撞；明确点名 fork/knife 等时不启用此限制。
+                    return self._create_placement_failure_result(
+                        asset_id=asset_id,
+                        message=(
+                            "Generic cutlery is already complete: "
+                            f"{placed_generic_cutlery}/{generic_cutlery_limit} "
+                            "utensil instances are placed for the explicitly requested "
+                            "place settings. Do not add another utensil; continue with "
+                            "other required categories or verify physics."
+                        ),
+                        error_type=ManipulandErrorType.INVALID_OPERATION,
+                    )
 
             # Validate position is within surface bounds (convex hull).
             position_2d = np.array([position_x, position_z])

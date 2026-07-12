@@ -53,8 +53,9 @@ def align_seating_to_nearest_surface(
     *,
     max_target_distance_m: float = 2.0,
     repair_angle_threshold_deg: float = 120.0,
-    wall_anchor_gap_m: float = 0.8,
-    standalone_surface_gap_m: float = 0.85,
+    wall_anchor_gap_ratio: float = 0.45,
+    standalone_surface_gap_ratio: float = 0.5,
+    wall_preference_margin_ratio: float = 0.2,
 ) -> list[SeatingOrientationFix]:
     """Rotate clearly backward seating toward its nearest functional surface."""
     furniture = [
@@ -68,17 +69,20 @@ def align_seating_to_nearest_surface(
 
     for seat in seating:
         wall_target = _nearest_wall_anchor(
-            seat, scene.get_objects_by_type(ObjectType.WALL), max_gap_m=wall_anchor_gap_m
+            seat,
+            scene.get_objects_by_type(ObjectType.WALL),
+            max_gap_ratio=wall_anchor_gap_ratio,
         )
         target = _nearest_surface(seat, surfaces, max_distance_m=max_target_distance_m)
-        surface_gap = _surface_gap_xy(seat, target)
-        effective_standalone_gap = (
-            0.45 if _is_guest_seating(seat) else standalone_surface_gap_m
-        )
         if target is None or (
             wall_target is not None
-            and surface_gap is not None
-            and surface_gap > effective_standalone_gap
+            and _is_standalone_wall_seating(
+                seat,
+                wall_target,
+                target,
+                surface_gap_ratio=standalone_surface_gap_ratio,
+                wall_margin_ratio=wall_preference_margin_ratio,
+            )
             and _is_wall_anchor_candidate(seat)
         ):
             if wall_target is None:
@@ -92,7 +96,7 @@ def align_seating_to_nearest_surface(
                 origin_a=seat_center,
                 target_point=target_point,
             )
-            # 2026-07-10 修改原因：独立访客椅不应被强制朝向书柜/显示器；
+            # 2026-07-12 修改原因：独立墙边座椅不应依赖 guest/visitor 名称；
             # 当它本来就是靠墙摆放时，兜底为背靠最近墙面、前向室内，保证平行稳定。
             seat.transform = RigidTransform(
                 rpy=RollPitchYaw(
@@ -157,7 +161,7 @@ def _nearest_wall_anchor(
     seat: SceneObject,
     walls: list[SceneObject],
     *,
-    max_gap_m: float,
+    max_gap_ratio: float,
 ) -> SceneObject | None:
     if not _is_wall_anchor_candidate(seat):
         return None
@@ -166,13 +170,16 @@ def _nearest_wall_anchor(
     if seat_bounds is None:
         return None
     seat_min, seat_max = seat_bounds
+    footprint_scale = _seat_footprint_scale(seat)
+    if footprint_scale is None:
+        return None
     for wall in walls:
         wall_bounds = wall.compute_world_bounds()
         if wall_bounds is None:
             continue
         wall_min, wall_max = wall_bounds
         gap = _aabb_gap_xy(seat_min, seat_max, wall_min, wall_max)
-        if gap <= max_gap_m:
+        if gap <= footprint_scale * max_gap_ratio:
             ranked.append((gap, str(wall.object_id), wall))
     if not ranked:
         return None
@@ -187,12 +194,42 @@ def _surface_gap_xy(seat: SceneObject, surface: SceneObject | None) -> float | N
     surface_bounds = surface.compute_world_bounds()
     if seat_bounds is None or surface_bounds is None:
         return None
-    return _aabb_gap_xy(seat_bounds[0], seat_bounds[1], surface_bounds[0], surface_bounds[1])
+    return _aabb_gap_xy(
+        seat_bounds[0], seat_bounds[1], surface_bounds[0], surface_bounds[1]
+    )
 
 
-def _wall_away_target_point(
-    seat: SceneObject, wall: SceneObject
-) -> np.ndarray | None:
+def _is_standalone_wall_seating(
+    seat: SceneObject,
+    wall: SceneObject,
+    surface: SceneObject,
+    *,
+    surface_gap_ratio: float,
+    wall_margin_ratio: float,
+) -> bool:
+    wall_gap = _surface_gap_xy(seat, wall)
+    surface_gap = _surface_gap_xy(seat, surface)
+    footprint_scale = _seat_footprint_scale(seat)
+    if wall_gap is None or surface_gap is None or footprint_scale is None:
+        return False
+    # 2026-07-12 修改原因：用相对几何关系区分墙边候客座椅与桌边工作座椅，
+    # 避免固定 0.45m/0.8m 阈值只适配单个书房尺寸。
+    return (
+        surface_gap >= footprint_scale * surface_gap_ratio
+        and wall_gap + footprint_scale * wall_margin_ratio < surface_gap
+    )
+
+
+def _seat_footprint_scale(seat: SceneObject) -> float | None:
+    bounds = seat.compute_world_bounds()
+    if bounds is None:
+        return None
+    span = np.asarray(bounds[1] - bounds[0], dtype=float)[:2]
+    positive = span[span > 1e-6]
+    return float(np.min(positive)) if positive.size else None
+
+
+def _wall_away_target_point(seat: SceneObject, wall: SceneObject) -> np.ndarray | None:
     seat_bounds = seat.compute_world_bounds()
     wall_bounds = wall.compute_world_bounds()
     if seat_bounds is None or wall_bounds is None:
@@ -227,14 +264,6 @@ def _aabb_gap_xy(
 def _is_wall_anchor_candidate(obj: SceneObject) -> bool:
     tokens = _object_tokens(obj)
     return bool(tokens & {"armchair", "chair", "dining_chair", "office_chair"})
-
-
-def _is_guest_seating(obj: SceneObject) -> bool:
-    text = " ".join(
-        str(value or "").lower()
-        for value in (obj.object_id, obj.name, obj.description)
-    )
-    return "guest" in text or "visitor" in text
 
 
 def _nearest_surface(

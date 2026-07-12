@@ -59,6 +59,11 @@ prompt: |
   These items were explicitly requested in the scene prompt and assigned to this
   specific furniture by the initial analysis.
 
+  For dining assignments, preserve the exact semantic granularity of the prompt:
+  generic cutlery/utensils means at least one coherent utensil choice per setting,
+  while fork, knife, spoon, chopsticks, napkin, plate, bowl, and glass become separate
+  per-setting requirements only when explicitly named.
+
   When requesting critique, ensure the critic evaluates:
   1. Are all REQUIRED items present on this surface?
   2. Does the arrangement match the style guidance (e.g., minimalist = sparse)?

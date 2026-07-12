@@ -82,6 +82,13 @@ prompt: |
     direction (chair and nearest table edge), never from global/world X or Y.
     Settings on opposite sides of a table are mirrored. If a seat-to-setting
     association is uncertain, report uncertainty instead of a critical error.
+  - Generic "cutlery", "flatware", "silverware", or "utensils" does NOT require a Western fork+knife+spoon set.
+    One coherent utensil type (or chopstick pair) per place is complete unless the
+    prompt explicitly names additional utensil types. Never request napkins or extra
+    utensils solely from a cultural default.
+  - If the same object remains in collision after two move attempts and another item
+    already satisfies its generic category, recommend deleting the redundant object
+    instead of continuing incremental moves.
   - Electronics: Facing toward user position
   - Decorative items: Facing outward for visibility
 

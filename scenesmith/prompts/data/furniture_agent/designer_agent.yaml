@@ -166,18 +166,21 @@ prompt: |
   - Use snap_to_object_tool with orientation for automatic orientation + snap
   - All furniture uses yaw rotation only (sits upright on floor automatically)
 
-  **Standalone wall guest/visitor chairs:**
-  - Distinguish an active-use chair beside a desk/table from a remote guest/visitor
-    chair stored or waiting along a side wall.
-  - Only the chair genuinely within desk-use distance (normally the office/desk chair,
-    within about 0.45m of the desk bounding box) should face the desk.
-  - A remote guest/visitor chair assigned to a side wall must instead be snapped to
+  **Standalone wall seating:**
+  - Distinguish an active-use chair beside a desk/table from any standalone chair
+    stored or waiting along a wall.
+  - Use bbox gaps relative to the chair's shorter footprint side. A chair is an
+    active-use seat when the work-surface gap is smaller than or comparable to the
+    wall gap, or is less than roughly half the chair footprint scale.
+  - A chair is wall-anchored when its wall gap is at most roughly 0.45 of that scale,
+    its work-surface gap is at least roughly 0.5 of that scale, and the wall is clearly
+    closer than the surface. Such a chair must be snapped to
     that wall with `orientation="away"`: its front is normal to the wall and points
     into the room. Do not subsequently rotate it toward the desk.
-  - Multiple guest/visitor chairs on the same wall must use the same wall-normal yaw
+  - Multiple standalone chairs on the same wall must use the same wall-normal yaw
     and remain parallel. Space them along the wall without blocking doors/windows.
-  - This active-use-distance rule overrides a broad phrase such as “guest chairs
-    against the side wall facing the desk”; wall-backed remote chairs are standalone.
+  - Apply this relation to chair, armchair, office-chair, stool, or similar seating
+    labels; names are not evidence of active-use versus standalone topology.
 
   **Step 1: Categorize the object**
   Determine which category THIS SPECIFIC furniture belongs to:
@@ -189,7 +192,7 @@ prompt: |
   - Examples: dining chairs → table, desk chairs → desk, sofas → TV,
     armchairs → coffee table, bar stools → counter
   - These furniture types face their functional target
-  - Exception: remote wall-backed guest/visitor chairs follow the standalone wall rule
+  - Exception: wall-backed standalone chairs follow the standalone wall rule
     above and are NOT desk/table-facing Category A seats.
 
   **CRITICAL for desk + office chair (asymmetric work surfaces):**

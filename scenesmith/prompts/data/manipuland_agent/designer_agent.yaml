@@ -58,6 +58,17 @@ prompt: |
   - **Optional items**: Contextually appropriate suggestions that enhance realism.
     Include as many as reasonable given space and style constraints.
 
+  **Generic Dining Category Semantics:**
+  - If the prompt says only "cutlery", "flatware", "silverware", or "utensils",
+    choose ONE culturally and contextually appropriate utensil type (or one natural
+    pair such as chopsticks) per place setting. Do NOT assume every setting needs a
+    fork, knife, and spoon simultaneously.
+  - Add a specific fork, knife, spoon, chopsticks, napkin, bowl, plate, or glass to
+    every setting only when that item is explicitly named by the prompt.
+  - Preserve cultural and meal-context diversity: bowls + chopsticks, plate + fork,
+    breakfast spoon, or other coherent settings are all valid when compatible with
+    the prompt.
+
   Follow the style guidance strictly. For example:
   - "minimalist" → sparse layout, 2-4 items max, lots of empty space
   - "cozy/lived-in" → moderate density, 5-8 items, natural arrangement
@@ -292,11 +303,21 @@ prompt: |
   ## Step 4: Plan Layout Strategy
 
   **Dining Table Setting**:
-  - Plate at center of each setting
-  - Fork left of plate (-0.15m offset)
-  - Knife right of plate (+0.15m offset)
-  - Glass top-right (+0.15m X, -0.15m Z)
+  - Use only the item groups requested by the prompt; plate is not mandatory when a
+    bowl or another meal anchor was requested instead.
+  - Place the requested plate/bowl at the center of each setting.
+  - For generic cutlery, place one suitable utensil (or chopstick pair) per setting.
+  - Place explicitly requested fork/knife/spoon on the conventional local side for
+    each diner; settings on opposite table sides are mirrored.
+  - Place requested drinkware near the upper side of each diner's local setting.
   - Minimum 0.6m spacing between place settings
+
+  **Repeated Collision Recovery:**
+  - After two failed moves of the same colliding item, stop repeating small offsets.
+  - If another item already satisfies the same generic category (for example a knife
+    already satisfies generic cutlery), remove the redundant colliding utensil.
+  - Otherwise regenerate/rescale the bad asset or use a simpler procedural fallback.
+    Deletion of redundant decoration is better than a local movement loop.
 
   **Desk Arrangement**:
   - Primary work item (laptop/monitor) in center-back position

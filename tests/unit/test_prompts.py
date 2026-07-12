@@ -404,8 +404,8 @@ class TestPromptSystem(unittest.TestCase):
         self.assertIn("four distinct table sides", prompt)
         self.assertIn("moving each chair outward", prompt)
 
-    def test_furniture_critic_prioritizes_wall_contract_for_guest_chairs(self):
-        """Wall-anchored guest chairs must not be redirected toward a desk."""
+    def test_furniture_critic_prioritizes_wall_contract_for_standalone_seats(self):
+        """Wall-anchored seating must not be redirected toward a desk."""
         prompt = prompt_manager.get_prompt(
             FurnitureAgentPrompts.STATEFUL_CRITIC_RUNNER_INSTRUCTION,
             physics_context="",
@@ -422,7 +422,7 @@ class TestPromptSystem(unittest.TestCase):
         self.assertIn("chair whose active contract is", prompt)
         self.assertIn("Do not suggest angling same-wall contracted chairs", prompt)
 
-    def test_furniture_designer_keeps_remote_guest_chairs_wall_normal(self):
+    def test_furniture_designer_uses_scaled_geometry_for_wall_seating(self):
         """Initial and critique designers must preserve standalone wall seating."""
         initial_prompt = prompt_manager.get_prompt(
             FurnitureAgentPrompts.DESIGNER_AGENT,
@@ -433,14 +433,38 @@ class TestPromptSystem(unittest.TestCase):
             instruction="Review the study guest chairs.",
         )
 
-        # 2026-07-11 修改原因：回放显示 initial designer 在首次 critic 前就把
-        # 两把靠墙椅旋向 desk，并因斜放碰撞反复移动；两条 designer 路径均需锁定。
-        self.assertIn("Standalone wall guest/visitor chairs", initial_prompt)
-        self.assertIn("within about 0.45m", initial_prompt)
+        # 2026-07-12 修改原因：锁定无 guest/visitor 名称、不同家具尺度和旋转房间
+        # 也适用的相对几何语义，避免再次回退到固定 0.45m 的书房特判。
+        self.assertIn("Standalone wall seating", initial_prompt)
+        self.assertIn("chair's shorter footprint side", initial_prompt)
+        self.assertNotIn("within about 0.45m", initial_prompt)
         self.assertIn("same wall-normal yaw", initial_prompt)
         self.assertIn("Do not subsequently rotate it toward the desk", initial_prompt)
         self.assertIn("stable wall-backed topology", critique_prompt)
-        self.assertIn("Do NOT rotate or validate", critique_prompt)
+        self.assertIn("relative bbox", critique_prompt)
+        self.assertIn("gaps: the surface must be closer", critique_prompt)
+
+    def test_manipuland_prompts_preserve_generic_cutlery_semantics(self):
+        """Generic cutlery must not expand into a Western full place setting."""
+        designer_prompt = prompt_manager.get_prompt(
+            ManipulandAgentPrompts.MANIPULAND_DESIGNER_AGENT,
+            furniture_description="dining table",
+            suggested_items="REQUIRED: plates, cutlery, glasses for four",
+            prompt_constraints="table settings for four including plates, cutlery, glasses",
+            style_notes="organized",
+            has_reference_image=False,
+        )
+        critic_prompt = prompt_manager.get_prompt(
+            ManipulandAgentPrompts.MANIPULAND_CRITIC_RUNNER_INSTRUCTION,
+            physics_context="",
+            placement_style="perfect",
+        )
+
+        # 2026-07-12 修改原因：餐厅回放因 fork+knife 冗余组合进入重复碰撞移动循环。
+        self.assertIn("Do NOT assume every setting needs a", designer_prompt)
+        self.assertIn("one suitable utensil", designer_prompt)
+        self.assertIn("After two failed moves", designer_prompt)
+        self.assertIn("does NOT require a Western fork+knife+spoon set", critic_prompt)
 
     def test_all_enum_prompts_have_files(self):
         """Test that all prompt enum values have corresponding YAML files."""

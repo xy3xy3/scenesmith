@@ -16,7 +16,11 @@ from pydrake.all import RigidTransform
 from scenesmith.agent_utils.asset_manager import AssetManager
 from scenesmith.agent_utils.placement_noise import PlacementNoiseMode
 from scenesmith.agent_utils.room import RoomScene, SupportSurface, UniqueID
-from scenesmith.manipuland_agents.tools.manipuland_tools import ManipulandTools
+from scenesmith.manipuland_agents.tools.manipuland_tools import (
+    ManipulandTools,
+    _generic_cutlery_place_limit,
+    _normalize_generic_cutlery_requests,
+)
 from scenesmith.manipuland_agents.tools.stack_tools import create_stack_tool_impl
 
 
@@ -85,6 +89,98 @@ class TestManipulandTools(unittest.TestCase):
             self.manipuland_tools.active_noise_profile,
             self.cfg.placement_noise.perfect_profile,
         )
+
+    def test_generic_cutlery_requests_are_collapsed_to_one_asset(self):
+        descriptions, names, dimensions = _normalize_generic_cutlery_requests(
+            object_descriptions=["plate", "silver fork", "table knife", "teaspoon"],
+            # 2026-07-12 修改原因：真实模型返回 silver_teaspoon，测试不能用简化的
+            # spoon 名称掩盖复合餐具词未被归一化的问题。
+            short_names=["plate", "fork", "knife", "silver_teaspoon"],
+            desired_dimensions=[
+                [0.27, 0.27, 0.03],
+                [0.03, 0.20, 0.01],
+                [0.03, 0.22, 0.01],
+                [0.025, 0.15, 0.01],
+            ],
+            assignment_text="Table settings for four with plates, cutlery, and glasses.",
+        )
+
+        # 2026-07-12 修改原因：generic cutlery 不应生成三种西式器具并进入碰撞循环。
+        self.assertEqual(
+            descriptions,
+            [
+                "plate",
+                "simple flat dining utensil appropriate for the requested meal",
+            ],
+        )
+        self.assertEqual(names, ["plate", "dining_utensil"])
+        self.assertEqual(dimensions[-1], [0.03, 0.20, 0.01])
+
+    def test_explicit_cutlery_types_are_not_collapsed(self):
+        descriptions = ["silver fork", "table knife"]
+        names = ["fork", "knife"]
+        dimensions = [[0.03, 0.20, 0.01], [0.03, 0.22, 0.01]]
+
+        result = _normalize_generic_cutlery_requests(
+            object_descriptions=descriptions,
+            short_names=names,
+            desired_dimensions=dimensions,
+            assignment_text="Each place setting explicitly includes a fork and knife.",
+        )
+
+        self.assertEqual(result, (descriptions, names, dimensions))
+
+    def test_generic_cutlery_place_limit_uses_explicit_setting_count(self):
+        # 2026-07-12 修改原因：generic cutlery 每席只需一个通用器具实例，数量应
+        # 来自 prompt 明确席位而不是某个固定餐厅 case。
+        self.assertEqual(
+            _generic_cutlery_place_limit(
+                "Table settings for four with plates, cutlery, and glasses."
+            ),
+            4,
+        )
+        self.assertEqual(
+            _generic_cutlery_place_limit("Six place settings with flatware."), 6
+        )
+        self.assertIsNone(
+            _generic_cutlery_place_limit(
+                "Four place settings explicitly include a fork and knife."
+            )
+        )
+
+    def test_generic_cutlery_rejects_instances_beyond_setting_count(self):
+        asset_id = UniqueID("dining_utensil_asset_0")
+        mock_asset = Mock()
+        mock_asset.name = "dining_utensil"
+        mock_asset.description = "simple dining utensil"
+        self.mock_asset_manager.get_asset_by_id = Mock(return_value=mock_asset)
+
+        existing = []
+        for index in range(4):
+            obj = Mock()
+            obj.name = f"dining_utensil_{index}"
+            obj.description = "simple dining utensil"
+            obj.placement_info = Mock()
+            obj.placement_info.parent_surface_id = self.mock_surface.surface_id
+            existing.append(obj)
+        self.mock_scene.get_manipulands = Mock(return_value=existing)
+        self.mock_scene.text_description = (
+            "Table settings for four with plates, cutlery, and glasses."
+        )
+        self.manipuland_tools.prompt_constraints = self.mock_scene.text_description
+
+        result = json.loads(
+            self.manipuland_tools._place_manipuland_on_surface_impl(
+                asset_id=str(asset_id),
+                surface_id=str(self.mock_surface.surface_id),
+                position_x=0.0,
+                position_z=0.0,
+            )
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_type"], "invalid_operation")
+        self.assertIn("4/4", result["message"])
 
     def test_move_manipuland_out_of_bounds_fails(self):
         """Test that move_manipuland fails when position is out of bounds."""
