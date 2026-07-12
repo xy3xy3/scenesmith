@@ -6626,6 +6626,35 @@ def test_agent_prompt_context_filters_manipuland_workstation_noise() -> None:
     assert "shelving_unit_0" not in context
 
 
+def test_manipuland_prompt_context_includes_authoritative_completeness_pass() -> None:
+    payload = _workstation_payload()
+    payload["results"].append(
+        {
+            "check_id": "manipuland_completeness__study_desk_0",
+            "metric": "manipuland_completeness",
+            "label": "pass",
+            "primary_object": "study_desk_0",
+            "diagnostics": {
+                "place_count": 4,
+                "required_groups": ["cutlery", "plate"],
+                "counts": {"plate": 4, "utensil": 4, "drinkware": 4},
+            },
+        }
+    )
+
+    context = format_agent_prompt_context(
+        payload,
+        agent_type=AgentType.MANIPULAND,
+        current_furniture_id="study_desk_0",
+    )
+
+    assert "Authoritative deterministic manipuland completeness checks passed" in context
+    assert "place_count=4" in context
+    assert "plate=4" in context
+    assert "utensil=4" in context
+    assert "wholesale removal/regeneration" in context
+
+
 def test_agent_prompt_context_keeps_furniture_layout_issues() -> None:
     payload = _workstation_payload()
     payload["results"].extend(

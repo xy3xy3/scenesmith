@@ -7,6 +7,7 @@ per-furniture, with fresh contexts for each furniture surface to bound token usa
 
 import logging
 import math
+import re
 
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,10 @@ from scenesmith.manipuland_agents.base_manipuland_agent import BaseManipulandAge
 from scenesmith.manipuland_agents.tools.manipuland_tools import ManipulandTools
 from scenesmith.manipuland_agents.tools.vision_tools import ManipulandVisionTools
 from scenesmith.prompts.registry import ManipulandAgentPrompts
+from scenesmith.scenebenchmark_critic import room_scene_to_case_pack
+from scenesmith.scenebenchmark_critic.manipuland_completeness import (
+    evaluate_manipuland_completeness,
+)
 from scenesmith.utils.logging import BaseLogger
 
 console_logger = logging.getLogger(__name__)
@@ -63,6 +68,66 @@ class StatefulManipulandAgent(BaseStatefulAgent, BaseManipulandAgent):
     def agent_type(self) -> AgentType:
         """Return agent type for collision filtering."""
         return AgentType.MANIPULAND
+
+    def _validate_design_change_instruction(self, instruction: str) -> str | None:
+        """Reject destructive changes that contradict deterministic inventory."""
+        text = str(instruction or "").lower()
+        # 2026-07-12 修改原因：视觉 critic 可能因遮挡而误称成组物品全部缺失，
+        # 进而要求删除并重建已经完整的桌面布置。只在指令同时包含“缺失断言”和
+        # 破坏性返工意图时启用保护，保留对布局、间距和单件缺陷的正常修复能力。
+        missing_claim = re.search(
+            r"\b(?:all|entire(?:ly)?|completely|no|none|missing|absent|only)\b",
+            text,
+        )
+        destructive_change = re.search(
+            r"\b(?:remove|delete|clear|replace|regenerate|rebuild|recreate|start over)\b",
+            text,
+        )
+        additive_change = re.search(
+            r"\b(?:add|create|generate|complete|supply|provide)\b", text
+        )
+        inventory_subject = re.search(
+            r"\b(?:place settings?|plates?|bowls?|glasses?|glassware|drinkware|"
+            r"cutlery|flatware|silverware|utensils?|forks?|knives|spoons?|"
+            r"chopsticks?|napkins?)\b",
+            text,
+        )
+        # 2026-07-12 修改原因：planner 可能省略“missing”字样，直接要求生成
+        # fork/knife/spoon。completeness 已通过时，新增 required inventory 本身就与
+        # 权威计数矛盾；而 move/reposition/rotate/scale 等几何修复仍可正常执行。
+        contradicts_inventory = inventory_subject and (
+            additive_change or (missing_claim and destructive_change)
+        )
+        if not contradicts_inventory:
+            return None
+        furniture_id = str(getattr(self, "current_furniture_id", "") or "").strip()
+        scene = getattr(self, "scene", None)
+        if not furniture_id or scene is None:
+            return None
+        case_pack = room_scene_to_case_pack(scene, stage="design_change_validation")
+        passed = next(
+            (
+                result
+                for result in evaluate_manipuland_completeness(case_pack)
+                if result.get("label") == "pass"
+                and str(result.get("primary_object") or "") == furniture_id
+            ),
+            None,
+        )
+        if passed is None:
+            return None
+        diagnostics = passed.get("diagnostics") or {}
+        counts = diagnostics.get("counts") or {}
+        observed = ", ".join(
+            f"{key}={value}" for key, value in sorted(counts.items()) if value
+        )
+        return (
+            "DESIGN CHANGE REJECTED: the proposed inventory addition/removal "
+            "contradicts the authoritative deterministic completeness check for "
+            f"`{furniture_id}`, which passed. Observed inventory: {observed}. "
+            "Reassess the rendered views and request only concrete geometry, spacing, "
+            "or presentation corrections without deleting the complete set."
+        )
 
     def __init__(
         self,

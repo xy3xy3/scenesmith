@@ -108,7 +108,60 @@ def format_agent_prompt_context(
     contract_context = _format_orientation_contract_context(payload, agent_type)
     if contract_context:
         context = f"{context}\n\n{contract_context}"
+    # 2026-07-12 修改原因：仅显示失败项会让视觉 critic 看不到已通过的成组
+    # manipuland 库存，并可能把已存在物品误报为全部缺失。显式提供当前支撑家具的
+    # 权威 completeness 结果，避免基于单张视图推翻确定性场景数据。
+    completeness_context = _format_manipuland_completeness_context(
+        payload, agent_type, current_furniture_id
+    )
+    if completeness_context:
+        context = f"{context}\n\n{completeness_context}"
     return context
+
+
+def _format_manipuland_completeness_context(
+    payload: dict[str, Any],
+    agent_type: AgentType | str,
+    current_furniture_id: str | None,
+) -> str:
+    if _agent_value(agent_type) != AgentType.MANIPULAND.value:
+        return ""
+    furniture_id = str(current_furniture_id or "").strip()
+    if not furniture_id:
+        return ""
+    rows: list[str] = []
+    for result in payload.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        if (
+            result.get("metric") != "manipuland_completeness"
+            or result.get("label") != "pass"
+            or str(result.get("primary_object") or "") != furniture_id
+        ):
+            continue
+        diagnostics = result.get("diagnostics") or {}
+        place_count = diagnostics.get("place_count")
+        required = diagnostics.get("required_groups") or []
+        counts = diagnostics.get("counts") or {}
+        required_text = ", ".join(str(item) for item in required)
+        counts_text = ", ".join(
+            f"{key}={value}" for key, value in sorted(counts.items()) if value
+        )
+        rows.append(
+            f"- `{furniture_id}`: place_count={place_count}; "
+            f"required_groups=[{required_text}]; observed_counts=[{counts_text}]"
+        )
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            "Authoritative deterministic manipuland completeness checks passed:",
+            *rows,
+            "Do not claim these required groups are absent or request wholesale "
+            "removal/regeneration based only on visual ambiguity. You may still "
+            "report concrete geometry, spacing, or presentation defects.",
+        ]
+    )
 
 
 def _format_orientation_contract_context(

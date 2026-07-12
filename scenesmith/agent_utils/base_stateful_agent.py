@@ -787,6 +787,9 @@ class BaseStatefulAgent(ABC):
                 )
 
             before_hash = self.scene.content_hash()
+            validation_error = self._validate_design_change_instruction(instruction)
+            if validation_error:
+                return validation_error
             self._planner_design_change_calls += 1
             result = await self._request_design_change_impl(instruction)
             after_hash = self.scene.content_hash()
@@ -1289,6 +1292,10 @@ class BaseStatefulAgent(ABC):
         return format_prompt_context(
             payload, max_issues=critic_config.max_issues_for_prompt
         )
+
+    def _validate_design_change_instruction(self, instruction: str) -> str | None:
+        """Return a refusal message when a proposed design change is invalid."""
+        return None
 
     @abstractmethod
     def _get_design_change_prompt_enum(self) -> Any:

@@ -115,11 +115,13 @@ def _evaluate_dining_table_setting(
     required_groups = _required_groups(task_instruction)
     if not required_groups:
         return None
-    place_count = max(
+    requested_place_count = _requested_place_count(task_instruction)
+    # 2026-07-12 修改原因：prompt 明确给出席位数时应作为权威数量，不能被
+    # 相邻家具的语义噪声或 bbox 邻近误计放大；未明确数量时再由餐具锚点和座位推断。
+    place_count = requested_place_count or max(
         counts["plate"],
         counts["bowl"],
         _nearby_dining_seat_count(table, objects_by_id),
-        _requested_place_count(task_instruction),
     )
     # Only enforce this when geometry or an explicit setting count establishes plurality.
     if place_count < 2:
@@ -334,16 +336,33 @@ def _scene_object_type(obj: dict[str, Any]) -> str:
 
 
 def _is_dining_table(obj: dict[str, Any]) -> bool:
-    text = _object_text(obj)
+    text = _object_identity_text(obj)
     return (
         _scene_object_type(obj) == "furniture" and "dining" in text and "table" in text
     )
 
 
 def _is_dining_seat(obj: dict[str, Any]) -> bool:
-    text = _object_text(obj)
+    text = _object_identity_text(obj)
     return _scene_object_type(obj) == "furniture" and any(
         token in text for token in ("chair", "seat", "stool", "bench")
+    )
+
+
+def _object_identity_text(obj: dict[str, Any]) -> str:
+    """Return stable category identity without descriptive relation noise."""
+    hints = obj.get("functional_hints") or {}
+    # 2026-07-12 修改原因：VLM description/functional_categories 常提到相邻
+    # dining table/chairs，若用于角色识别会把 sideboard 当餐桌或额外座位。
+    parts = [
+        obj.get("id"),
+        obj.get("name"),
+        obj.get("category"),
+        obj.get("category_norm"),
+        hints.get("category_group"),
+    ]
+    return " ".join(
+        str(part).lower().replace("_", " ") for part in parts if part
     )
 
 

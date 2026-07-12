@@ -8,6 +8,9 @@ from omegaconf import OmegaConf
 
 from scenesmith.agent_utils.base_stateful_agent import BaseStatefulAgent
 from scenesmith.agent_utils.room import AgentType
+from scenesmith.manipuland_agents.stateful_manipuland_agent import (
+    StatefulManipulandAgent,
+)
 
 
 class _WorkflowAgent(BaseStatefulAgent):
@@ -104,3 +107,133 @@ async def test_design_change_tool_stops_after_consecutive_no_progress() -> None:
     assert "HARD STOP" in stopped
     assert "no scene-state change" in stopped
     assert agent._request_design_change_impl.await_count == 2
+
+
+def test_manipuland_rejects_destructive_change_that_contradicts_complete_inventory(
+    monkeypatch,
+) -> None:
+    agent = object.__new__(StatefulManipulandAgent)
+    agent.current_furniture_id = "dining_table_0"
+    agent.scene = object()
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.room_scene_to_case_pack",
+        lambda scene, stage: {"scene_geometry": {}},
+    )
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.evaluate_manipuland_completeness",
+        lambda case_pack: [
+            {
+                "label": "pass",
+                "primary_object": "dining_table_0",
+                "diagnostics": {"counts": {"plate": 4, "utensil": 4}},
+            }
+        ],
+    )
+
+    result = agent._validate_design_change_instruction(
+        "All plates and cutlery are missing. Remove everything and regenerate the set."
+    )
+
+    assert result is not None
+    assert "DESIGN CHANGE REJECTED" in result
+    assert "plate=4" in result
+
+
+def test_manipuland_allows_completion_fix_when_deterministic_check_fails(
+    monkeypatch,
+) -> None:
+    agent = object.__new__(StatefulManipulandAgent)
+    agent.current_furniture_id = "dining_table_0"
+    agent.scene = object()
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.room_scene_to_case_pack",
+        lambda scene, stage: {"scene_geometry": {}},
+    )
+
+
+def test_manipuland_rejects_addition_that_contradicts_complete_inventory(
+    monkeypatch,
+) -> None:
+    agent = object.__new__(StatefulManipulandAgent)
+    agent.current_furniture_id = "dining_table_0"
+    agent.scene = object()
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.room_scene_to_case_pack",
+        lambda scene, stage: {"scene_geometry": {}},
+    )
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.evaluate_manipuland_completeness",
+        lambda case_pack: [
+            {
+                "label": "pass",
+                "primary_object": "dining_table_0",
+                "diagnostics": {
+                    "counts": {"plate": 4, "utensil": 4, "drinkware": 4}
+                },
+            }
+        ],
+    )
+
+    result = agent._validate_design_change_instruction(
+        "Only two place settings exist. Add two complete place settings with plates, "
+        "cutlery, and glasses."
+    )
+
+    assert result is not None
+    assert "DESIGN CHANGE REJECTED" in result
+    assert "drinkware=4" in result
+
+
+def test_manipuland_rejects_inventory_generation_without_missing_word(
+    monkeypatch,
+) -> None:
+    agent = object.__new__(StatefulManipulandAgent)
+    agent.current_furniture_id = "dining_table_0"
+    agent.scene = object()
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.room_scene_to_case_pack",
+        lambda scene, stage: {"scene_geometry": {}},
+    )
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.evaluate_manipuland_completeness",
+        lambda case_pack: [
+            {
+                "label": "pass",
+                "primary_object": "dining_table_0",
+                "diagnostics": {"counts": {"plate": 4, "utensil": 4}},
+            }
+        ],
+    )
+
+    result = agent._validate_design_change_instruction(
+        "Generate separate fork, knife, and spoon assets for formal dining."
+    )
+
+    assert result is not None
+    assert "DESIGN CHANGE REJECTED" in result
+    monkeypatch.setattr(
+        "scenesmith.manipuland_agents.stateful_manipuland_agent.evaluate_manipuland_completeness",
+        lambda case_pack: [
+            {"label": "fail", "primary_object": "dining_table_0"}
+        ],
+    )
+
+    assert (
+        agent._validate_design_change_instruction(
+            "All plates are missing. Clear the incomplete placeholders and rebuild them."
+        )
+        is None
+    )
+
+
+def test_manipuland_allows_non_destructive_geometry_correction(monkeypatch) -> None:
+    agent = object.__new__(StatefulManipulandAgent)
+    agent.current_furniture_id = "dining_table_0"
+    agent.scene = object()
+
+    assert (
+        agent._validate_design_change_instruction(
+            "Rotate two existing glasses and increase spacing between the plates."
+        )
+        is None
+    )
