@@ -1,5 +1,7 @@
 """Tests for manipuland completeness critic rules."""
 
+import math
+
 from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
     evaluate_dining_place_setting_alignment,
 )
@@ -275,12 +277,12 @@ def test_dining_place_settings_pass_when_each_cluster_uses_seat_front() -> None:
         _oriented_seat("chair_west", x=-1.38, y=0.0, yaw_deg=-90.0),
         _positioned_item("plate_north", "dinner_plate", -0.4, 0.28),
         _positioned_item("plate_south", "dinner_plate", 0.4, -0.28),
-        _positioned_item("plate_east", "dinner_plate", 0.45, 0.0),
-        _positioned_item("plate_west", "dinner_plate", -0.45, 0.0),
+        _positioned_item("plate_east", "dinner_plate", 0.62, 0.0),
+        _positioned_item("plate_west", "dinner_plate", -0.62, 0.0),
         _positioned_item("utensil_north", "dining_utensil", -0.55, 0.28),
         _positioned_item("utensil_south", "dining_utensil", 0.55, -0.28),
-        _positioned_item("utensil_east", "dining_utensil", 0.52, -0.12),
-        _positioned_item("utensil_west", "dining_utensil", -0.52, 0.12),
+        _positioned_item("utensil_east", "dining_utensil", 0.62, -0.12),
+        _positioned_item("utensil_west", "dining_utensil", -0.62, 0.12),
     ]
 
     result = evaluate_dining_place_setting_alignment(
@@ -295,6 +297,111 @@ def test_dining_place_settings_pass_when_each_cluster_uses_seat_front() -> None:
         row["aligned"] and not row["misaligned_companion_ids"]
         for row in result["diagnostics"]["assignments"]
     )
+
+
+def test_centered_four_side_chairs_reject_four_corner_plate_grid() -> None:
+    objects = [
+        _table(),
+        _oriented_seat("chair_north", x=0.0, y=0.98, yaw_deg=180.0),
+        _oriented_seat("chair_south", x=0.0, y=-0.98, yaw_deg=0.0),
+        _oriented_seat("chair_east", x=1.45, y=0.0, yaw_deg=90.0),
+        _oriented_seat("chair_west", x=-1.38, y=0.0, yaw_deg=-90.0),
+        _positioned_item("plate_southwest", "dinner_plate", -0.26, -0.28),
+        _positioned_item("plate_southeast", "dinner_plate", 0.26, -0.28),
+        _positioned_item("plate_northwest", "dinner_plate", -0.26, 0.28),
+        _positioned_item("plate_northeast", "dinner_plate", 0.26, 0.28),
+    ]
+
+    result = evaluate_dining_place_setting_alignment(
+        _case_pack(objects, prompt="Table settings for four including plates.")
+    )[0]
+
+    # 2026-07-13 修改原因：复现真机中座椅已经在四边居中、餐盘仍保持 2x2
+    # 四角网格的情况。每个餐盘都应收到其所属座椅中心线的明确二维移动目标。
+    assert result["label"] == "fail"
+    assignments = result["diagnostics"]["assignments"]
+    assert len(assignments) == 4
+    assert all(not row["aligned"] for row in assignments)
+    assert all(row["allowed_lateral_offset_m"] < 0.1 for row in assignments)
+    assert all(
+        any(abs(value) > 0.2 for value in row["recommended_translation_xy_m"])
+        for row in assignments
+    )
+    assert "whole place-setting cluster" in result["reason"]
+
+
+def test_dining_alignment_scales_with_table_and_plate_sizes() -> None:
+    for width, depth, plate_size in ((1.2, 0.7, 0.2), (2.8, 1.2, 0.34)):
+        table = _scaled_table(width, depth)
+        inset = plate_size / 2.0 + max(0.03, 0.05 * min(width, depth))
+        target_y = depth / 2.0 - inset
+        north_plate = _positioned_item("plate_north", "dinner_plate", 0.0, target_y)
+        south_plate = _positioned_item("plate_south", "dinner_plate", 0.0, -target_y)
+        _resize_item(north_plate, plate_size)
+        _resize_item(south_plate, plate_size)
+        objects = [
+            table,
+            _oriented_seat(
+                "chair_north", x=0.0, y=depth / 2.0 + 0.5, yaw_deg=180.0
+            ),
+            _oriented_seat(
+                "chair_south", x=0.0, y=-depth / 2.0 - 0.5, yaw_deg=0.0
+            ),
+            north_plate,
+            south_plate,
+        ]
+
+        result = evaluate_dining_place_setting_alignment(
+            _case_pack(objects, prompt="Two dining place settings with plates.")
+        )[0]
+
+        # 2026-07-13 修改原因：桌边槽位必须随桌深和盘径变化，不能只通过
+        # 当前 1.87m x 0.75m 四人桌的固定坐标回归。
+        assert result["label"] == "pass"
+        assert all(row["aligned"] for row in result["diagnostics"]["assignments"])
+
+
+def test_dining_alignment_uses_rotated_table_polygon() -> None:
+    yaw_deg = 32.0
+    yaw = math.radians(yaw_deg)
+    width, depth, plate_size = 2.0, 0.9, 0.27
+    table = _scaled_table(width, depth, yaw_deg=yaw_deg)
+    inset = plate_size / 2.0 + 0.05 * depth
+    target_y = depth / 2.0 - inset
+
+    def rotate(x: float, y: float) -> tuple[float, float]:
+        return (
+            x * math.cos(yaw) - y * math.sin(yaw),
+            x * math.sin(yaw) + y * math.cos(yaw),
+        )
+
+    north_xy = rotate(0.0, depth / 2.0 + 0.5)
+    south_xy = rotate(0.0, -depth / 2.0 - 0.5)
+    north_plate_xy = rotate(0.0, target_y)
+    south_plate_xy = rotate(0.0, -target_y)
+    north_plate = _positioned_item(
+        "plate_north", "dinner_plate", *north_plate_xy
+    )
+    south_plate = _positioned_item(
+        "plate_south", "dinner_plate", *south_plate_xy
+    )
+    objects = [
+        table,
+        _oriented_seat(
+            "chair_north", x=north_xy[0], y=north_xy[1], yaw_deg=180.0 + yaw_deg
+        ),
+        _oriented_seat(
+            "chair_south", x=south_xy[0], y=south_xy[1], yaw_deg=yaw_deg
+        ),
+        north_plate,
+        south_plate,
+    ]
+
+    result = evaluate_dining_place_setting_alignment(
+        _case_pack(objects, prompt="Two dining place settings with plates.")
+    )[0]
+
+    assert result["label"] == "pass"
 
 
 def test_dining_alignment_ignores_decorative_tabletop_objects() -> None:
@@ -334,9 +441,45 @@ def _table() -> dict:
             "min": [-0.8, -0.45, 0.375],
             "max": [0.8, 0.45, 1.125],
         },
+        "footprint_world": [
+            [-0.8, -0.45],
+            [0.8, -0.45],
+            [0.8, 0.45],
+            [-0.8, 0.45],
+        ],
         "support_surfaces": [{"surface_id": "S_table"}],
         "functional_hints": {"scene_object_type": "furniture"},
     }
+
+
+def _scaled_table(width: float, depth: float, *, yaw_deg: float = 0.0) -> dict:
+    table = _table()
+    yaw = math.radians(yaw_deg)
+    corners = [
+        (-width / 2.0, -depth / 2.0),
+        (width / 2.0, -depth / 2.0),
+        (width / 2.0, depth / 2.0),
+        (-width / 2.0, depth / 2.0),
+    ]
+    footprint = [
+        [
+            x * math.cos(yaw) - y * math.sin(yaw),
+            x * math.sin(yaw) + y * math.cos(yaw),
+        ]
+        for x, y in corners
+    ]
+    xs = [point[0] for point in footprint]
+    ys = [point[1] for point in footprint]
+    table["yaw_deg"] = yaw_deg
+    table["footprint_world"] = footprint
+    table["bbox_world"].update(
+        {
+            "size": [max(xs) - min(xs), max(ys) - min(ys), 0.75],
+            "min": [min(xs), min(ys), 0.375],
+            "max": [max(xs), max(ys), 1.125],
+        }
+    )
+    return table
 
 
 def _item(object_id: str, name: str) -> dict:
@@ -388,3 +531,14 @@ def _positioned_item(object_id: str, name: str, x: float, y: float) -> dict:
         "max": [x + width / 2.0, y + depth / 2.0, 0.92],
     }
     return item
+
+
+def _resize_item(item: dict, size: float) -> None:
+    center = item["bbox_world"]["center"]
+    item["bbox_world"].update(
+        {
+            "size": [size, size, 0.04],
+            "min": [center[0] - size / 2.0, center[1] - size / 2.0, 0.88],
+            "max": [center[0] + size / 2.0, center[1] + size / 2.0, 0.92],
+        }
+    )

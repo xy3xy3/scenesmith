@@ -88,12 +88,12 @@ def _evaluate_table_alignment(
     anchors: list[dict[str, Any]],
     companions: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    assignment = _minimum_distance_assignment(seats, anchors)
-    if assignment is None:
-        return None
     table_center = bbox_center_xy(table)
     table_short_side = _short_side(table)
     if table_center is None or table_short_side is None:
+        return None
+    assignment = _seat_lane_assignment(table, seats, anchors, table_center)
+    if assignment is None:
         return None
 
     anchor_to_seat: dict[str, dict[str, Any]] = {}
@@ -106,26 +106,67 @@ def _evaluate_table_alignment(
             return None
         forward = _usable_seat_front(seat, seat_center, table_center)
         lateral_axis = (-forward[1], forward[0])
-        lateral_offset = abs(
+        recommended_center = _recommended_anchor_center(
+            table, seat, anchor, seat_center, forward
+        )
+        signed_lateral_offset = (
             (anchor_center[0] - seat_center[0]) * lateral_axis[0]
             + (anchor_center[1] - seat_center[1]) * lateral_axis[1]
         )
+        lateral_offset = abs(signed_lateral_offset)
         longitudinal = (
             (anchor_center[0] - seat_center[0]) * forward[0]
             + (anchor_center[1] - seat_center[1]) * forward[1]
         )
-        allowed = _front_lane_half_width(seat, anchor, lateral_axis)
+        allowed = _anchor_centerline_tolerance(seat, anchor, lateral_axis)
+        if recommended_center is None:
+            target_center = (
+                anchor_center[0] - signed_lateral_offset * lateral_axis[0],
+                anchor_center[1] - signed_lateral_offset * lateral_axis[1],
+            )
+            longitudinal_slot_offset = 0.0
+            longitudinal_allowed = math.inf
+        else:
+            target_center = recommended_center
+            longitudinal_slot_offset = abs(
+                (anchor_center[0] - target_center[0]) * forward[0]
+                + (anchor_center[1] - target_center[1]) * forward[1]
+            )
+            longitudinal_allowed = _anchor_longitudinal_tolerance(anchor, forward)
+        correction = (
+            target_center[0] - anchor_center[0],
+            target_center[1] - anchor_center[1],
+        )
         seat_id = str(seat["id"])
         anchor_id = str(anchor["id"])
         anchor_to_seat[anchor_id] = seat
-        aligned = longitudinal > 0.0 and lateral_offset <= allowed
+        aligned = (
+            longitudinal > 0.0
+            and lateral_offset <= allowed
+            and longitudinal_slot_offset <= longitudinal_allowed
+        )
         diagnostics.append(
             {
                 "seat_id": seat_id,
                 "anchor_id": anchor_id,
                 "lateral_offset_m": round(lateral_offset, 4),
+                "signed_lateral_offset_m": round(signed_lateral_offset, 4),
                 "allowed_lateral_offset_m": round(allowed, 4),
                 "longitudinal_offset_m": round(longitudinal, 4),
+                "longitudinal_slot_offset_m": round(longitudinal_slot_offset, 4),
+                "allowed_longitudinal_slot_offset_m": (
+                    None
+                    if math.isinf(longitudinal_allowed)
+                    else round(longitudinal_allowed, 4)
+                ),
+                "recommended_translation_xy_m": [
+                    round(correction[0], 4),
+                    round(correction[1], 4),
+                ],
+                "recommended_anchor_center_xy_m": [
+                    round(target_center[0], 4),
+                    round(target_center[1], 4),
+                ],
                 "aligned": aligned,
                 "companion_ids": [],
                 "misaligned_companion_ids": [],
@@ -134,7 +175,13 @@ def _evaluate_table_alignment(
         if not aligned:
             failures.append(
                 f"`{anchor_id}` is not centered in front of `{seat_id}` "
-                f"(lateral {lateral_offset:.2f}m > {allowed:.2f}m)"
+                f"(lateral {lateral_offset:.2f}m, allowed {allowed:.2f}m; "
+                f"edge-slot offset {longitudinal_slot_offset:.2f}m, allowed "
+                f"{longitudinal_allowed:.2f}m); move its "
+                f"whole place-setting cluster by ({correction[0]:+.2f}, "
+                f"{correction[1]:+.2f})m in world XY so the plate/bowl center "
+                f"reaches approximately ({target_center[0]:.2f}, "
+                f"{target_center[1]:.2f})m"
             )
 
     rows_by_anchor = {row["anchor_id"]: row for row in diagnostics}
@@ -156,7 +203,7 @@ def _evaluate_table_alignment(
             (companion_center[0] - seat_center[0]) * lateral_axis[0]
             + (companion_center[1] - seat_center[1]) * lateral_axis[1]
         )
-        allowed = _front_lane_half_width(seat, companion, lateral_axis)
+        allowed = _companion_lane_half_width(seat, companion, lateral_axis)
         companion_id = str(companion["id"])
         row = rows_by_anchor[anchor_id]
         row["companion_ids"].append(companion_id)
@@ -178,7 +225,7 @@ def _evaluate_table_alignment(
     if failures:
         reason = (
             "Dining place settings must be centered on the front axis of their "
-            "one-to-one nearest seats. "
+            "one-to-one assigned seats. "
             + "; ".join(failures[:8])
             + ". Move each plate/bowl together with its nearby cutlery, drinkware, "
             "and napkin toward that seat's centerline; do not move it to another "
@@ -207,32 +254,53 @@ def _evaluate_table_alignment(
         "reason": reason,
         "diagnostics": {"assignments": diagnostics},
         "evidence": {
-            "association": "minimum_distance_one_to_one",
-            "alignment": "seat_front_lateral_projection",
+            "association": "minimum_seat_front_lane_cost_one_to_one",
+            "alignment": "strict_anchor_centerline_projection",
         },
         "evaluation_source": "scenesmith_dining_place_setting_alignment",
         "scoring_tier": "core",
     }
 
 
-def _minimum_distance_assignment(
-    seats: list[dict[str, Any]], anchors: list[dict[str, Any]]
+def _seat_lane_assignment(
+    table: dict[str, Any],
+    seats: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+    table_center: tuple[float, float],
 ) -> list[tuple[dict[str, Any], dict[str, Any]]] | None:
     seat_centers = [bbox_center_xy(seat) for seat in seats]
     anchor_centers = [bbox_center_xy(anchor) for anchor in anchors]
     if any(center is None for center in [*seat_centers, *anchor_centers]):
         return None
     count = len(seats)
-    costs = [
-        [
-            math.hypot(
-                float(seat_centers[i][0]) - float(anchor_centers[j][0]),
-                float(seat_centers[i][1]) - float(anchor_centers[j][1]),
+    costs: list[list[float]] = []
+    for seat_index, seat in enumerate(seats):
+        seat_center = seat_centers[seat_index]
+        assert seat_center is not None
+        forward = _usable_seat_front(seat, seat_center, table_center)
+        lateral_axis = (-forward[1], forward[0])
+        row: list[float] = []
+        for anchor_index, anchor_center in enumerate(anchor_centers):
+            assert anchor_center is not None
+            dx = anchor_center[0] - seat_center[0]
+            dy = anchor_center[1] - seat_center[1]
+            lateral = abs(dx * lateral_axis[0] + dy * lateral_axis[1])
+            longitudinal = dx * forward[0] + dy * forward[1]
+            target = _recommended_anchor_center(
+                table, seat, anchors[anchor_index], seat_center, forward
             )
-            for j in range(count)
-        ]
-        for i in range(count)
-    ]
+            if target is None:
+                distance = math.hypot(dx, dy)
+            else:
+                distance = math.hypot(
+                    anchor_center[0] - target[0], anchor_center[1] - target[1]
+                )
+            # 2026-07-13 修改原因：四角餐盘到多个座椅的欧氏距离相近，纯最近
+            # 匹配会把餐盘分给错误桌边。优先最小化座椅前轴横向偏差，再用距离
+            # 消除同边多座位歧义；位于座椅背后的候选附加尺度相关惩罚。
+            behind_penalty = 8.0 * distance if longitudinal <= 0.0 else 0.0
+            row.append(4.0 * lateral + distance + behind_penalty)
+        costs.append(row)
 
     # 2026-07-13 修改原因：逐椅贪心会让相邻座位争用同一餐盘。位掩码动态规划
     # 求全局最短一对一分配，适配长桌、圆桌和非对称座椅布局。
@@ -256,7 +324,7 @@ def _minimum_distance_assignment(
         return best
 
     # Avoid exponential work for unusually large banquet layouts; deterministic
-    # nearest-pair assignment remains a safe report-only fallback above 12 seats.
+    # lowest-lane-cost assignment remains a safe report-only fallback above 12 seats.
     if count <= 12:
         _cost, indices = solve(0, 0)
     else:
@@ -340,7 +408,117 @@ def _usable_seat_front(
     return fx, fy
 
 
-def _front_lane_half_width(
+def _anchor_centerline_tolerance(
+    seat: dict[str, Any], item: dict[str, Any], lateral_axis: tuple[float, float]
+) -> float:
+    seat_span = _projected_span(seat, lateral_axis)
+    item_span = _projected_span(item, lateral_axis)
+    if seat_span is None:
+        seat_span = _short_side(seat) or 0.45
+    if item_span is None:
+        item_span = _short_side(item) or 0.2
+    # 2026-07-13 修改原因：“落在椅宽范围内”仍会产生肉眼明显的四角餐盘。
+    # 餐盘/餐碗锚点必须接近座椅中心线；容差由座椅宽和锚点尺寸共同缩放，
+    # 兼容不同尺寸的椅子、碗盘及长桌，而不是使用固定四人桌坐标。
+    return max(0.04, min(0.2 * seat_span, 0.3 * item_span))
+
+
+def _anchor_longitudinal_tolerance(
+    item: dict[str, Any], forward: tuple[float, float]
+) -> float:
+    item_span = _projected_span(item, forward)
+    if item_span is None:
+        item_span = _short_side(item) or 0.2
+    return max(0.04, 0.35 * item_span)
+
+
+def _recommended_anchor_center(
+    table: dict[str, Any],
+    seat: dict[str, Any],
+    anchor: dict[str, Any],
+    seat_center: tuple[float, float],
+    forward: tuple[float, float],
+) -> tuple[float, float] | None:
+    polygon = _tabletop_polygon(table)
+    if len(polygon) < 3:
+        return None
+    boundary = _ray_polygon_entry(seat_center, forward, polygon)
+    if boundary is None:
+        return None
+    anchor_span = _projected_span(anchor, forward)
+    if anchor_span is None:
+        anchor_span = _short_side(anchor) or 0.2
+    table_scale = _short_side(table) or anchor_span
+    # 2026-07-13 修改原因：只投影到座椅中心线会保留餐盘靠近桌心的纵向位置，
+    # 居中后容易撞中央花瓶并诱使模型再次横移。沿座椅前轴找到桌面入射边界，
+    # 再按盘碗半径和桌尺度向内留边，得到可达且远离桌心装饰物的通用槽位。
+    edge_inset = 0.5 * anchor_span + max(0.03, 0.05 * table_scale)
+    return (
+        boundary[0] + edge_inset * forward[0],
+        boundary[1] + edge_inset * forward[1],
+    )
+
+
+def _tabletop_polygon(table: dict[str, Any]) -> list[tuple[float, float]]:
+    candidates: list[list[Any]] = []
+    for region in table.get("support_regions") or []:
+        if isinstance(region, dict):
+            polygon = region.get("polygon_world_xy")
+            if isinstance(polygon, list):
+                candidates.append(polygon)
+    footprint = table.get("footprint_world")
+    if isinstance(footprint, list):
+        candidates.append(footprint)
+    valid = [
+        [(float(point[0]), float(point[1])) for point in polygon]
+        for polygon in candidates
+        if len(polygon) >= 3
+        and all(isinstance(point, (list, tuple)) and len(point) >= 2 for point in polygon)
+    ]
+    return max(valid, key=_polygon_area, default=[])
+
+
+def _polygon_area(polygon: list[tuple[float, float]]) -> float:
+    return abs(
+        0.5
+        * sum(
+            polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
+            - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
+            for index in range(len(polygon))
+        )
+    )
+
+
+def _ray_polygon_entry(
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+    polygon: list[tuple[float, float]],
+) -> tuple[float, float] | None:
+    intersections: list[tuple[float, float, float]] = []
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        edge = (end[0] - start[0], end[1] - start[1])
+        denominator = direction[0] * edge[1] - direction[1] * edge[0]
+        if abs(denominator) <= 1e-9:
+            continue
+        offset = (start[0] - origin[0], start[1] - origin[1])
+        ray_t = (offset[0] * edge[1] - offset[1] * edge[0]) / denominator
+        edge_t = (offset[0] * direction[1] - offset[1] * direction[0]) / denominator
+        if ray_t >= 0.0 and -1e-8 <= edge_t <= 1.0 + 1e-8:
+            intersections.append(
+                (
+                    ray_t,
+                    origin[0] + ray_t * direction[0],
+                    origin[1] + ray_t * direction[1],
+                )
+            )
+    if not intersections:
+        return None
+    _distance, x, y = min(intersections)
+    return x, y
+
+
+def _companion_lane_half_width(
     seat: dict[str, Any], item: dict[str, Any], lateral_axis: tuple[float, float]
 ) -> float:
     seat_span = _projected_span(seat, lateral_axis)
