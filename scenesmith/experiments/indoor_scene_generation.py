@@ -404,6 +404,59 @@ def _fix_paths_in_yaml_file(
     console_logger.debug(f"Fixed paths in {yaml_path}")
 
 
+def _rebase_copied_gltf_uris(
+    source_tree: Path, target_tree: Path, target_scene_dir: Path
+) -> None:
+    """Copy external GLTF resources whose relative URIs break after branching."""
+    if not source_tree.exists() or not target_tree.exists():
+        return
+    for target_gltf in target_tree.rglob("*.gltf"):
+        source_gltf = source_tree / target_gltf.relative_to(target_tree)
+        if not source_gltf.exists():
+            continue
+        try:
+            payload = json.loads(target_gltf.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        changed = False
+        for collection_name in ("buffers", "images"):
+            for entry in payload.get(collection_name) or []:
+                uri = str(entry.get("uri") or "")
+                if (
+                    not uri
+                    or uri.startswith(("data:", "http://", "https://", "/"))
+                ):
+                    continue
+                target_resource = (target_gltf.parent / uri).resolve()
+                if target_resource.exists():
+                    continue
+                source_resource = (source_gltf.parent / uri).resolve()
+                if not source_resource.is_file():
+                    continue
+                source_parts = source_resource.parts
+                if "materials" in source_parts:
+                    marker_index = len(source_parts) - 1 - source_parts[::-1].index(
+                        "materials"
+                    )
+                    relative_resource = Path(*source_parts[marker_index + 1 :])
+                    copied_resource = target_scene_dir / "materials" / relative_resource
+                else:
+                    copied_resource = (
+                        target_scene_dir
+                        / "checkpoint_external"
+                        / source_resource.name
+                    )
+                copied_resource.parent.mkdir(parents=True, exist_ok=True)
+                if not copied_resource.exists():
+                    shutil.copy2(source_resource, copied_resource)
+                entry["uri"] = os.path.relpath(
+                    copied_resource, start=target_gltf.parent
+                )
+                changed = True
+        if changed:
+            target_gltf.write_text(json.dumps(payload, indent=2))
+
+
 def _copy_checkpoint_for_stage(
     source_scene_dir: Path, target_scene_dir: Path, start_stage: str
 ) -> None:
@@ -446,6 +499,14 @@ def _copy_checkpoint_for_stage(
     shutil.copytree(
         source_scene_dir / "floor_plans",
         target_scene_dir / "floor_plans",
+    )
+    # 2026-07-13 修改原因：floor/wall GLTF 可能以多级相对 URI 引用项目级
+    # materials；分叉输出目录深度变化后同一 URI 会解析到错误位置。复制缺失的
+    # 外部资源并按新 GLTF 位置重写 URI，使任意深度的 checkpoint 可独立回放。
+    _rebase_copied_gltf_uris(
+        source_scene_dir / "floor_plans",
+        target_scene_dir / "floor_plans",
+        target_scene_dir,
     )
     # Materials directory contains textures referenced by floor/wall GLTFs.
     materials_dir = source_scene_dir / "materials"

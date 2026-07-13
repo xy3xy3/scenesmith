@@ -16,6 +16,12 @@ from scenesmith.scenebenchmark_critic.adapter import (
 )
 from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
 from scenesmith.scenebenchmark_critic.config import CriticConfig, critic_config_from_any
+from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
+    evaluate_dining_place_setting_alignment,
+)
+from scenesmith.scenebenchmark_critic.dining_seat_distribution import (
+    evaluate_dining_seat_distribution,
+)
 from scenesmith.scenebenchmark_critic.manipuland_completeness import (
     evaluate_manipuland_completeness,
 )
@@ -66,9 +72,15 @@ def evaluate_room_scene(
         stage=stage,
     )
     results = run_case_pack_checks(case_pack, config=critic_config)
+    # 2026-07-13 修改原因：dining_set 只约束椅子朝桌，无法发现单椅偏离桌边
+    # 中心或同边多椅挤在一侧；追加按桌局部坐标计算的通用座椅分布检查。
+    results.extend(evaluate_dining_seat_distribution(case_pack))
     # 2026-07-09 修改原因：餐桌等成组 tabletop manipulands 可能在物理后处理
     # 后被删除；规则报告需要直接暴露必需小物缺失，而不只看几何可达性。
     results.extend(evaluate_manipuland_completeness(case_pack))
+    # 2026-07-13 修改原因：库存完整不代表餐位可用；餐盘及配套餐具还必须
+    # 与最近离散座椅一对一对应，并位于该座椅正前方。
+    results.extend(evaluate_dining_place_setting_alignment(case_pack))
     return build_evaluation_payload(
         case_pack=case_pack,
         results=results,

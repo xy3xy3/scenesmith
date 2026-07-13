@@ -50,6 +50,7 @@ FURNITURE_RELATIONS = {
     # 2026-07-10 修改原因：bedside_pair 的 FD 结果包含床头柜 front 轴平行性，
     # 需要传给 furniture critic 执行位置/朝向修复。
     "bedside_pair",
+    "dining_seat_distribution",
     "furniture_faces_furniture",
     "seat_faces_surface",
     "seating_to_media",
@@ -58,6 +59,7 @@ FURNITURE_RELATIONS = {
 }
 MANIPULAND_RELATIONS = {
     "computer_peripheral_faces_screen",
+    "dining_place_setting_alignment",
     "display_faces_user",
     "object_on_support",
     "seating_to_media",
@@ -336,6 +338,10 @@ def _manipuland_issue_is_relevant(
     if relation_type == "object_on_support":
         return subject_id in scope["object_ids"] and bool(
             set(related_ids) & scope["support_object_ids"]
+        )
+    if relation_type == "dining_place_setting_alignment":
+        return subject_id in scope["support_object_ids"] and bool(
+            set(related_ids) & scope["object_ids"]
         )
     if relation_type == "computer_peripheral_faces_screen":
         return _is_computer_peripheral(objects.get(subject_id)) and any(

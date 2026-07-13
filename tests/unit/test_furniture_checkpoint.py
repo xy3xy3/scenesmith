@@ -1,6 +1,7 @@
 """Unit tests for furniture checkpoint branching workflow."""
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -394,6 +395,34 @@ class TestCopyCheckpointForStage(unittest.TestCase):
                 target_scene_dir=target_scene,
                 start_stage="furniture",
             )
+
+    def test_copy_scene_rebases_external_floor_material_uri(self):
+        source_scene = self._create_source_scene(with_furniture_assets=False)
+        source_floor_dir = source_scene / "floor_plans" / "room" / "floors"
+        source_floor_dir.mkdir(parents=True)
+        source_material = self.source_dir / "materials" / "wood" / "color.jpg"
+        source_material.parent.mkdir(parents=True)
+        source_material.write_bytes(b"texture")
+        relative_uri = os.path.relpath(source_material, start=source_floor_dir)
+        (source_floor_dir / "floor.gltf").write_text(
+            json.dumps({"images": [{"uri": relative_uri}]})
+        )
+        target_scene = self.target_dir / "deeper" / "scene_000"
+        target_scene.parent.mkdir(parents=True)
+
+        _copy_checkpoint_for_stage(
+            source_scene_dir=source_scene,
+            target_scene_dir=target_scene,
+            start_stage="furniture",
+        )
+
+        target_gltf = target_scene / "floor_plans" / "room" / "floors" / "floor.gltf"
+        target_payload = json.loads(target_gltf.read_text())
+        rebased_uri = target_payload["images"][0]["uri"]
+        # 2026-07-13 修改原因：回放目录深度改变后，原 GLTF 相对材质路径不能
+        # 继续指向旧输出；新 URI 必须在目标 scene 内可独立解析。
+        self.assertTrue((target_gltf.parent / rebased_uri).resolve().is_file())
+        self.assertTrue((target_scene / "materials" / "wood" / "color.jpg").is_file())
 
 
 if __name__ == "__main__":

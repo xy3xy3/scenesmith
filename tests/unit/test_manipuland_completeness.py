@@ -1,5 +1,8 @@
 """Tests for manipuland completeness critic rules."""
 
+from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
+    evaluate_dining_place_setting_alignment,
+)
 from scenesmith.scenebenchmark_critic.manipuland_completeness import (
     evaluate_manipuland_completeness,
 )
@@ -226,6 +229,94 @@ def test_sideboard_description_does_not_make_it_a_dining_table_or_seat() -> None
     assert results[0]["label"] == "pass"
 
 
+def test_dining_place_settings_fail_when_side_seats_use_corner_clusters() -> None:
+    objects = [
+        _table(),
+        _oriented_seat("chair_north", x=-0.4, y=0.98, yaw_deg=180.0),
+        _oriented_seat("chair_south", x=0.4, y=-0.98, yaw_deg=0.0),
+        _oriented_seat("chair_east", x=1.45, y=0.0, yaw_deg=90.0),
+        _oriented_seat("chair_west", x=-1.38, y=0.0, yaw_deg=-90.0),
+        _positioned_item("plate_southwest", "dinner_plate", -0.45, -0.28),
+        _positioned_item("plate_southeast", "dinner_plate", 0.45, -0.28),
+        _positioned_item("plate_northwest", "dinner_plate", -0.45, 0.28),
+        _positioned_item("plate_northeast", "dinner_plate", 0.45, 0.28),
+        _positioned_item("utensil_southwest", "dining_utensil", -0.62, -0.28),
+        _positioned_item("utensil_southeast", "dining_utensil", 0.62, -0.28),
+        _positioned_item("utensil_northwest", "dining_utensil", -0.62, 0.28),
+        _positioned_item("utensil_northeast", "dining_utensil", 0.62, 0.28),
+    ]
+
+    result = evaluate_dining_place_setting_alignment(
+        _case_pack(
+            objects,
+            prompt="Table settings for four including plates and cutlery.",
+        )
+    )[0]
+
+    # 2026-07-13 修改原因：复现四套餐具统一按桌面四角排布，导致左右椅的
+    # 餐位偏离座椅正面。规则应按椅子 front axis，而不是桌面象限判定。
+    assert result["label"] == "fail"
+    assert result["relation_type"] == "dining_place_setting_alignment"
+    by_seat = {
+        row["seat_id"]: row for row in result["diagnostics"]["assignments"]
+    }
+    assert by_seat["chair_east"]["aligned"] is False
+    assert by_seat["chair_west"]["aligned"] is False
+    assert by_seat["chair_north"]["aligned"] is True
+    assert by_seat["chair_south"]["aligned"] is True
+
+
+def test_dining_place_settings_pass_when_each_cluster_uses_seat_front() -> None:
+    objects = [
+        _table(),
+        _oriented_seat("chair_north", x=-0.4, y=0.98, yaw_deg=180.0),
+        _oriented_seat("chair_south", x=0.4, y=-0.98, yaw_deg=0.0),
+        _oriented_seat("chair_east", x=1.45, y=0.0, yaw_deg=90.0),
+        _oriented_seat("chair_west", x=-1.38, y=0.0, yaw_deg=-90.0),
+        _positioned_item("plate_north", "dinner_plate", -0.4, 0.28),
+        _positioned_item("plate_south", "dinner_plate", 0.4, -0.28),
+        _positioned_item("plate_east", "dinner_plate", 0.45, 0.0),
+        _positioned_item("plate_west", "dinner_plate", -0.45, 0.0),
+        _positioned_item("utensil_north", "dining_utensil", -0.55, 0.28),
+        _positioned_item("utensil_south", "dining_utensil", 0.55, -0.28),
+        _positioned_item("utensil_east", "dining_utensil", 0.52, -0.12),
+        _positioned_item("utensil_west", "dining_utensil", -0.52, 0.12),
+    ]
+
+    result = evaluate_dining_place_setting_alignment(
+        _case_pack(
+            objects,
+            prompt="Table settings for four including plates and cutlery.",
+        )
+    )[0]
+
+    assert result["label"] == "pass"
+    assert all(
+        row["aligned"] and not row["misaligned_companion_ids"]
+        for row in result["diagnostics"]["assignments"]
+    )
+
+
+def test_dining_alignment_ignores_decorative_tabletop_objects() -> None:
+    objects = [
+        _table(),
+        _oriented_seat("chair_north", x=0.0, y=0.98, yaw_deg=180.0),
+        _oriented_seat("chair_south", x=0.0, y=-0.98, yaw_deg=0.0),
+        _positioned_item("decorative_plate_0", "decorative_plate", -0.3, 0.0),
+        _positioned_item("decorative_plate_1", "decorative_plate", 0.3, 0.0),
+    ]
+
+    assert (
+        evaluate_dining_place_setting_alignment(
+            _case_pack(
+                objects,
+                prompt="Decorative ceramic plates displayed on the dining table.",
+            )
+        )
+        == []
+    )
+
+
 def _case_pack(objects: list[dict], *, prompt: str) -> dict:
     return {"task_instruction": prompt, "scene_geometry": {"objects": objects}}
 
@@ -276,3 +367,24 @@ def _seat(object_id: str, *, x: float, y: float) -> dict:
         },
         "functional_hints": {"scene_object_type": "furniture"},
     }
+
+
+def _oriented_seat(
+    object_id: str, *, x: float, y: float, yaw_deg: float
+) -> dict:
+    seat = _seat(object_id, x=x, y=y)
+    seat["yaw_deg"] = yaw_deg
+    return seat
+
+
+def _positioned_item(object_id: str, name: str, x: float, y: float) -> dict:
+    item = _item(object_id, name)
+    width = 0.27 if "plate" in name or "bowl" in name else 0.06
+    depth = width if width > 0.1 else 0.2
+    item["bbox_world"] = {
+        "center": [x, y, 0.9],
+        "size": [width, depth, 0.04],
+        "min": [x - width / 2.0, y - depth / 2.0, 0.88],
+        "max": [x + width / 2.0, y + depth / 2.0, 0.92],
+    }
+    return item
