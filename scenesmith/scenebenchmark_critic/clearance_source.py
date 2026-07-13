@@ -47,6 +47,14 @@ _VERTICAL_TYPES = {"上方站立", "above", "overhead"}
 # Symmetric / no-front objects: keep-clear ring on all four horizontal sides.
 _RING_DIRECTIONS = {"四周", "ring", "all"}
 _STRUCTURAL_BLOCKER_CATEGORIES = {"floor", "wall", "ceiling", "door", "window"}
+_THIN_COVERING_CATEGORIES = {
+    "area_rug",
+    "carpet",
+    "floor_covering",
+    "floor_mat",
+    "mat",
+    "rug",
+}
 _DISPLAY_CLEARANCE_CATEGORIES = {
     "display",
     "laptop",
@@ -576,6 +584,10 @@ def _is_clearance_blocker_candidate(obj: dict[str, Any]) -> bool:
     object_type = str(obj.get("object_type") or "").lower()
     if category in _STRUCTURAL_BLOCKER_CATEGORIES:
         return False
+    # 2026-07-13 修改原因：rug/mat 等薄覆盖物位于通行面下方，不会阻挡
+    # 人体接近或落座；二维 keep-clear 投影不应把它们当成立体障碍。
+    if object_type == "thin_covering" or category in _THIN_COVERING_CATEGORIES:
+        return False
     return object_type not in _STRUCTURAL_BLOCKER_CATEGORIES
 
 
@@ -641,6 +653,65 @@ def _support_surface_owner_families(
     return owners
 
 
+def _support_surface_owner_ids(
+    objects: dict[str, dict[str, Any]]
+) -> dict[str, str]:
+    owners: dict[str, str] = {}
+    for object_id, obj in objects.items():
+        for region in obj.get("support_regions") or []:
+            if not isinstance(region, dict):
+                continue
+            region_id = str(region.get("region_id") or "").strip()
+            if region_id:
+                owners[region_id] = str(object_id)
+    return owners
+
+
+def _is_support_owner_intrusion(
+    subject: dict[str, Any],
+    blocker: dict[str, Any] | None,
+    surface_owner_ids: dict[str, str],
+) -> bool:
+    if blocker is None:
+        return False
+    surface_id = _parent_surface_id(subject)
+    return bool(
+        surface_id
+        and surface_owner_ids.get(surface_id) == str(blocker.get("id") or "")
+    )
+
+
+def _is_intended_seating_supported_object_intrusion(
+    subject: dict[str, Any],
+    subject_record: dict[str, Any],
+    blocker: dict[str, Any] | None,
+) -> bool:
+    # 2026-07-13 修改原因：办公椅/餐椅的落座区域会在二维投影中穿过桌面；
+    # 放在桌面支撑面上的 monitor/lamp/tableware 不会占用地面落座空间。
+    if blocker is None:
+        return False
+    return bool(
+        subject_record.get("clearance_type") in _SEATING_TYPES
+        and _category_family_for_object(subject) == "seat"
+        and blocker.get("scene_object_type") == "manipuland"
+        and blocker.get("parent_surface_family") == "surface"
+    )
+
+
+def _is_intended_display_seating_intrusion(
+    subject: dict[str, Any], blocker: dict[str, Any] | None
+) -> bool:
+    # 2026-07-13 修改原因：桌面显示器的使用区天然由使用者座椅占据；
+    # 仅对已有 parent surface 的桌面显示设备排除 seat，避免影响墙挂电视。
+    if blocker is None:
+        return False
+    return bool(
+        _norm_category(subject) in _DISPLAY_CLEARANCE_CATEGORIES
+        and _parent_surface_id(subject)
+        and blocker.get("family") == "seat"
+    )
+
+
 def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Build one clearance check per object that reserves a keep-clear region.
 
@@ -650,6 +721,7 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
     deterministic passthrough (no VLM).
     """
     surface_owner_families = _support_surface_owner_families(objects)
+    surface_owner_ids = _support_surface_owner_ids(objects)
     world_boxes = []
     for oid, obj in objects.items():
         if not isinstance(obj.get("bbox_world"), dict):
@@ -662,6 +734,7 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
                 "id": oid,
                 "bbox": obj.get("bbox_world"),
                 "family": _category_family_for_object(obj),
+                "scene_object_type": str(obj.get("object_type") or "").lower(),
                 "parent_surface_id": parent_surface_id,
                 "parent_surface_family": surface_owner_families.get(
                     parent_surface_id
@@ -694,6 +767,20 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
             for hit in hits
             if not _is_intended_desktop_peripheral_intrusion(
                 obj, objects.get(str(hit.get("object_id") or ""))
+            )
+            and not _is_support_owner_intrusion(
+                obj,
+                objects.get(str(hit.get("object_id") or "")),
+                surface_owner_ids,
+            )
+            and not _is_intended_seating_supported_object_intrusion(
+                obj,
+                record,
+                world_box_by_id.get(str(hit.get("object_id") or "")),
+            )
+            and not _is_intended_display_seating_intrusion(
+                obj,
+                world_box_by_id.get(str(hit.get("object_id") or "")),
             )
             and not _is_intended_tabletop_setting_intrusion(
                 obj,

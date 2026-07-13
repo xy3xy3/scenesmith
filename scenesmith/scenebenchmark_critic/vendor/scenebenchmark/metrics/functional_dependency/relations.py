@@ -126,7 +126,9 @@ def _infer_relation_type(subject: dict[str, Any], target: dict[str, Any]) -> str
         )
     ) and _is_nightstand_target(target):
         return "bed_to_nightstand"
-    if _is_supported_small_subject(subject) and _is_primary_support_target(target):
+    if (
+        _is_supported_small_subject(subject) and _is_primary_support_target(target)
+    ) or _is_soft_furnishing_seating_support_pair(subject, target):
         return "object_on_support"
     if _is_lamp_subject(subject) and _is_lamp_surface_target(target):
         return "lamp_to_surface"
@@ -369,7 +371,9 @@ def _is_support_rescue_candidate(
     relation_type: str,
 ) -> bool:
     if relation_type == "object_on_support":
-        return _is_primary_support_target(candidate)
+        return _is_primary_support_target(
+            candidate
+        ) or _is_soft_furnishing_seating_support_pair(subject, candidate)
     if relation_type != "lamp_to_surface":
         return False
     if _lamp_rescue_rejects_target(candidate):
@@ -1401,8 +1405,10 @@ def _relation_target_is_valid(
             or (profile.source == "explicit" and profile.is_sleeping_surface)
         ) and _is_nightstand_target(target)
     if relation_type == "object_on_support":
-        return _is_supported_small_subject(subject) and _is_primary_support_target(
-            target
+        return (
+            _is_supported_small_subject(subject) and _is_primary_support_target(target)
+        ) or _is_soft_furnishing_seating_support_pair(
+            subject, target
         )
     if relation_type == "lamp_to_surface":
         return _is_lamp_subject(subject) and _is_lamp_surface_target(target)
@@ -1425,3 +1431,17 @@ def _relation_target_is_valid(
     if relation_type == "generic_near_relation":
         return True
     return False
+
+
+def _is_soft_furnishing_seating_support_pair(
+    subject: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    # 2026-07-13 修改原因：primary support 默认排除 seating，适合杯盘等硬质
+    # 小物，但抱枕、靠垫、毯子本来就应由 sofa/chair 的座面支撑。
+    if _scene_object_type(subject) != "manipuland":
+        return False
+    if not _category_token_has_any(
+        subject, ("pillow", "cushion", "bolster", "blanket", "throw")
+    ):
+        return False
+    return object_category(target) in SEATING or _category_group(target) == "seating"

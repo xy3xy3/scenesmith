@@ -10,6 +10,8 @@ import logging
 
 from typing import TYPE_CHECKING
 
+from pydrake.math import RigidTransform
+
 from scenesmith.agent_utils.rescale_result import RescaleErrorType, RescaleResult
 from scenesmith.agent_utils.response_datatypes import BoundingBox3D
 from scenesmith.agent_utils.room import RoomScene
@@ -104,6 +106,13 @@ def rescale_object_common(
     # Note: scene.objects is a dict, so iterate over values not keys.
     affected_objects = [o for o in scene.objects.values() if o.sdf_path == sdf_path]
     affected_object_ids = [str(o.object_id) for o in affected_objects]
+    supported_bottom_z: dict[str, float] = {}
+    for affected_obj in affected_objects:
+        if affected_obj.placement_info is None:
+            continue
+        bounds = affected_obj.compute_world_bounds()
+        if bounds is not None:
+            supported_bottom_z[str(affected_obj.object_id)] = float(bounds[0][2])
 
     console_logger.info(
         f"Rescaling {object_type_name} '{object_id}' by {scale_factor:.3f}x "
@@ -117,6 +126,22 @@ def rescale_object_common(
         # Update all affected objects' bounding boxes and invalidate surfaces.
         for affected_obj in affected_objects:
             affected_obj.apply_scale(scale_factor)
+            previous_bottom = supported_bottom_z.get(str(affected_obj.object_id))
+            if previous_bottom is None:
+                continue
+            scaled_bounds = affected_obj.compute_world_bounds()
+            if scaled_bounds is None:
+                continue
+            # 2026-07-13 修改原因：已放置小物缩放时局部 bbox 会绕资产原点
+            # 扩张；保持 world bottom 不变，避免缩放后从支撑面悬空或下沉。
+            delta_z = previous_bottom - float(scaled_bounds[0][2])
+            if abs(delta_z) <= 1e-9:
+                continue
+            translation = affected_obj.transform.translation().copy()
+            translation[2] += delta_z
+            affected_obj.transform = RigidTransform(
+                affected_obj.transform.rotation(), translation
+            )
 
         # Update asset registry if provided (keeps registry in sync for future placements).
         if asset_registry is not None:

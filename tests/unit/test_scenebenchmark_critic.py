@@ -1220,6 +1220,41 @@ def test_room_scene_adapter_turns_explicit_target_relation_into_fd_check(
     assert result["relation_type"] == "object_on_support"
 
 
+def test_explicit_support_relation_deduplicates_matching_placement(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    table = scene.objects[UniqueID("table_0")]
+    table.metadata["category_norm"] = "nightstand"
+    mug = scene.objects[UniqueID("mug_0")]
+    mug.metadata.update(
+        {
+            "category_norm": "mug",
+            "functional_categories": ["graspable"],
+            "explicit_target_relation": ["nightstand"],
+        }
+    )
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="scene_after_manipulands",
+        metrics=["functional_dependency"],
+    )
+    matching_checks = [
+        check
+        for check in case_pack["checks"]
+        if check.get("metric") == "functional_dependency"
+        and check.get("subject_id") == "mug_0"
+        and check.get("relation_type") == "object_on_support"
+        and "table_0" in (check.get("target_ids") or [])
+    ]
+
+    # 2026-07-13 修改原因：实际 placement 已完整表达 mug->nightstand 支撑关系，
+    # 显式类别候选不能再产生第二条同义检查并双倍放大同一个失败。
+    assert len(matching_checks) == 1
+    assert matching_checks[0].get("check_source") != "asset_explicit_target_relation"
+
+
 def test_explicit_graspable_object_relation_matches_small_placeable_target(
     tmp_path: Path,
 ) -> None:
@@ -3370,7 +3405,7 @@ def test_single_room_offline_smoke_runs_fd_sa_and_template_proposer(
     )
 
 
-def test_spatial_accessibility_checks_manipuland_placeable_objects(
+def test_spatial_accessibility_inherits_for_supported_manipulands(
     tmp_path: Path,
 ) -> None:
     payload = evaluate_room_scene(
@@ -3389,7 +3424,9 @@ def test_spatial_accessibility_checks_manipuland_placeable_objects(
         for result in payload["results"]
         if result["metric"] == "spatial_accessibility"
     }
-    assert "mug_0" in subjects
+    # 2026-07-13 修改原因：桌面 mug 由 table 的可达性与 object_on_support
+    # 共同覆盖，不应再从 connected floor 对 mug 单独测距。
+    assert "mug_0" not in subjects
 
 
 def test_spatial_accessibility_promotes_cached_ignored_manipuland_policy(
@@ -3418,7 +3455,53 @@ def test_spatial_accessibility_promotes_cached_ignored_manipuland_policy(
     }
 
     assert mug_record["functional_hints"]["accessibility_policy"] == "required"
-    assert "mug_0" in checked_subjects
+    assert "mug_0" not in checked_subjects
+
+
+def test_supported_manipuland_can_request_independent_accessibility(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    mug = scene.objects[UniqueID("mug_0")]
+    mug.metadata["functional_hints"] = {
+        "functional_categories": ["graspable"],
+        "scene_object_type": "manipuland",
+        "independent_access_required": True,
+    }
+
+    case_pack = room_scene_to_case_pack(
+        scene,
+        stage="final_scene",
+        metrics=["spatial_accessibility"],
+    )
+
+    assert any(
+        check["metric"] == "spatial_accessibility"
+        and check["subject_id"] == "mug_0"
+        for check in case_pack["checks"]
+    )
+
+
+def test_throw_pillow_can_use_seating_support_surface() -> None:
+    pillow = _benchmark_obj(
+        "throw_pillow_0", "throw_pillow", (0.0, 0.0, 0.65), (0.4, 0.2, 0.2)
+    )
+    pillow["object_type"] = "manipuland"
+    pillow["functional_hints"] = {
+        "functional_categories": ["graspable"],
+        "scene_object_type": "manipuland",
+        "category_group": "small_object",
+    }
+    sofa = _benchmark_obj("sofa_0", "sofa", (0.0, 0.0, 0.4), (2.0, 0.9, 0.8))
+    sofa["object_type"] = "furniture"
+    sofa["functional_hints"] = {
+        "functional_categories": ["sittable", "supportable"],
+        "scene_object_type": "furniture",
+        "category_group": "seating",
+    }
+
+    # 2026-07-13 修改原因：软装与座面的 support 关系是正常功能拓扑。
+    assert _relation_target_is_valid(pillow, sofa, "object_on_support")
 
 
 def test_spatial_accessibility_uses_grid_reach_diagnostics(tmp_path: Path) -> None:

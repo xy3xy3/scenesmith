@@ -158,6 +158,116 @@ def test_gated_small_item_builds_no_check():
     assert clearance_source.build_clearance_checks({"lamp": lamp}) == []
 
 
+def test_floor_covering_does_not_block_functional_clearance() -> None:
+    table = _obj(
+        "coffee_table_0",
+        [-0.4, -0.4, 0.0],
+        [0.4, 0.4, 0.5],
+        clearance={
+            **_sit_record(),
+            "clearance_type": "接近",
+            "depth_m": 0.5,
+        },
+        name="coffee table",
+    )
+    table.update({"category": "coffee_table", "object_type": "furniture"})
+    rug = _obj("rug_0", [-1.0, 0.3, 0.0], [1.0, 1.0, 0.02], name="area rug")
+    rug.update({"category": "rug", "object_type": "thin_covering"})
+
+    result = clearance_source.evaluate_clearance(
+        clearance_source.build_clearance_checks(
+            {"coffee_table_0": table, "rug_0": rug}
+        )[0]
+    )
+
+    # 2026-07-13 修改原因：薄地毯覆盖接近区不等于阻挡人体通行。
+    assert result["label"] == "pass"
+
+
+def test_supported_monitor_clearance_ignores_support_and_user_seat() -> None:
+    monitor = _obj(
+        "monitor_0",
+        [-0.2, -0.1, 0.7],
+        [0.2, 0.1, 1.1],
+        clearance={
+            **_sit_record(),
+            "clearance_type": "接近",
+            "depth_m": 0.6,
+        },
+        name="computer monitor",
+    )
+    monitor.update(
+        {
+            "category": "monitor",
+            "object_type": "manipuland",
+            "placement_info": {"parent_surface_id": "desk_top"},
+        }
+    )
+    desk = _obj("desk_0", [-0.5, 0.1, 0.0], [0.5, 0.8, 0.75], name="desk")
+    desk.update(
+        {
+            "category": "desk",
+            "object_type": "furniture",
+            "support_regions": [{"region_id": "desk_top"}],
+        }
+    )
+    chair = _obj(
+        "office_chair_0", [-0.3, 0.15, 0.0], [0.3, 0.65, 1.0], name="office chair"
+    )
+    chair.update({"category": "office_chair", "object_type": "furniture"})
+
+    result = clearance_source.evaluate_clearance(
+        next(
+            check
+            for check in clearance_source.build_clearance_checks(
+                {"monitor_0": monitor, "desk_0": desk, "office_chair_0": chair}
+            )
+            if check["subject_id"] == "monitor_0"
+        )
+    )
+
+    assert result["label"] == "pass"
+
+
+def test_seat_clearance_ignores_manipulands_on_work_surface() -> None:
+    chair = _obj(
+        "office_chair_0",
+        [-0.25, -0.25, 0.0],
+        [0.25, 0.25, 0.9],
+        clearance=_sit_record(),
+        name="office chair",
+    )
+    chair.update({"category": "office_chair", "object_type": "furniture"})
+    desk = _obj("desk_0", [2.0, 2.0, 0.0], [3.0, 3.0, 0.8], name="desk")
+    desk.update(
+        {
+            "category": "desk",
+            "object_type": "furniture",
+            "support_regions": [{"region_id": "desk_top"}],
+        }
+    )
+    lamp = _obj("lamp_0", [-0.1, 0.26, 0.7], [0.1, 0.34, 1.1], name="desk lamp")
+    lamp.update(
+        {
+            "category": "desk_lamp",
+            "object_type": "manipuland",
+            "placement_info": {"parent_surface_id": "desk_top"},
+        }
+    )
+
+    result = clearance_source.evaluate_clearance(
+        next(
+            check
+            for check in clearance_source.build_clearance_checks(
+                {"office_chair_0": chair, "desk_0": desk, "lamp_0": lamp}
+            )
+            if check["subject_id"] == "office_chair_0"
+        )
+    )
+
+    assert result["label"] == "pass"
+
+
 def test_asset_id_resolves_hssd_mesh_id_first():
     # Real SceneSmith objects carry the HSSD hash under hssd_mesh_id, not asset_id.
     assert clearance_source.asset_id_from_metadata(

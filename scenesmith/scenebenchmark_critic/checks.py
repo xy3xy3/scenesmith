@@ -331,6 +331,15 @@ def _is_spatial_access_target(candidate: dict[str, Any]) -> bool:
 
 def _should_drop_small_spatial_accessibility(obj: dict[str, Any]) -> bool:
     if _scene_object_type(obj) == "manipuland":
+        placement = obj.get("placement_info") or {}
+        hints = obj.get("functional_hints") or {}
+        # 2026-07-13 修改原因：桌面、书架、衣柜内的小物应继承支撑家具的
+        # 可达性；逐个从 connected floor 测距会让支撑家具本身成为障碍。
+        # 只有明确声明独立可达性的特殊小物才保留 standalone SA 检查。
+        if placement.get("parent_surface_id") and not bool(
+            hints.get("independent_access_required")
+        ):
+            return True
         return False
     if is_small_object(obj):
         return True
@@ -439,6 +448,15 @@ def _build_explicit_target_relation_checks(
             for target in compatible_targets
             if target.get("id")
         ]
+        # 2026-07-13 修改原因：placement/metadata 已对同一 subject-support 对建立
+        # object_on_support 检查时，显式类别候选会再次包含实际支撑物并重复计分。
+        # 仅在实际目标属于合法显式候选时去重；放在错误类别支撑物上的对象仍保留
+        # 显式关系检查，从而不会掩盖语义支撑错误。
+        if relation_type == "object_on_support" and any(
+            f"fd_{subject['id']}_{target_id}_{relation_type}" in seen_check_ids
+            for target_id in target_ids
+        ):
+            continue
         check_id = f"fd_{subject['id']}_{'_'.join(target_ids)}_{relation_type}"
         if check_id in seen_check_ids:
             continue
