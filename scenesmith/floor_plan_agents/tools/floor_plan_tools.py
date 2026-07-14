@@ -401,6 +401,21 @@ class FloorPlanTools(DoorWindowMixin, OpenPlanMixin):
             return self._remove_window_impl(window_id)
 
         @function_tool
+        def resize_window(
+            window_id: str,
+            width: float,
+            height: float | None = None,
+            sill_height: float | None = None,
+        ) -> Result:
+            """Resize an existing window around its current center."""
+            return self._resize_window_impl(
+                window_id=window_id,
+                width=width,
+                height=height,
+                sill_height=sill_height,
+            )
+
+        @function_tool
         def get_material(description: str) -> MaterialResult:
             """Search for a material by description.
 
@@ -485,6 +500,7 @@ class FloorPlanTools(DoorWindowMixin, OpenPlanMixin):
             "remove_door": remove_door,
             "add_window": add_window,
             "remove_window": remove_window,
+            "resize_window": resize_window,
             "get_material": get_material,
             "set_room_materials": set_room_materials,
             "set_exterior_material": set_exterior_material,

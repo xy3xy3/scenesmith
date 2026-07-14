@@ -11,7 +11,7 @@ prompt: |
   Use the appropriate tools to make changes:
   - resize_room() to adjust room sizes
   - add_door()/remove_door() to modify doors
-  - add_window()/remove_window() to modify windows
+  - add_window()/remove_window()/resize_window() to modify windows
   - set_room_materials() to change materials
   - validate() to check your changes
 

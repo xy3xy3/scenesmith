@@ -203,12 +203,21 @@ def _contract_is_usable(
     if relation_type not in CONTRACT_RELATIONS:
         return False
 
+    # 2026-07-14 修改原因：dining_chair 被门净空或桌椅碰撞推到墙边后，旧逻辑
+    # 会把它重新识别为 back_against_wall，覆盖“餐椅属于餐桌”的功能依赖，导致
+    # 椅子不再保持餐桌座位线。餐椅存在餐桌时，餐桌 contract 优先于墙 contract。
+    if relation_type == "back_against_wall" and _nearest_dining_table(subject, objects):
+        return False
+
     # 2026-07-11 修改原因：书房访客椅可能先被临时绑定到书桌，随后才按
     # prompt 移到侧墙。椅子已经贴墙且远离桌面时必须废弃旧 contract，
     # 否则稳定目标会持续强迫空闲椅朝向书桌，破坏背靠墙且相互平行的布局。
     if relation_type == "seating_to_work_surface":
         target = objects_by_id[target_ids[0]]
-        if _is_wall_anchored_standalone_seating(subject, target, objects):
+        if (
+            _nearest_dining_table(subject, objects) is None
+            and _is_wall_anchored_standalone_seating(subject, target, objects)
+        ):
             return False
     elif relation_type == "back_against_wall":
         wall = _standalone_wall_target(subject, objects)
@@ -234,6 +243,20 @@ def _plan_contract(
     media_intent: bool,
     stage: str,
 ) -> dict[str, Any] | None:
+    # 2026-07-14 修改原因：餐桌座位关系是显式功能拓扑，优先于几何上更近的
+    # 墙面；否则门净空把 dining_chair 推近墙后会发生 wall/table contract 抖动。
+    dining_table = _nearest_dining_table(subject, objects)
+    if dining_table is not None:
+        return _contract(
+            subject,
+            dining_table,
+            relation_type="seating_to_work_surface",
+            stage=stage,
+            reason=(
+                "dining chair belongs to the nearest dining table; table seating "
+                "topology takes priority over incidental wall proximity"
+            ),
+        )
     wall = _standalone_wall_target(subject, objects)
     if wall is not None:
         return _contract(
@@ -275,6 +298,30 @@ def _plan_contract(
             "surface"
         ),
     )
+
+
+def _nearest_dining_table(
+    subject: dict[str, Any], objects: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Return the closest dining table for a dining chair, if one exists."""
+    if object_category(subject) != "dining_chair":
+        return None
+    candidates = [
+        obj
+        for obj in objects
+        if obj.get("id") != subject.get("id")
+        and (
+            object_category(obj) in {"dining_table", "dining_table_set"}
+            or "dining_table" in _object_text(obj)
+        )
+    ]
+    candidates.sort(
+        key=lambda obj: (
+            distance_xy(subject, obj) if distance_xy(subject, obj) is not None else 999.0,
+            str(obj.get("id") or ""),
+        )
+    )
+    return candidates[0] if candidates else None
 
 
 def _contract(

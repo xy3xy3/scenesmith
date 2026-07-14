@@ -1307,6 +1307,11 @@ def filter_window_violations_by_agent(
 
     filtered = []
     for v in violations:
+        # 2026-07-14 修改原因：家具仅高出窗台少量时通常是可接受的 sideboard /
+        # console 布置，不应触发 furniture agent 反复换墙并造成挡门副作用；
+        # 严重遮挡仍正常进入修复上下文。
+        if v.furniture_top_height - v.sill_height <= 0.15:
+            continue
         obj_type = _get_object_type_for_collision_id(v.furniture_id, scene)
         if _is_bed_window_warning_exempt_object(v.furniture_id, scene):
             continue

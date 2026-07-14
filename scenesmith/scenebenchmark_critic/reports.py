@@ -107,8 +107,8 @@ def format_prompt_context(payload: dict[str, Any], *, max_issues: int = 8) -> st
         )
         if str(result.get("check_id") or "").startswith("window_clearance__"):
             lines.append(
-                "  Repair priority: remove the window or move it to a clear wall "
-                "position before moving otherwise appropriate furniture."
+                "  Repair priority: shrink the window first, then move it, then "
+                "remove it; only move otherwise appropriate furniture afterward."
             )
     return "\n".join(lines)
 

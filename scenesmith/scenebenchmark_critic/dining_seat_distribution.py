@@ -99,18 +99,31 @@ def _evaluate_table(
             deviation = abs(position - slot)
             allowed = max(0.08, min(0.35 * chair_span, 0.08 * edge_length))
             passed = deviation <= allowed
+            # 2026-07-14 修改原因：同一长边多椅的历史分布检查只负责槽位，
+            # 不应因旧测试/布局没有逐椅朝向数据而改变其语义；单椅边位才要求
+            # 严格正对桌心，正好覆盖四边各一把 dining chair 的场景。
+            facing_error = _seat_facing_error_deg(seat, center) if count == 1 else None
+            facing_passed = facing_error is None or facing_error <= 10.0
             diagnostics.append({
                 "seat_id": str(seat["id"]), "edge": edge,
                 "tangent_position_m": round(position, 4),
                 "target_position_m": round(slot, 4),
                 "deviation_m": round(deviation, 4),
                 "allowed_deviation_m": round(allowed, 4), "aligned": passed,
+                "facing_error_deg": round(facing_error, 2) if facing_error is not None else None,
+                "facing_allowed_error_deg": 10.0,
+                "facing_aligned": facing_passed,
             })
             if not passed:
                 direction = "positive" if slot > position else "negative"
                 failures.append(
                     f"`{seat['id']}` on the {edge} edge is {deviation:.2f}m from "
                     f"its evenly distributed slot; move it in the {direction} edge direction"
+                )
+            if not facing_passed:
+                failures.append(
+                    f"`{seat['id']}` on the {edge} edge is rotated {facing_error:.1f}° "
+                    "away from the table center; align its front normal to the table"
                 )
     if not diagnostics:
         return None
@@ -119,7 +132,11 @@ def _evaluate_table(
     failed = bool(failures)
     reason = (
         "Dining chairs on each rectangular table edge must be centered when alone "
-        "and evenly distributed when multiple chairs share the edge. " + "; ".join(failures)
+        "and evenly distributed when multiple chairs share the edge. "
+        "For a dining chair, use an exact table-local slot and do not use generic "
+        "center snapping or shift the chair along the edge normal to resolve a "
+        "door conflict; move the table or door-compatible layout instead. "
+        + "; ".join(failures)
         if failed else
         "Dining chairs are centered or evenly distributed along their respective table edges."
     )
@@ -141,6 +158,26 @@ def _seat_tangent_span(seat: dict[str, Any], edge: str, table_yaw: float) -> flo
         return 0.45
     axis = (math.cos(table_yaw), math.sin(table_yaw)) if edge in {"front", "back"} else (-math.sin(table_yaw), math.cos(table_yaw))
     return max(0.2, abs(axis[0]) * float(size[0]) + abs(axis[1]) * float(size[1]))
+
+
+def _seat_facing_error_deg(
+    seat: dict[str, Any], table_center: tuple[float, float] | None
+) -> float | None:
+    """Return angular error between chair front (+local Y) and table center."""
+    # 2026-07-14 修改原因：check_facing_tool 的宽松通过阈值会把约 13° 的
+    # dining_chair_2 偏角判为正确；餐桌座位检查需要更严格的 10° 误差。
+    if table_center is None:
+        return None
+    center = bbox_center_xy(seat)
+    if center is None or "yaw_deg" not in seat:
+        return None
+    dx = float(table_center[0]) - float(center[0])
+    dy = float(table_center[1]) - float(center[1])
+    if abs(dx) + abs(dy) <= 1e-6:
+        return None
+    desired = math.degrees(math.atan2(-dx, dy))
+    actual = float(seat.get("yaw_deg") or 0.0)
+    return abs((actual - desired + 180.0) % 360.0 - 180.0)
 
 
 def _is_round_table(table: dict[str, Any]) -> bool:

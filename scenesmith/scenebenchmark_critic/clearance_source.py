@@ -839,6 +839,7 @@ def build_window_clearance_checks(
             continue
         sill = float(window.get("sill_height") or 0.0)
         blockers: list[str] = []
+        advisory_blockers: list[str] = []
         for object_id, obj in objects.items():
             if _norm_category(obj) in _STRUCTURAL_BLOCKER_CATEGORIES:
                 continue
@@ -858,7 +859,13 @@ def build_window_clearance_checks(
                 and float(omin[1]) < float(wmax[1])
                 and float(omax[1]) > float(wmin[1])
             ):
-                blockers.append(str(object_id))
+                # 2026-07-14 修改原因：sideboard 等靠墙家具略高于窗台是常见
+                # 且可接受的布局（旧 physics 检查中约 9cm 超高即属此类）。只有
+                # 明显高出窗台的物体才应触发 furniture agent 移动/换窗循环。
+                if float(omax[2]) - sill <= 0.15:
+                    advisory_blockers.append(str(object_id))
+                else:
+                    blockers.append(str(object_id))
         checks.append(
             {
                 "check_id": f"window_clearance__{window_id}",
@@ -872,10 +879,19 @@ def build_window_clearance_checks(
                 "clearance_result": {
                     "label": "fail" if blockers else "pass",
                     "blocking_objects": sorted(set(blockers)),
+                    "advisory_blocking_objects": sorted(set(advisory_blockers)),
                     "window_id": window_id,
                     "sill_height": sill,
+                    "advisory_reason": (
+                        "minor sill-height overlap; do not move wall-backed furniture "
+                        "unless the window is substantially blocked"
+                        if advisory_blockers and not blockers
+                        else None
+                    ),
                     "repair_priority": [
-                        "remove_window_or_move_window",
+                        "shrink_window",
+                        "move_window",
+                        "remove_window",
                         "move_blocking_furniture",
                     ],
                 },
