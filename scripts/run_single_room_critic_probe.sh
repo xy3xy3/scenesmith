@@ -548,7 +548,27 @@ build_port_args() {
                 "manipuland_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 374))]"
             )
             ;;
-        shared_base|*)
+        shared_base)
+            # 2026-07-14 修改原因：shared_base 也支持多 batch 并发时，必须为
+            # 每个 floor-plan 进程分配独立的检索、材料和 Blender 端口。
+            PORT_ARGS=(
+                "experiment.geometry_generation_server.port=$((block_base + 5))"
+                "experiment.hssd_retrieval_server.port=$((block_base + 6))"
+                "experiment.articulated_retrieval_server.port=$((block_base + 7))"
+                "experiment.materials_retrieval_server.port=$((block_base + 8))"
+                "experiment.objaverse_retrieval_server.port=$((block_base + 9))"
+                "floor_plan_agent.rendering.blender_server_port_range=[$((block_base + 100)),$((block_base + 124))]"
+                "furniture_agent.rendering.blender_server_port_range=[$((block_base + 125)),$((block_base + 199))]"
+                "wall_agent.rendering.blender_server_port_range=[$((block_base + 200)),$((block_base + 224))]"
+                "ceiling_agent.rendering.blender_server_port_range=[$((block_base + 225)),$((block_base + 249))]"
+                "manipuland_agent.rendering.blender_server_port_range=[$((block_base + 200)),$((block_base + 249))]"
+                "furniture_agent.collision_geometry.server_port_range=[$((block_base + 250)),$((block_base + 324))]"
+                "wall_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 349))]"
+                "ceiling_agent.collision_geometry.server_port_range=[$((block_base + 350)),$((block_base + 374))]"
+                "manipuland_agent.collision_geometry.server_port_range=[$((block_base + 325)),$((block_base + 374))]"
+            )
+            ;;
+        *)
             PORT_ARGS=()
             ;;
     esac
@@ -697,9 +717,11 @@ run_mode() {
     local active_pids=()
     local active_labels=()
 
-    if [ "$run_kind" != "shared_base" ] && [ "$CRITIC_PROBE_INNER_PARALLELISM" -gt 1 ]; then
+    if [ "$CRITIC_PROBE_INNER_PARALLELISM" -gt 1 ]; then
         parallel_batches=true
         mkdir -p "$OUTPUT_ROOT/$run_kind"
+        # 2026-07-14 修改原因：shared_base 与 critic 分支统一使用动态进程池，
+        # 由 port_block_base 按 run_kind 和 batch_index 隔离服务端口。
         echo "启用 $run_kind 分支内并发: $CRITIC_PROBE_INNER_PARALLELISM 个独立 batch 进程"
         echo "每个进程内部 experiment.num_workers=${SCENE_WORKERS_PER_PROCESS}"
         echo
