@@ -91,6 +91,14 @@ windows:
   default_sill_height: 0.9
   # Margin from segment boundary when placing windows (meters).
   segment_margin: 0.3
+  # 2026-07-14 修改原因：为电视、壁柜、挂画等墙面依赖物保留无窗外墙。
+  min_window_free_exterior_walls: 1
+  # 2026-07-14 修改原因：普通房间保留足够连续墙面；未列出的房间默认最多 2 个。
+  max_windows_by_room_type:
+    bedroom: 2
+    living_room: 3
+    kitchen: 2
+    bathroom: 1
 
 # OpenAI model and reasoning configuration
 openai:

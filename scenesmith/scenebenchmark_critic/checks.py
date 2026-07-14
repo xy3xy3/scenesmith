@@ -209,6 +209,13 @@ def build_checks(
                 continue
             checks.append(check)
             seen_check_ids.add(check["check_id"])
+        # 2026-07-14 修改原因：窗口净空属于结构开口的 interaction clearance，
+        # 失败时明确优先移除或移动窗口。
+        for check in clearance_source.build_window_clearance_checks(geometry, objects):
+            if check["check_id"] in seen_check_ids:
+                continue
+            checks.append(check)
+            seen_check_ids.add(check["check_id"])
     return checks
 
 

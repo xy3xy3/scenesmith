@@ -91,6 +91,18 @@ class DoorWindowConfig:
     window_default_sill_height: float = 0.9
     window_segment_margin: float = 0.3  # Margin from segment boundary (meters).
 
+    # 2026-07-14 修改原因：为电视、壁柜、挂画等墙面依赖物保留外墙。
+    min_window_free_exterior_walls: int = 1
+    # 2026-07-14 修改原因：限制普通房间的开窗数量，避免采光目标耗尽墙面。
+    max_windows_by_room_type: dict[str, int] = field(
+        default_factory=lambda: {
+            "bedroom": 2,
+            "living_room": 3,
+            "kitchen": 2,
+            "bathroom": 1,
+        }
+    )
+
     # Exterior door constraints.
     exterior_door_clearance_m: float = 1.0  # Min clearance outside exterior doors.
 

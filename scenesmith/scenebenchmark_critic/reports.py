@@ -105,6 +105,11 @@ def format_prompt_context(payload: dict[str, Any], *, max_issues: int = 8) -> st
             f"subject={result.get('primary_object')}{suffix}. "
             f"{result.get('reason')}"
         )
+        if str(result.get("check_id") or "").startswith("window_clearance__"):
+            lines.append(
+                "  Repair priority: remove the window or move it to a clear wall "
+                "position before moving otherwise appropriate furniture."
+            )
     return "\n".join(lines)
 
 

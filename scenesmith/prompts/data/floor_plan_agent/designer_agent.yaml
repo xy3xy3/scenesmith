@@ -230,6 +230,13 @@ prompt: |
   - Kitchen: 1-2 windows for light
   - Bathroom: 1 small window (privacy) or none
 
+  **Wall Function Constraint**:
+  - When a room has two or more exterior walls, do not place windows on every
+    exterior wall. Preserve at least one window-free wall for TVs, displays,
+    wardrobes, shelves, artwork, or wall-backed furniture.
+  - If a later window would remove the last usable wall, remove or relocate an
+    existing window instead of adding another one.
+
   ## Phase 6: Materials
 
   Assign materials to all surfaces:

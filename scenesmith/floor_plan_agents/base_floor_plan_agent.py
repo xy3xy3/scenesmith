@@ -99,6 +99,10 @@ class BaseFloorPlanAgent(ABC):
             window_default_height=windows_cfg.default_height,
             window_default_sill_height=windows_cfg.default_sill_height,
             window_segment_margin=windows_cfg.segment_margin,
+            # 2026-07-14 修改原因：启用连续墙面保护，避免多面外墙全部开窗。
+            min_window_free_exterior_walls=windows_cfg.min_window_free_exterior_walls,
+            # 2026-07-14 修改原因：使用房间类型窗口预算控制采光与墙面功能平衡。
+            max_windows_by_room_type=dict(windows_cfg.max_windows_by_room_type),
             exterior_door_clearance_m=doors_cfg.exterior_clearance,
         )
 

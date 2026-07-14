@@ -819,6 +819,71 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
     return checks
 
 
+def build_window_clearance_checks(
+    geometry: dict[str, Any], objects: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Build checks for furniture that blocks a window's room-side zone."""
+    # 2026-07-14 修改原因：窗口可能在家具阶段被衣柜、柜体或高家具遮挡；
+    # critic 应优先给出 remove_window/move_window 建议，而不是只移动家具。
+    shell = geometry.get("scene_shell") or {}
+    checks: list[dict[str, Any]] = []
+    for window in shell.get("windows") or []:
+        if not isinstance(window, dict):
+            continue
+        window_id = str(window.get("id") or window.get("opening_id") or "")
+        bbox = window.get("bbox")
+        if not window_id or not isinstance(bbox, dict):
+            continue
+        wmin, wmax = bbox.get("min"), bbox.get("max")
+        if not isinstance(wmin, (list, tuple)) or not isinstance(wmax, (list, tuple)):
+            continue
+        sill = float(window.get("sill_height") or 0.0)
+        blockers: list[str] = []
+        for object_id, obj in objects.items():
+            if _norm_category(obj) in _STRUCTURAL_BLOCKER_CATEGORIES:
+                continue
+            obbox = obj.get("bbox_world")
+            if not isinstance(obbox, dict):
+                continue
+            omin, omax = obbox.get("min"), obbox.get("max")
+            if not isinstance(omin, (list, tuple)) or not isinstance(omax, (list, tuple)):
+                continue
+            # 2026-07-14 修改原因：低于窗台的家具不遮挡窗洞，避免误报床底、
+            # 地毯等低矮物体；只报告高度超过 sill 且 XY 投影相交的对象。
+            if float(omax[2]) <= sill:
+                continue
+            if (
+                float(omin[0]) < float(wmax[0])
+                and float(omax[0]) > float(wmin[0])
+                and float(omin[1]) < float(wmax[1])
+                and float(omax[1]) > float(wmin[1])
+            ):
+                blockers.append(str(object_id))
+        checks.append(
+            {
+                "check_id": f"window_clearance__{window_id}",
+                "metric": "interaction_clearance",
+                "subject_id": window_id,
+                "target_ids": sorted(set(blockers)),
+                "priority_weight": 0.8,
+                "scoring_tier": "core",
+                "question": f"Is window {window_id} unobstructed above its sill?",
+                "evidence_refs": ["scene_geometry", "window_clearance_zone"],
+                "clearance_result": {
+                    "label": "fail" if blockers else "pass",
+                    "blocking_objects": sorted(set(blockers)),
+                    "window_id": window_id,
+                    "sill_height": sill,
+                    "repair_priority": [
+                        "remove_window_or_move_window",
+                        "move_blocking_furniture",
+                    ],
+                },
+            }
+        )
+    return checks
+
+
 def evaluate_clearance(check: dict[str, Any]) -> dict[str, Any]:
     """Reshape the embedded clearance verdict into a critic result row."""
     cr = check.get("clearance_result") or {}
@@ -832,6 +897,8 @@ def evaluate_clearance(check: dict[str, Any]) -> dict[str, Any]:
             f"{cr.get('clearance_type') or 'clearance'} zone: "
             f"{', '.join(str(b) for b in blockers)}."
         )
+        if str(check.get("check_id") or "").startswith("window_clearance__"):
+            reason += " Prefer removing the window or moving it to a clear wall position before moving suitable furniture."
     else:
         reason = "Clearance could not be determined."
     return {

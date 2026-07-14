@@ -663,6 +663,42 @@ class DoorWindowMixin:
                 f"Windows only allowed on true exterior walls."
             )
 
+        # 2026-07-14 修改原因：防止为了采光在每面外墙中部开窗，耗尽电视、
+        # 显示器、壁柜、书架或挂画需要的连续墙面。只有两面以上外墙时约束生效。
+        exterior_wall_ids = {
+            label
+            for label, (wall_room, wall_room_b, _wall_direction)
+            in self.layout.boundary_labels.items()
+            if wall_room == room_a and wall_room_b is None
+        }
+        windowed_wall_ids = {
+            existing.boundary_label
+            for existing in self.layout.windows
+            if existing.room_id == room_a
+        }
+        required_free_walls = max(0, int(cfg.min_window_free_exterior_walls))
+        room_spec = self.layout.get_room_spec(room_a)
+        room_type = str(room_spec.room_type).strip().lower() if room_spec else ""
+        max_windows = cfg.max_windows_by_room_type.get(room_type, 2)
+        room_window_count = sum(
+            1 for existing in self.layout.windows if existing.room_id == room_a
+        )
+        if room_window_count >= max_windows:
+            return self._fail(
+                f"Room '{room_a}' ({room_type or 'unspecified'}) already has "
+                f"{room_window_count} window(s); keep the room window budget at "
+                f"{max_windows} so a usable wall remains for furniture or wall-mounted items."
+            )
+        if len(exterior_wall_ids) > 1 and wall_id not in windowed_wall_ids:
+            free_after_add = len(exterior_wall_ids - (windowed_wall_ids | {wall_id}))
+            if free_after_add < required_free_walls:
+                return self._fail(
+                    f"Adding a window to wall '{wall_id}' would leave only "
+                    f"{free_after_add} window-free exterior wall(s); keep at least "
+                    f"{required_free_walls} for wall-mounted or wall-backed furniture. "
+                    "Remove/move another window or choose a wall that already has one."
+                )
+
         # Check for duplicate window on same wall/position.
         for existing in self.layout.windows:
             if existing.boundary_label == wall_id:
