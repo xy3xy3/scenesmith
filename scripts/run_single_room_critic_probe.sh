@@ -6,6 +6,7 @@
 # 3. 支持 shared_base -> critic_off -> critic_on 分叉，减少前缀随机性。
 # 4. 支持按阶段停止，或跳过 wall / ceiling 后继续测试 manipulands。
 # 5. 默认分别跑 critic=off 与 critic=on，方便直接对照生成结果和评测报告。
+# 6. 2026-07-14 修改原因：on/off 单独运行时也保留 shared_base，方便后续复用。
 
 set -euo pipefail
 
@@ -59,6 +60,9 @@ SKIP_CEILING_MOUNTED="${SKIP_CEILING_MOUNTED:-false}"
 BRANCH_FROM_SHARED_BASE="${BRANCH_FROM_SHARED_BASE:-false}"
 SHARED_BASE_STOP_STAGE="${SHARED_BASE_STOP_STAGE:-floor_plan}"
 SHARED_BASE_ROOT="${SHARED_BASE_ROOT:-}"
+# 2026-07-14 修改原因：单独运行 on/off 时默认生成当前运行自己的 shared_base；both
+# 保持旧的独立 off/on 行为，避免无意增加一份前缀生成成本。
+GENERATE_SHARED_BASE="${GENERATE_SHARED_BASE:-}"
 CRITIC_ASSET_ANNOTATION="${CRITIC_ASSET_ANNOTATION:-true}"
 # 2026-07-08: 复用之前 critic_on 输出的标注结果。指向之前 critic_on 目录（如
 # .../critic_probe_4rooms_2026-07-07_18-23-17/critic_on），
@@ -194,6 +198,24 @@ fi
 if ! BRANCH_FROM_SHARED_BASE="$(normalize_bool "$BRANCH_FROM_SHARED_BASE")"; then
     echo "错误：BRANCH_FROM_SHARED_BASE 必须是 true/false"
     exit 1
+fi
+
+if [ -z "$GENERATE_SHARED_BASE" ]; then
+    if [ "$MODE" = "on" ] || [ "$MODE" = "off" ]; then
+        GENERATE_SHARED_BASE="true"
+    else
+        GENERATE_SHARED_BASE="false"
+    fi
+fi
+if ! GENERATE_SHARED_BASE="$(normalize_bool "$GENERATE_SHARED_BASE")"; then
+    echo "错误：GENERATE_SHARED_BASE 必须是 true/false"
+    exit 1
+fi
+
+if [ "$GENERATE_SHARED_BASE" = "true" ]; then
+    # 2026-07-14 修改原因：生成本次 shared_base 后必须让目标 critic 阶段从它
+    # 分叉，否则虽然保存了基线，当前 on/off 仍会重新独立生成前缀。
+    BRANCH_FROM_SHARED_BASE="true"
 fi
 
 if ! CRITIC_ASSET_ANNOTATION="$(normalize_bool "$CRITIC_ASSET_ANNOTATION")"; then
@@ -374,6 +396,7 @@ echo "SKIP_CEILING_MOUNTED: $SKIP_CEILING_MOUNTED"
 echo "BRANCH_FROM_SHARED_BASE: $BRANCH_FROM_SHARED_BASE"
 echo "SHARED_BASE_STOP_STAGE: $SHARED_BASE_STOP_STAGE"
 echo "SHARED_BASE_ROOT: ${SHARED_BASE_ROOT:-<auto-generate under OUTPUT_ROOT>}"
+echo "GENERATE_SHARED_BASE: $GENERATE_SHARED_BASE"
 echo "BRANCH_START_STAGE: ${BRANCH_START_STAGE:-<none>}"
 echo "CRITIC_ASSET_ANNOTATION: $CRITIC_ASSET_ANNOTATION"
 echo "CRITIC_HSSD_FRONT_AXIS_SOURCE: $CRITIC_HSSD_FRONT_AXIS_SOURCE"
@@ -828,7 +851,8 @@ if [ "$BRANCH_FROM_SHARED_BASE" = "true" ]; then
         echo "shared_base 来源: $SHARED_BASE_ROOT"
         echo
     else
-        echo "========== 第零部分：生成 shared_base =========="
+        echo "========== 第零部分：生成本次新的 shared_base =========="
+        echo "shared_base 输出: $OUTPUT_ROOT/shared_base"
         echo
         run_mode "shared_base"
     fi
