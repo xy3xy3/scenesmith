@@ -194,12 +194,12 @@ class StatefulFloorPlanAgent(BaseStatefulAgent, BaseFloorPlanAgent):
 
         vision_tools = self._get_vision_tools()
 
-        workflow_tools = WorkflowTools()
+        self.workflow_tools = WorkflowTools()
 
         return (
             list(floor_plan_tools.tools.values())
             + list(vision_tools.tools.values())
-            + list(workflow_tools.tools.values())
+            + list(self.workflow_tools.tools.values())
         )
 
     def _create_critic_tools(self) -> list[FunctionTool]:
@@ -458,6 +458,12 @@ class StatefulFloorPlanAgent(BaseStatefulAgent, BaseFloorPlanAgent):
         # Restore layout from checkpoint (N-1 iteration).
         self.layout = HouseLayout.from_dict(
             data=checkpoint_state_dict, house_dir=self.layout.house_dir
+        )
+
+        # 2026-07-15 修改原因：回滚后的房间/开口坐标与旧设计计划不再一致；
+        # 清理 pending todo，避免 floor-plan agent 继续使用过期坐标。
+        self._invalidate_designer_workflow_state(
+            "layout restored from checkpoint; re-read current room geometry"
         )
 
         # Force SDF regeneration since files on disk are not versioned.

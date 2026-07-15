@@ -168,6 +168,10 @@ class BaseStatefulAgent(ABC):
         # Use global prompt registry (same pattern as domain base classes).
         self.prompt_registry = prompt_registry
 
+        # Domain agents attach their WorkflowTools instance here so a scene
+        # rollback can invalidate pending absolute-coordinate plans.
+        self.workflow_tools = None
+
         # Initialize checkpoint state (N-1 and N pattern for rollback).
         initialize_checkpoint_attributes(target=self)
 
@@ -491,6 +495,12 @@ class BaseStatefulAgent(ABC):
         # Restore scene from checkpoint (N-1 iteration).
         self.scene.restore_from_state_dict(checkpoint_state_dict)
 
+        # 2026-07-15 修改原因：checkpoint 恢复会改变家具的绝对坐标；旧 todo
+        # 仍可能携带 reset 前的目标坐标，继续执行会把桌椅再次推离约束位置。
+        self._invalidate_designer_workflow_state(
+            "scene restored from checkpoint; re-read current object poses"
+        )
+
         # Clear render cache to force new renders after reset.
         self.rendering_manager.clear_cache()
 
@@ -548,6 +558,11 @@ class BaseStatefulAgent(ABC):
                 # _perform_checkpoint_reset() here since that's designed for mid-loop
                 # resets and modifies checkpoint tracking variables.
                 self.scene.restore_from_state_dict(self.scene_checkpoint)
+                # 2026-07-15 修改原因：最终校验触发的回滚同样会使 designer
+                # 旧坐标失效，不能只处理 planner 显式 reset 的路径。
+                self._invalidate_designer_workflow_state(
+                    "final scene restored to checkpoint; re-read current object poses"
+                )
                 self.rendering_manager.clear_cache()
 
                 scores_parts = [
@@ -655,6 +670,13 @@ class BaseStatefulAgent(ABC):
             )
 
         return reset_scene_to_checkpoint
+
+    def _invalidate_designer_workflow_state(self, reason: str) -> None:
+        """Invalidate pending designer plans after restoring a checkpoint."""
+        workflow_tools = getattr(self, "workflow_tools", None)
+        invalidate = getattr(workflow_tools, "invalidate_pending_todos", None)
+        if callable(invalidate):
+            invalidate(reason)
 
     def _create_placement_style_tool(self) -> FunctionTool:
         """Create tool for selecting placement style (natural vs perfect).

@@ -27,11 +27,17 @@ class TodoItem(JSONSerializable):
     task: str
     """Description of the task to be completed."""
     status: str
-    """Current status ('pending' or 'completed')."""
+    """Current status ('pending', 'completed', or 'invalidated')."""
     created_at: float
     """Timestamp when the item was created."""
     completed_at: float | None = None
     """Timestamp when the item was completed (if applicable)."""
+
+    invalidated_at: float | None = None
+    """Timestamp when a checkpoint reset invalidated the item."""
+
+    invalidation_reason: str | None = None
+    """Reason the item can no longer be trusted after a reset."""
 
 
 @dataclass
@@ -173,3 +179,26 @@ class WorkflowTools:
         return TodoOperationResult(
             success=False, action=action, message=f"Unknown action: {action}"
         ).to_json()
+
+    def invalidate_pending_todos(self, reason: str) -> int:
+        """Invalidate coordinate plans after the scene was restored.
+
+        A checkpoint reset changes the absolute poses that pending designer
+        instructions refer to. Keeping those instructions as pending lets a
+        later model turn execute stale coordinates against the restored scene.
+        """
+        invalidated = 0
+        for todo in self._designer_todos:
+            if todo.status != "pending":
+                continue
+            todo.status = "invalidated"
+            todo.invalidated_at = time.time()
+            todo.invalidation_reason = reason
+            invalidated += 1
+        if invalidated:
+            console_logger.info(
+                "Invalidated %d designer TODO(s) after checkpoint reset: %s",
+                invalidated,
+                reason,
+            )
+        return invalidated

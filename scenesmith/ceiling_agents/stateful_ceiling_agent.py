@@ -146,12 +146,12 @@ class StatefulCeilingAgent(BaseStatefulAgent, BaseCeilingAgent):
             asset_manager=self.asset_manager,
             cfg=self.cfg,
         )
-        workflow_tools = WorkflowTools()
+        self.workflow_tools = WorkflowTools()
 
         return [
             *vision_tools.tools.values(),
             *self.ceiling_tools.tools.values(),
-            *workflow_tools.tools.values(),
+            *self.workflow_tools.tools.values(),
         ]
 
     def _create_designer_agent(

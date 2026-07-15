@@ -384,12 +384,12 @@ class StatefulManipulandAgent(BaseStatefulAgent, BaseManipulandAgent):
                 else ""
             ),
         )
-        workflow_tools = WorkflowTools()
+        self.workflow_tools = WorkflowTools()
 
         return [
             *vision_tools.tools.values(),
             *self.manipuland_tools.tools.values(),
-            *workflow_tools.tools.values(),
+            *self.workflow_tools.tools.values(),
         ]
 
     def _create_designer_agent(
