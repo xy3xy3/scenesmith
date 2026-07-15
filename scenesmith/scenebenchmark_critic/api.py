@@ -34,6 +34,9 @@ from scenesmith.scenebenchmark_critic.media_support_alignment import (
 from scenesmith.scenebenchmark_critic.room_center_alignment import (
     evaluate_room_center_alignment,
 )
+from scenesmith.scenebenchmark_critic.wall_mounted_visibility import (
+    evaluate_wall_mounted_visibility,
+)
 from scenesmith.scenebenchmark_critic.orientation_contracts import (
     stabilize_orientation_contracts,
 )
@@ -103,6 +106,10 @@ def evaluate_room_scene(
     # 2026-07-13 修改原因：库存完整不代表餐位可用；餐盘及配套餐具还必须
     # 与最近离散座椅一对一对应，并位于该座椅正前方。
     results.extend(evaluate_dining_place_setting_alignment(case_pack))
+    # 2026-07-15 修改原因：物理碰撞和现有 FD 无法发现高柜在墙面投影中遮住
+    # 画、镜子或时钟；将观看表面的可见区域作为 wall-mounted 视觉净空检查。
+    if "interaction_clearance" in critic_config.metrics:
+        results.extend(evaluate_wall_mounted_visibility(case_pack))
     return build_evaluation_payload(
         case_pack=case_pack,
         results=results,
