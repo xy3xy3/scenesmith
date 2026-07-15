@@ -15,6 +15,9 @@ from scenesmith.scenebenchmark_critic.adapter import (
     room_scene_to_case_pack,
 )
 from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
+from scenesmith.scenebenchmark_critic.bedside_group_alignment import (
+    evaluate_bedside_group_alignment,
+)
 from scenesmith.scenebenchmark_critic.config import CriticConfig, critic_config_from_any
 from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
     evaluate_dining_place_setting_alignment,
@@ -83,6 +86,10 @@ def evaluate_room_scene(
     # 让 wall critic 能给出精确、可执行的窗口释放和 TV 居中反馈。
     if "functional_dependency" in critic_config.metrics:
         results.extend(evaluate_media_support_alignment(case_pack))
+        # 2026-07-15 修改原因：原 bedside_pair 只检查相邻距离和 front 轴平行，
+        # 会把两个床头柜都搬到床脚、或为门净空拆散床组的布局误判为通过。
+        # 增加 bed-local 床头端/左右分列及门净空下整组换墙约束。
+        results.extend(evaluate_bedside_group_alignment(case_pack))
         # 2026-07-15 修改原因：家具 critic 只检查桌椅之间的关系，无法发现
         # prompt 明确要求“in the center”的主家具被局部 clearance 修复推离房间中心。
         # 增加通用 room-center functional dependency，约束中心锚点并给出成组修复建议。

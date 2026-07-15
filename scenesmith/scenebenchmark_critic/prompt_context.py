@@ -47,6 +47,7 @@ MEDIA_CATEGORIES = {
 }
 FURNITURE_RELATIONS = {
     "back_against_wall",
+    "bedside_group_alignment",
     # 2026-07-10 修改原因：bedside_pair 的 FD 结果包含床头柜 front 轴平行性，
     # 需要传给 furniture critic 执行位置/朝向修复。
     "bedside_pair",
@@ -127,6 +128,9 @@ def format_agent_prompt_context(
     room_center_context = _format_room_center_contract_context(payload, agent_type)
     if room_center_context:
         context = f"{context}\n\n{room_center_context}"
+    bedside_context = _format_bedside_group_contract_context(payload, agent_type)
+    if bedside_context:
+        context = f"{context}\n\n{bedside_context}"
     return context
 
 
@@ -246,6 +250,41 @@ def _format_room_center_contract_context(
         "slots, and recheck spatial_accessibility and interaction_clearance. Do not "
         "move the anchor alone, and after any checkpoint reset call "
         "get_current_scene_state() before using absolute x/y targets."
+    )
+    return "\n".join(lines)
+
+
+def _format_bedside_group_contract_context(
+    payload: dict[str, Any], agent_type: AgentType | str
+) -> str:
+    """Keep a passing bed group rigid while later clearance issues are repaired."""
+    if _agent_value(agent_type) != AgentType.FURNITURE.value:
+        return ""
+    rows = [
+        result
+        for result in payload.get("results") or []
+        if isinstance(result, dict)
+        and result.get("relation_type") == "bedside_group_alignment"
+        and result.get("label") == "pass"
+    ]
+    if not rows:
+        return ""
+    # 2026-07-15 修改原因：通过项默认不会进入家具 critic prompt，后续门净空
+    # 修复可能再次单独移动床或床头柜；显式保留已验证的 bed-local 刚性拓扑。
+    lines = ["Authoritative stable bedside-group contracts:"]
+    for result in rows:
+        related = ", ".join(result.get("related_objects") or []) or "none"
+        diagnostics = result.get("diagnostics") or {}
+        lines.append(
+            f"- `{result.get('primary_object')}` with [{related}]: headboard_wall="
+            f"{diagnostics.get('headboard_wall') or 'unresolved'}; all tables are in "
+            "validated bed-local head-side slots."
+        )
+    lines.append(
+        "Do not move a passed bed or nightstand independently. If a later physics, "
+        "accessibility, or door-clearance issue appears, move/rotate the complete "
+        "bedside group to a clear wall and reconstruct the same head-end left/right "
+        "slots before rechecking."
     )
     return "\n".join(lines)
 
