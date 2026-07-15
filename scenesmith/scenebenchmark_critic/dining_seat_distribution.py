@@ -5,15 +5,16 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
-    _associated_discrete_seats,
-)
 from scenesmith.scenebenchmark_critic.manipuland_completeness import (
+    _bbox_gap_xy,
+    _footprint_short_side,
+    _is_dining_seat,
     _is_dining_table,
     _object_identity_text,
 )
 from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
     bbox_center_xy,
+    front_vector,
 )
 
 RELATION_TYPE = "dining_seat_distribution"
@@ -29,11 +30,15 @@ def evaluate_dining_seat_distribution(
         if isinstance(obj, dict) and obj.get("id")
     ]
     objects_by_id = {str(obj["id"]): obj for obj in objects}
+    tables = [
+        obj for obj in objects if _is_dining_table(obj) and not _is_round_table(obj)
+    ]
+    seats_by_table = _positionally_associated_seats(tables, objects_by_id)
     results: list[dict[str, Any]] = []
-    for table in objects:
-        if not _is_dining_table(table) or _is_round_table(table):
-            continue
-        result = _evaluate_table(table, _associated_discrete_seats(table, objects_by_id))
+    for table in tables:
+        result = _evaluate_table(
+            table, seats_by_table.get(str(table["id"]), [])
+        )
         if result is not None:
             results.append(result)
     return results
@@ -63,16 +68,13 @@ def _evaluate_table(
         dx, dy = seat_center[0] - center[0], seat_center[1] - center[1]
         local_x = dx * tangent_x[0] + dy * tangent_x[1]
         local_y = dx * tangent_y[0] + dy * tangent_y[1]
-        edge = min(
-            (
-                (abs(local_x + width / 2), "left", local_y),
-                (abs(local_x - width / 2), "right", local_y),
-                (abs(local_y + depth / 2), "front", local_x),
-                (abs(local_y - depth / 2), "back", local_x),
-            ),
-            key=lambda row: (row[0], row[1]),
+        # 2026-07-15 修改原因：座椅因碰撞或净空向外拉开后，按“到无限延长
+        # 桌边直线的距离”会把短边椅误归到长边。改用有限桌边线段距离，确保
+        # 桌角之外的座椅仍由其实际相邻桌边负责，且不依赖某个场景的绝对尺寸。
+        edge, tangent_position = _nearest_table_edge(
+            local_x, local_y, width=width, depth=depth
         )
-        grouped[edge[1]].append((seat, edge[2]))
+        grouped[edge].append((seat, tangent_position))
 
     diagnostics: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -99,9 +101,9 @@ def _evaluate_table(
             deviation = abs(position - slot)
             allowed = max(0.08, min(0.35 * chair_span, 0.08 * edge_length))
             passed = deviation <= allowed
-            # 2026-07-14 修改原因：同一长边多椅的历史分布检查只负责槽位，
-            # 不应因旧测试/布局没有逐椅朝向数据而改变其语义；单椅边位才要求
-            # 严格正对桌心，正好覆盖四边各一把 dining chair 的场景。
+            # 2026-07-14 修改原因：多椅同边可以平行朝向桌边而不必都斜指桌心；
+            # 单椅边位才要求严格正对。2026-07-15 的有限边归类会保证拉远后的
+            # 短边椅仍各自落在单椅边位，不再因错误分组漏掉 180° 翻转。
             facing_error = _seat_facing_error_deg(seat, center) if count == 1 else None
             facing_passed = facing_error is None or facing_error <= 10.0
             diagnostics.append({
@@ -123,7 +125,8 @@ def _evaluate_table(
             if not facing_passed:
                 failures.append(
                     f"`{seat['id']}` on the {edge} edge is rotated {facing_error:.1f}° "
-                    "away from the table center; align its front normal to the table"
+                    "away from the table center; rotate it in place so its front normal "
+                    "faces the table, preserving its table-edge slot and clearance"
                 )
     if not diagnostics:
         return None
@@ -160,24 +163,126 @@ def _seat_tangent_span(seat: dict[str, Any], edge: str, table_yaw: float) -> flo
     return max(0.2, abs(axis[0]) * float(size[0]) + abs(axis[1]) * float(size[1]))
 
 
+def _positionally_associated_seats(
+    tables: list[dict[str, Any]],
+    objects_by_id: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Associate nearby dining seats without using their current facing."""
+    associated = {str(table["id"]): [] for table in tables}
+    for seat in objects_by_id.values():
+        if not _is_dining_seat(seat) or "bench" in _object_identity_text(seat):
+            continue
+        seat_scale = _footprint_short_side(seat)
+        if seat_scale is None:
+            continue
+        candidates: list[tuple[float, float, str]] = []
+        for table in tables:
+            table_scale = _footprint_short_side(table)
+            gap = _bbox_gap_xy(table, seat)
+            if table_scale is None or gap is None:
+                continue
+            association_gap = max(seat_scale, 0.25 * table_scale)
+            if gap <= association_gap:
+                # 2026-07-15 修改原因：朝向本身正是本检查要发现的问题，不能再
+                # 用“必须已朝桌子”作为关联前提。多桌场景按归一化间隙分配给
+                # 最近桌组，既覆盖拉椅净空，也避免同一椅被相邻桌重复认领。
+                candidates.append(
+                    (gap, gap / max(association_gap, 1e-6), str(table["id"]))
+                )
+        if candidates:
+            _, _, table_id = min(candidates)
+            associated[table_id].append(seat)
+    for seats in associated.values():
+        seats.sort(key=lambda item: str(item.get("id") or ""))
+    return associated
+
+
+def _nearest_table_edge(
+    local_x: float,
+    local_y: float,
+    *,
+    width: float,
+    depth: float,
+) -> tuple[str, float]:
+    """Return the nearest finite rectangular edge and its tangent coordinate."""
+    half_width = width / 2.0
+    half_depth = depth / 2.0
+    clamped_x = min(max(local_x, -half_width), half_width)
+    clamped_y = min(max(local_y, -half_depth), half_depth)
+    x_scale = max(half_width, 1e-6)
+    y_scale = max(half_depth, 1e-6)
+    candidates = (
+        (
+            math.hypot(local_x + half_width, local_y - clamped_y),
+            -(abs(local_x) / x_scale),
+            "left",
+            local_y,
+        ),
+        (
+            math.hypot(local_x - half_width, local_y - clamped_y),
+            -(abs(local_x) / x_scale),
+            "right",
+            local_y,
+        ),
+        (
+            math.hypot(local_x - clamped_x, local_y + half_depth),
+            -(abs(local_y) / y_scale),
+            "front",
+            local_x,
+        ),
+        (
+            math.hypot(local_x - clamped_x, local_y - half_depth),
+            -(abs(local_y) / y_scale),
+            "back",
+            local_x,
+        ),
+    )
+    _, _, edge, tangent_position = min(
+        candidates, key=lambda row: (row[0], row[1], row[2])
+    )
+    return edge, tangent_position
+
+
 def _seat_facing_error_deg(
     seat: dict[str, Any], table_center: tuple[float, float] | None
 ) -> float | None:
-    """Return angular error between chair front (+local Y) and table center."""
+    """Return angular error between the annotated chair front and table center."""
     # 2026-07-14 修改原因：check_facing_tool 的宽松通过阈值会把约 13° 的
     # dining_chair_2 偏角判为正确；餐桌座位检查需要更严格的 10° 误差。
     if table_center is None:
         return None
     center = bbox_center_xy(seat)
-    if center is None or "yaw_deg" not in seat:
+    if center is None:
         return None
     dx = float(table_center[0]) - float(center[0])
     dy = float(table_center[1]) - float(center[1])
     if abs(dx) + abs(dy) <= 1e-6:
         return None
-    desired = math.degrees(math.atan2(-dx, dy))
-    actual = float(seat.get("yaw_deg") or 0.0)
-    return abs((actual - desired + 180.0) % 360.0 - 180.0)
+    # 2026-07-15 修改原因：优先复用 adapter 已按资产 front_hint 生成的交互面，
+    # 避免再次硬编码本地 +Y；没有交互面时再使用统一 geometry.front_vector。
+    front = next(
+        (
+            face.get("normal_xy")
+            for face in (seat.get("interaction_faces") or [])
+            if isinstance(face, dict)
+            and face.get("name") == "front"
+            and isinstance(face.get("normal_xy"), list)
+            and len(face["normal_xy"]) >= 2
+        ),
+        None,
+    )
+    if front is None and "yaw_deg" not in seat:
+        return None
+    if front is None:
+        fx, fy = front_vector(seat)
+    else:
+        fx, fy = float(front[0]), float(front[1])
+    front_norm = math.hypot(fx, fy)
+    target_norm = math.hypot(dx, dy)
+    if front_norm <= 1e-6 or target_norm <= 1e-6:
+        return None
+    cosine = (fx * dx + fy * dy) / (front_norm * target_norm)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
 
 def _is_round_table(table: dict[str, Any]) -> bool:

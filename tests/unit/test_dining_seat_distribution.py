@@ -62,6 +62,49 @@ def test_distribution_uses_rotated_table_frame() -> None:
     assert _result([table, chair])["label"] == "pass"
 
 
+def test_pulled_out_short_edge_chairs_keep_edge_and_must_face_table() -> None:
+    # 2026-07-15 修改原因：净空修复把短边椅拉到桌角之外时，不能按无限桌边
+    # 将其误归长边并跳过朝向；错误的 180° 翻转必须被直接指出。
+    table = _obj("table", "dining_table", 0, 0, 1.87, 0.75)
+    west_wrong = _obj(
+        "west", "dining_chair", -1.30, -0.02, 0.60, 0.46, yaw=90.0
+    )
+    east_wrong = _obj(
+        "east", "dining_chair", 1.30, -0.02, 0.60, 0.46, yaw=-90.0
+    )
+
+    wrong = _result([table, west_wrong, east_wrong])
+    diagnostics = {
+        item["seat_id"]: item for item in wrong["diagnostics"]["seat_slots"]
+    }
+    assert wrong["label"] == "fail"
+    assert diagnostics["west"]["edge"] == "left"
+    assert diagnostics["east"]["edge"] == "right"
+    assert diagnostics["west"]["facing_error_deg"] > 170.0
+    assert diagnostics["east"]["facing_error_deg"] > 170.0
+
+    west_wrong["yaw_deg"] = -90.0
+    east_wrong["yaw_deg"] = 90.0
+    corrected = _result([table, west_wrong, east_wrong])
+    assert corrected["label"] == "pass"
+
+
+def test_dining_facing_prefers_exported_interaction_front() -> None:
+    # 2026-07-15 修改原因：资产标注的 semantic front 可能与通用 yaw 约定不同；
+    # critic 应优先采用 adapter 导出的 front interaction face。
+    table = _obj("table", "dining_table", 0, 0, 1.6, 0.8)
+    chair = _obj("chair", "dining_chair", -1.1, 0, 0.5, 0.5, yaw=90.0)
+    chair["interaction_faces"] = [
+        {"name": "front", "normal_xy": [1.0, 0.0], "affordances": ["sittable"]}
+    ]
+    del chair["yaw_deg"]
+
+    result = _result([table, chair])
+    diagnostic = result["diagnostics"]["seat_slots"][0]
+    assert result["label"] == "pass"
+    assert diagnostic["facing_error_deg"] == 0.0
+
+
 def test_bench_and_round_table_are_not_forced_into_rectangular_slots() -> None:
     table = _obj("table", "round_dining_table", 0, 0, 1.2, 1.2)
     bench = _obj("bench", "dining_bench", 0, -0.9, 1.0, 0.45)
