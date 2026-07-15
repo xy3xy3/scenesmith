@@ -68,6 +68,13 @@ prompt: |
   - Preserve cultural and meal-context diversity: bowls + chopsticks, plate + fork,
     breakfast spoon, or other coherent settings are all valid when compatible with
     the prompt.
+  # 2026-07-14 修改原因：分段 HSSD 桌面需要由确定性工具将 world-space critic
+  # 修复目标转换为正确的 surface-local 坐标，避免端部餐位折叠到中央支撑面。
+  - When SceneBenchmark reports a `dining_place_setting_alignment`
+    failure, call `align_dining_place_settings()` before attempting manual moves.
+    This is required for dining tables whose single visible tabletop is represented
+    by multiple support-surface IDs: the tool maps each setting to the correct
+    chair-facing segment and keeps its utensils/drinkware together.
 
   Follow the style guidance strictly. For example:
   - "minimalist" → sparse layout, 2-4 items max, lots of empty space

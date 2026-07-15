@@ -106,7 +106,7 @@ def _evaluate_table_alignment(
             return None
         forward = _usable_seat_front(seat, seat_center, table_center)
         lateral_axis = (-forward[1], forward[0])
-        recommended_center = _recommended_anchor_center(
+        recommended_center, recommended_surface_id = _recommended_anchor_center(
             table, seat, anchor, seat_center, forward
         )
         signed_lateral_offset = (
@@ -167,6 +167,7 @@ def _evaluate_table_alignment(
                     round(target_center[0], 4),
                     round(target_center[1], 4),
                 ],
+                "recommended_support_surface_id": recommended_surface_id,
                 "aligned": aligned,
                 "companion_ids": [],
                 "misaligned_companion_ids": [],
@@ -182,6 +183,11 @@ def _evaluate_table_alignment(
                 f"{correction[1]:+.2f})m in world XY so the plate/bowl center "
                 f"reaches approximately ({target_center[0]:.2f}, "
                 f"{target_center[1]:.2f})m"
+                + (
+                    f" on support surface `{recommended_surface_id}`"
+                    if recommended_surface_id
+                    else ""
+                )
             )
 
     rows_by_anchor = {row["anchor_id"]: row for row in diagnostics}
@@ -229,7 +235,9 @@ def _evaluate_table_alignment(
             + "; ".join(failures[:8])
             + ". Move each plate/bowl together with its nearby cutlery, drinkware, "
             "and napkin toward that seat's centerline; do not move it to another "
-            "table edge."
+            "table edge. When available, call `align_dining_place_settings` so "
+            "world-space targets are converted onto the correct segmented tabletop "
+            "support surface."
         )
         label = "fail"
         confidence = 0.94
@@ -255,7 +263,10 @@ def _evaluate_table_alignment(
         "diagnostics": {"assignments": diagnostics},
         "evidence": {
             "association": "minimum_seat_front_lane_cost_one_to_one",
-            "alignment": "strict_anchor_centerline_projection",
+            # 2026-07-14 修改原因：同一餐桌可能由多个连续 mesh surface 构成；
+            # 修复必须沿座椅前轴选最近的真实支撑面，不能按最大桌面 footprint
+            # 把端部餐位错误折叠到中央桌面条带。
+            "alignment": "strict_anchor_centerline_projection_to_nearest_support_region",
         },
         "evaluation_source": "scenesmith_dining_place_setting_alignment",
         "scoring_tier": "core",
@@ -286,7 +297,7 @@ def _seat_lane_assignment(
             dy = anchor_center[1] - seat_center[1]
             lateral = abs(dx * lateral_axis[0] + dy * lateral_axis[1])
             longitudinal = dx * forward[0] + dy * forward[1]
-            target = _recommended_anchor_center(
+            target, _surface_id = _recommended_anchor_center(
                 table, seat, anchors[anchor_index], seat_center, forward
             )
             if target is None:
@@ -438,13 +449,11 @@ def _recommended_anchor_center(
     anchor: dict[str, Any],
     seat_center: tuple[float, float],
     forward: tuple[float, float],
-) -> tuple[float, float] | None:
-    polygon = _tabletop_polygon(table)
-    if len(polygon) < 3:
-        return None
-    boundary = _ray_polygon_entry(seat_center, forward, polygon)
-    if boundary is None:
-        return None
+) -> tuple[tuple[float, float] | None, str | None]:
+    region_entry = _nearest_tabletop_region_entry(table, seat_center, forward)
+    if region_entry is None:
+        return None, None
+    surface_id, boundary, usable_depth = region_entry
     anchor_span = _projected_span(anchor, forward)
     if anchor_span is None:
         anchor_span = _short_side(anchor) or 0.2
@@ -453,48 +462,77 @@ def _recommended_anchor_center(
     # 居中后容易撞中央花瓶并诱使模型再次横移。沿座椅前轴找到桌面入射边界，
     # 再按盘碗半径和桌尺度向内留边，得到可达且远离桌心装饰物的通用槽位。
     edge_inset = 0.5 * anchor_span + max(0.03, 0.05 * table_scale)
+    # 2026-07-14 修改原因：HSSD 桌面常被拆成窄而连续的 plank/surface 区域。
+    # 不能把常规桌边 inset 推出该单独支撑面；缩放到该 ray 穿过区域的可用深度，
+    # 既保留“靠椅子一侧”的餐位，也保证目标仍可实际落在该 surface 上。
+    bounded_inset = min(edge_inset, max(0.02, 0.35 * usable_depth))
     return (
-        boundary[0] + edge_inset * forward[0],
-        boundary[1] + edge_inset * forward[1],
+        (
+            boundary[0] + bounded_inset * forward[0],
+            boundary[1] + bounded_inset * forward[1],
+        ),
+        surface_id,
     )
 
 
-def _tabletop_polygon(table: dict[str, Any]) -> list[tuple[float, float]]:
-    candidates: list[list[Any]] = []
+def _tabletop_regions(
+    table: dict[str, Any],
+) -> list[tuple[str | None, list[tuple[float, float]]]]:
+    """Return actual tabletop support polygons, falling back to the footprint."""
+    candidates: list[tuple[str | None, list[Any]]] = []
     for region in table.get("support_regions") or []:
         if isinstance(region, dict):
             polygon = region.get("polygon_world_xy")
             if isinstance(polygon, list):
-                candidates.append(polygon)
-    footprint = table.get("footprint_world")
-    if isinstance(footprint, list):
-        candidates.append(footprint)
-    valid = [
-        [(float(point[0]), float(point[1])) for point in polygon]
-        for polygon in candidates
+                candidates.append(
+                    (str(region.get("region_id") or "") or None, polygon)
+                )
+    # 2026-07-14 修改原因：support regions 是可放置面的权威几何；只有提取
+    # 失败时才回退到家具整体 footprint，避免桌腿/桌框扩大餐盘目标区域。
+    if not candidates:
+        footprint = table.get("footprint_world")
+        if isinstance(footprint, list):
+            candidates.append((None, footprint))
+    return [
+        (surface_id, [(float(point[0]), float(point[1])) for point in polygon])
+        for surface_id, polygon in candidates
         if len(polygon) >= 3
         and all(isinstance(point, (list, tuple)) and len(point) >= 2 for point in polygon)
     ]
-    return max(valid, key=_polygon_area, default=[])
 
 
-def _polygon_area(polygon: list[tuple[float, float]]) -> float:
-    return abs(
-        0.5
-        * sum(
-            polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
-            - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
-            for index in range(len(polygon))
+def _nearest_tabletop_region_entry(
+    table: dict[str, Any],
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+) -> tuple[str | None, tuple[float, float], float] | None:
+    candidates: list[tuple[float, str, str | None, tuple[float, float], float]] = []
+    for surface_id, polygon in _tabletop_regions(table):
+        interval = _ray_polygon_interval(origin, direction, polygon)
+        if interval is None:
+            continue
+        entry_t, exit_t = interval
+        if exit_t - entry_t <= 1e-8:
+            continue
+        entry = (
+            origin[0] + entry_t * direction[0],
+            origin[1] + entry_t * direction[1],
         )
-    )
+        candidates.append(
+            (entry_t, str(surface_id or ""), surface_id, entry, exit_t - entry_t)
+        )
+    if not candidates:
+        return None
+    _distance, _sort_id, surface_id, entry, depth = min(candidates)
+    return surface_id, entry, depth
 
 
-def _ray_polygon_entry(
+def _ray_polygon_interval(
     origin: tuple[float, float],
     direction: tuple[float, float],
     polygon: list[tuple[float, float]],
 ) -> tuple[float, float] | None:
-    intersections: list[tuple[float, float, float]] = []
+    intersections: list[float] = []
     for index, start in enumerate(polygon):
         end = polygon[(index + 1) % len(polygon)]
         edge = (end[0] - start[0], end[1] - start[1])
@@ -505,17 +543,13 @@ def _ray_polygon_entry(
         ray_t = (offset[0] * edge[1] - offset[1] * edge[0]) / denominator
         edge_t = (offset[0] * direction[1] - offset[1] * direction[0]) / denominator
         if ray_t >= 0.0 and -1e-8 <= edge_t <= 1.0 + 1e-8:
-            intersections.append(
-                (
-                    ray_t,
-                    origin[0] + ray_t * direction[0],
-                    origin[1] + ray_t * direction[1],
-                )
-            )
+            intersections.append(ray_t)
     if not intersections:
         return None
-    _distance, x, y = min(intersections)
-    return x, y
+    unique = sorted({round(value, 10) for value in intersections})
+    if len(unique) < 2:
+        return None
+    return unique[0], unique[-1]
 
 
 def _companion_lane_half_width(
@@ -527,7 +561,11 @@ def _companion_lane_half_width(
         seat_span = _short_side(seat) or 0.45
     if item_span is None:
         item_span = _short_side(item) or 0.1
-    return 0.5 * seat_span + 0.1 * item_span
+    # 2026-07-14 修改原因：酒杯、餐具等配套物通常在盘子侧边，而不是严格
+    # 落在椅子中心线上。旧的 0.5*seat + 0.1*item 容差会把正常的侧向摆放
+    # 判成整套餐位失败，模型随后反复横移盘子/酒杯。保留座椅尺度约束，同时
+    # 给物件自身尺寸留出比例化的侧向空间；明显跨到另一把椅子的物件仍会失败。
+    return max(0.04, 0.55 * seat_span + 0.25 * item_span)
 
 
 def _nearest_cluster_anchor(

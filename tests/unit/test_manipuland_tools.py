@@ -90,6 +90,40 @@ class TestManipulandTools(unittest.TestCase):
             self.cfg.placement_noise.perfect_profile,
         )
 
+    @patch.object(ManipulandTools, "_dining_position_is_valid", return_value=True)
+    def test_dining_target_uses_critic_selected_segmented_surface(
+        self, _mock_valid
+    ):
+        # 2026-07-14 修改原因：真实 HSSD 餐桌可能由多个连续 surface strip 组成。
+        # critic 已指定北侧餐位的 strip 时，工具必须保留该指定面，不能按中央
+        # surface 重新解释 world-space target。
+        def surface(surface_id: str, y: float) -> SupportSurface:
+            return SupportSurface(
+                surface_id=UniqueID(surface_id),
+                bounding_box_min=np.array([-0.8, -0.1, 0.0]),
+                bounding_box_max=np.array([0.8, 0.1, 0.5]),
+                transform=RigidTransform(p=[0.0, y, 0.8]),
+            )
+
+        north = surface("S_north", 0.22)
+        center = surface("S_center", 0.0)
+        plate = Mock()
+        plate.bbox_min = np.array([-0.12, -0.12, 0.0])
+        plate.bbox_max = np.array([0.12, 0.12, 0.03])
+        plate.placement_info = Mock(rotation_2d=0.0)
+
+        selected = self.manipuland_tools._select_dining_surface_position(
+            surface_map={"S_center": center, "S_north": north},
+            scene_object=plate,
+            target_xy=(0.0, 0.24),
+            preferred_surface_id="S_north",
+        )
+
+        assert selected is not None
+        selected_surface, selected_position = selected
+        self.assertEqual(str(selected_surface.surface_id), "S_north")
+        self.assertLess(abs(float(selected_position[1])), 0.1)
+
     def test_generic_cutlery_requests_are_collapsed_to_one_asset(self):
         descriptions, names, dimensions = _normalize_generic_cutlery_requests(
             object_descriptions=["plate", "silver fork", "table knife", "teaspoon"],

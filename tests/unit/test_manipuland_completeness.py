@@ -299,6 +299,33 @@ def test_dining_place_settings_pass_when_each_cluster_uses_seat_front() -> None:
     )
 
 
+def test_dining_place_settings_allow_scale_relative_side_drinkware() -> None:
+    objects = [
+        _table(),
+        _oriented_seat("chair_north", x=0.0, y=0.98, yaw_deg=180.0),
+        _oriented_seat("chair_south", x=0.0, y=-0.98, yaw_deg=0.0),
+        _oriented_seat("chair_east", x=1.45, y=0.0, yaw_deg=90.0),
+        _oriented_seat("chair_west", x=-1.38, y=0.0, yaw_deg=-90.0),
+        _positioned_item("plate_north", "dinner_plate", 0.0, 0.28),
+        _positioned_item("plate_south", "dinner_plate", 0.0, -0.28),
+        _positioned_item("plate_east", "dinner_plate", 0.62, 0.0),
+        _positioned_item("plate_west", "dinner_plate", -0.62, 0.0),
+        _positioned_item("glass_north", "wine_glass", 0.26, 0.28),
+        _positioned_item("glass_south", "wine_glass", -0.26, -0.28),
+        _positioned_item("glass_east", "wine_glass", 0.62, 0.24),
+        _positioned_item("glass_west", "wine_glass", -0.62, -0.24),
+    ]
+
+    result = evaluate_dining_place_setting_alignment(
+        _case_pack(objects, prompt="Table settings for four including plates and glasses.")
+    )[0]
+
+    # 2026-07-14 修改原因：酒杯/配套物可自然放在盘子侧边；只要仍靠近其
+    # 一对一餐盘且在该座位的尺度化可达范围内，不应诱发模型反复移动餐盘。
+    assert result["label"] == "pass"
+    assert all(not row["misaligned_companion_ids"] for row in result["diagnostics"]["assignments"])
+
+
 def test_centered_four_side_chairs_reject_four_corner_plate_grid() -> None:
     objects = [
         _table(),
@@ -328,6 +355,48 @@ def test_centered_four_side_chairs_reject_four_corner_plate_grid() -> None:
         for row in assignments
     )
     assert "whole place-setting cluster" in result["reason"]
+
+
+def test_dining_alignment_selects_nearest_segmented_table_surface() -> None:
+    table = _table()
+    # 2026-07-14 修改原因：真实 HSSD 餐桌会把一个连续桌面拆成数个窄的
+    # support surface。北/南端餐位必须指向各自最先接触到的条带，不能退化为
+    # 面积最大的中央条带或整张家具 footprint。
+    table["support_regions"] = [
+        {
+            "region_id": "S_center",
+            "polygon_world_xy": [[-0.8, -0.1], [0.8, -0.1], [0.8, 0.1], [-0.8, 0.1]],
+        },
+        {
+            "region_id": "S_north",
+            "polygon_world_xy": [[-0.8, 0.1], [0.8, 0.1], [0.8, 0.32], [-0.8, 0.32]],
+        },
+        {
+            "region_id": "S_south",
+            "polygon_world_xy": [[-0.8, -0.32], [0.8, -0.32], [0.8, -0.1], [-0.8, -0.1]],
+        },
+    ]
+    objects = [
+        table,
+        _oriented_seat("chair_north", x=0.0, y=0.98, yaw_deg=180.0),
+        _oriented_seat("chair_south", x=0.0, y=-0.98, yaw_deg=0.0),
+        _oriented_seat("chair_east", x=1.45, y=0.0, yaw_deg=90.0),
+        _oriented_seat("chair_west", x=-1.38, y=0.0, yaw_deg=-90.0),
+        _positioned_item("plate_north", "dinner_plate", 0.0, 0.22),
+        _positioned_item("plate_south", "dinner_plate", 0.0, -0.22),
+        _positioned_item("plate_east", "dinner_plate", 0.58, 0.0),
+        _positioned_item("plate_west", "dinner_plate", -0.58, 0.0),
+    ]
+
+    result = evaluate_dining_place_setting_alignment(
+        _case_pack(objects, prompt="Table settings for four including plates.")
+    )[0]
+    by_seat = {row["seat_id"]: row for row in result["diagnostics"]["assignments"]}
+
+    assert by_seat["chair_north"]["recommended_support_surface_id"] == "S_north"
+    assert by_seat["chair_south"]["recommended_support_surface_id"] == "S_south"
+    assert by_seat["chair_east"]["recommended_support_surface_id"] == "S_center"
+    assert by_seat["chair_west"]["recommended_support_surface_id"] == "S_center"
 
 
 def test_dining_alignment_scales_with_table_and_plate_sizes() -> None:

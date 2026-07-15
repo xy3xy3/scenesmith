@@ -4668,6 +4668,68 @@ def test_rule_functional_dependency_allows_oblique_media_view() -> None:
     assert "usable media view" in result["reason"]
 
 
+def test_rule_functional_dependency_wall_media_checks_both_facing_directions() -> None:
+    chair = _benchmark_obj("chair_1", "armchair", (0.0, 0.0, 0.5), (0.8, 0.8, 1.0))
+    television = _benchmark_obj(
+        "tv_1", "television", (0.0, 2.0, 1.2), (1.2, 0.05, 0.7), yaw=180.0
+    )
+    # 2026-07-14 修改原因：真实 HSSD wall-mounted TV 可能同时带有
+    # object_type=wall_mounted 和错误的 functional scene_object_type=furniture；
+    # FD 应仍按壁挂媒体执行双向朝向检查。
+    television.update(
+        {
+            "object_type": "wall_mounted",
+            "functional_hints": {"scene_object_type": "furniture"},
+        }
+    )
+    check = {
+        "check_id": "fd_chair_tv_wall_bidirectional",
+        "metric": "functional_dependency",
+        "subject_id": "chair_1",
+        "target_ids": ["tv_1"],
+        "relation_type": "seating_to_media",
+    }
+
+    good = _run_direct_case_pack(
+        _benchmark_case_pack([chair, television], [check]),
+        metrics=["functional_dependency"],
+    )
+    assert good[0]["label"] == "pass"
+    assert "wall-mounted media front angle 0deg" in good[0]["reason"]
+
+    television["yaw_deg"] = 0.0
+    bad = _run_direct_case_pack(
+        _benchmark_case_pack([chair, television], [check]),
+        metrics=["functional_dependency"],
+    )
+    assert bad[0]["label"] == "fail"
+    assert "faces away from the seat" in bad[0]["reason"]
+
+
+def test_rule_functional_dependency_wall_media_flags_oblique_seat_alignment() -> None:
+    chair = _benchmark_obj("chair_1", "armchair", (1.7, 0.0, 0.5), (0.8, 0.8, 1.0))
+    television = _benchmark_obj(
+        "tv_1", "television", (0.0, 2.0, 1.2), (1.2, 0.05, 0.7), yaw=180.0
+    )
+    television["object_type"] = "wall_mounted"
+    check = {
+        "check_id": "fd_chair_tv_wall_oblique",
+        "metric": "functional_dependency",
+        "subject_id": "chair_1",
+        "target_ids": ["tv_1"],
+        "relation_type": "seating_to_media",
+    }
+
+    results = _run_direct_case_pack(
+        _benchmark_case_pack([chair, television], [check]),
+        metrics=["functional_dependency"],
+    )
+
+    result = results[0]
+    assert result["label"] == "degraded"
+    assert "not directly aligned" in result["reason"]
+
+
 def test_rule_functional_dependency_standalone_chair_ignores_far_counter() -> None:
     chair = _benchmark_obj("chair_1", "chair", (2.0, 2.0, 0.5), (0.6, 0.6, 1.0))
     counter = _benchmark_obj(
@@ -6926,6 +6988,52 @@ def test_agent_prompt_context_keeps_furniture_media_targets() -> None:
 
     assert "fd_sofa_media" in check_ids
     assert "fd_sofa_sideboard_noise" not in check_ids
+
+
+def test_wall_media_prompt_context_links_same_wall_window_repair() -> None:
+    chair = _benchmark_obj("armchair_0", "armchair", (1.5, 0.0, 0.5), (0.8, 0.8, 1.0))
+    media = _benchmark_obj(
+        "television_0", "television", (-1.2, -2.0, 1.2), (1.2, 0.05, 0.7)
+    )
+    media["object_type"] = "wall_mounted"
+    case_pack = _benchmark_case_pack([chair, media])
+    case_pack["scene_geometry"]["scene_shell"] = {
+        "windows": [
+            {
+                "id": "window_south",
+                "wall_direction": "south",
+                "bbox": {
+                    "min": [0.2, -2.5, 0.0],
+                    "max": [2.2, -2.0, 2.4],
+                },
+            }
+        ]
+    }
+    payload = {
+        "case_pack": case_pack,
+        "results": [
+            {
+                "check_id": "fd_armchair_tv",
+                "metric": "functional_dependency",
+                "label": "degraded",
+                "primary_object": "armchair_0",
+                "related_objects": ["television_0"],
+                "relation_type": "seating_to_media",
+                "reason": "media is not directly aligned with the seat",
+            }
+        ],
+    }
+
+    # 2026-07-14 修改原因：同墙窗口可能没有与当前 TV AABB 重叠，却仍占据
+    # TV 应居中的开口区域；wall agent 需要得到窗口缩小/移动/删除的可执行顺序。
+    context = format_agent_prompt_context(
+        payload,
+        agent_type=AgentType.WALL_MOUNTED,
+    )
+
+    assert "window_south" in context
+    assert "shrink it, move it, then remove it" in context
+    assert "Do not mark a window as blocked solely because it shares a wall" in context
 
 
 def test_markdown_report_excludes_ignored_issues() -> None:
