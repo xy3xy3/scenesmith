@@ -69,6 +69,20 @@ prompt: |
   - **Red coordinate markers**: Grid positions (X, Z values in meters)
   - **Door/Window labels**: Opening identifiers (e.g., "door_1", "window_2")
 
+  **Media Console Alignment and Window Repair**:
+  - When a wall-mounted TV/display is required above a TV stand or media console,
+    the TV centerline must match the support furniture centerline; a legal position
+    at the side of the wall is not acceptable.
+  - If a window occupies the desired centerline, call `list_windows()` and repair
+    the exact opening in this order: `resize_window` (prefer width 0.6m),
+    `move_window`, then `remove_window` only if the first two cannot free the
+    centerline.
+  - These window tools rebuild the current room geometry and refresh wall exclusions.
+    After the repair, call `align_wall_object_over_support` for the TV and TV stand,
+    then call `list_wall_surfaces()` and `observe_scene()` to verify the result.
+  - Never move a correctly placed TV stand or leave the TV shifted sideways merely
+    to preserve an oversized window.
+
   Reference these visual cues when assessing object placement and spatial
   relationships in the rendered views.
 

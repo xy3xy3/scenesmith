@@ -511,7 +511,14 @@ def _copy_checkpoint_for_stage(
     # Materials directory contains textures referenced by floor/wall GLTFs.
     materials_dir = source_scene_dir / "materials"
     if materials_dir.exists():
-        shutil.copytree(materials_dir, target_scene_dir / "materials")
+        # 2026-07-14 修改原因：_rebase_copied_gltf_uris 可能已经把 GLTF
+        # 缺失的外部纹理复制到目标 materials 目录；checkpoint 复制必须允许
+        # 该目录已存在，否则 debug replay 在复制阶段直接失败。
+        shutil.copytree(
+            materials_dir,
+            target_scene_dir / "materials",
+            dirs_exist_ok=True,
+        )
     shutil.copy(
         source_scene_dir / "house_layout.json",
         target_scene_dir / "house_layout.json",

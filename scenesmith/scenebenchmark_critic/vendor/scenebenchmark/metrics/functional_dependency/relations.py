@@ -762,35 +762,92 @@ def _eval_facing_relation(
     living_room_media = object_category(
         subject
     ) in LIVING_ROOM_SEATING and _is_media_target(target)
+    wall_mounted_media = _is_wall_mounted_media_target(target)
+    media_front_angle = (
+        angle_to_target_deg(target, subject) if wall_mounted_media else None
+    )
+    if wall_mounted_media and media_front_angle is None:
+        return "unknown", 0.0, "missing wall-mounted media front orientation geometry."
+
+    # 2026-07-14 修改原因：seating_to_media 原先只检查“座椅 front -> TV”，
+    # 会把屏幕背向座椅或明显偏离观看区域的壁挂电视判为 pass。壁挂媒体还
+    # 必须满足“TV front -> 座椅”方向；普通电视柜/非壁挂媒体继续使用原有
+    # 允许斜向观看的规则，避免把正常的家具布局误判为失败。
+    if wall_mounted_media and media_front_angle is not None:
+        if media_front_angle > 45.0:
+            media_alignment_reason = (
+                "wall-mounted media front faces away from the seat"
+                if media_front_angle > 90.0
+                else "wall-mounted media is not directly aligned with the seat"
+            )
+            return (
+                "fail",
+                0.88,
+                f"distance {dist:.2f}m and seating facing angle {angle:.0f}deg, "
+                f"but {media_alignment_reason} "
+                f"({media_front_angle:.0f}deg).",
+            )
+
     if 0.8 <= dist <= 5.5 and angle <= 65.0:
-        return (
+        label, confidence, reason = (
             "pass",
             0.9,
             f"distance {dist:.2f}m and facing angle {angle:.0f}deg support viewing/use.",
         )
-    if living_room_media and 0.8 <= dist <= 5.5 and angle <= 100.0:
-        return (
+    elif living_room_media and 0.8 <= dist <= 5.5 and angle <= 100.0:
+        label, confidence, reason = (
             "pass",
             0.84,
-            f"living-room seating has usable media view: distance {dist:.2f}m, angle {angle:.0f}deg.",
+            f"living-room seating has usable media view: distance {dist:.2f}m, "
+            f"angle {angle:.0f}deg.",
         )
-    if living_room_media and dist <= 6.5 and angle <= 125.0:
-        return (
+    elif living_room_media and dist <= 6.5 and angle <= 125.0:
+        label, confidence, reason = (
             "degraded",
             0.72,
-            f"media relation is usable but oblique: distance {dist:.2f}m, angle {angle:.0f}deg.",
+            f"media relation is usable but oblique: distance {dist:.2f}m, "
+            f"angle {angle:.0f}deg.",
         )
-    if dist <= 6.5 and angle <= 100.0:
-        return (
+    elif dist <= 6.5 and angle <= 100.0:
+        label, confidence, reason = (
             "degraded",
             0.75,
             f"relation is usable but weak: distance {dist:.2f}m, angle {angle:.0f}deg.",
         )
-    return (
-        "fail",
-        0.85,
-        f"relation does not support use: distance {dist:.2f}m, angle {angle:.0f}deg.",
-    )
+    else:
+        label, confidence, reason = (
+            "fail",
+            0.85,
+            f"relation does not support use: distance {dist:.2f}m, angle {angle:.0f}deg.",
+        )
+
+    if wall_mounted_media and media_front_angle is not None:
+        if media_front_angle > 35.0:
+            return (
+                "degraded" if label != "fail" else label,
+                min(confidence, 0.78),
+                f"{reason.rstrip('.')} but media is not directly aligned with the "
+                f"seat ({media_front_angle:.0f}deg).",
+            )
+        return (
+            label,
+            confidence,
+            f"{reason.rstrip('.')}. wall-mounted media front angle "
+            f"{media_front_angle:.0f}deg.",
+        )
+    return label, confidence, reason
+
+
+def _is_wall_mounted_media_target(target: dict[str, Any]) -> bool:
+    if not _is_media_target(target):
+        return False
+    hints = target.get("functional_hints") or {}
+    object_types = {
+        str(value).strip().lower().replace("-", "_").replace(" ", "_")
+        for value in (hints.get("scene_object_type"), target.get("object_type"))
+        if value
+    }
+    return bool(object_types & {"wall_mounted", "mounted"})
 
 
 def _eval_bed_to_nightstand(

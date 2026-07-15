@@ -271,6 +271,10 @@ class BaseExperiment(ABC):
         agent_config["scenebenchmark_critic"] = config_dict["experiment"].get(
             "scenebenchmark_critic", {}
         )
+        # 2026-07-14 修改原因：wall 阶段的 TV/window 修复需要复用 floor-plan
+        # geometry builder；只把 floor-plan 配置传给 wall agent，不改变其他 agent
+        # 的配置或阶段顺序。
+        agent_config["floor_plan_geometry_config"] = config_dict["floor_plan_agent"]
         agent_name = agent_config["_name"]
 
         if agent_name not in compatible_agents:

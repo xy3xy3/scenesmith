@@ -416,6 +416,14 @@ class FloorPlanTools(DoorWindowMixin, OpenPlanMixin):
             )
 
         @function_tool
+        def move_window(window_id: str, position_along_wall: float) -> Result:
+            """Move an existing window along its current wall."""
+            return self._move_window_impl(
+                window_id=window_id,
+                position_along_wall=position_along_wall,
+            )
+
+        @function_tool
         def get_material(description: str) -> MaterialResult:
             """Search for a material by description.
 
@@ -501,6 +509,7 @@ class FloorPlanTools(DoorWindowMixin, OpenPlanMixin):
             "add_window": add_window,
             "remove_window": remove_window,
             "resize_window": resize_window,
+            "move_window": move_window,
             "get_material": get_material,
             "set_room_materials": set_room_materials,
             "set_exterior_material": set_exterior_material,

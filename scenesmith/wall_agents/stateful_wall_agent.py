@@ -29,6 +29,9 @@ from scenesmith.agent_utils.room import AgentType, RoomScene
 from scenesmith.agent_utils.scoring import WallCritiqueWithScores, log_agent_response
 from scenesmith.agent_utils.workflow_tools import WorkflowTools
 from scenesmith.prompts.registry import WallAgentPrompts
+from scenesmith.scenebenchmark_critic import evaluate_room_scene, format_prompt_context
+from scenesmith.scenebenchmark_critic.config import critic_config_from_any
+from scenesmith.scenebenchmark_critic.prompt_context import format_agent_prompt_context
 from scenesmith.utils.logging import BaseLogger
 from scenesmith.wall_agents.base_wall_agent import BaseWallAgent
 from scenesmith.wall_agents.prompt_constraints import (
@@ -37,6 +40,7 @@ from scenesmith.wall_agents.prompt_constraints import (
 from scenesmith.wall_agents.tools.vision_tools import WallVisionTools
 from scenesmith.wall_agents.tools.wall_surface import WallSurface
 from scenesmith.wall_agents.tools.wall_tools import WallTools
+from scenesmith.wall_agents.tools.window_tools import WindowRepairTools
 
 console_logger = logging.getLogger(__name__)
 
@@ -135,6 +139,8 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
 
         # Wall tools will be set when adding wall objects.
         self.wall_tools: WallTools | None = None
+        self.window_repair_tools: WindowRepairTools | None = None
+        self._latest_scenebenchmark_critic_context: str | None = None
         self.required_wall_object_constraints = (
             "- No explicit wall-object obligations were extracted from the prompt. "
             "Decorate walls contextually."
@@ -164,13 +170,41 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
             asset_manager=self.asset_manager,
             cfg=self.cfg,
         )
-        workflow_tools = WorkflowTools()
+        floor_plan_cfg = self.cfg.get("floor_plan_geometry_config")
+        if floor_plan_cfg:
+            # 2026-07-14 修改原因：Qwen 只有在 wall designer 的工具列表里看到
+            # 窗口操作，才能执行 critic 的“缩小→移动→删除”修复，而不是继续把 TV
+            # 偏到窗口旁边。每次窗口操作还会重建当前房间结构几何。
+            self.window_repair_tools = WindowRepairTools(
+                scene=self.scene,
+                house_layout=self.house_layout,
+                floor_plan_cfg=floor_plan_cfg,
+                room_output_dir=self.logger.output_dir,
+                refresh_wall_surfaces=self._refresh_wall_surfaces_after_window_edit,
+                rendering_manager=self.rendering_manager,
+                logger=self.logger,
+            )
+        self.workflow_tools = WorkflowTools()
 
         return [
             *vision_tools.tools.values(),
             *self.wall_tools.tools.values(),
-            *workflow_tools.tools.values(),
+            *(
+                self.window_repair_tools.tools.values()
+                if self.window_repair_tools is not None
+                else []
+            ),
+            *self.workflow_tools.tools.values(),
         ]
+
+    def _refresh_wall_surfaces_after_window_edit(self) -> None:
+        """Refresh placement exclusions after a window geometry edit."""
+        refreshed = self._extract_wall_surfaces(room_id=self.scene.room_id)
+        # 2026-07-14 修改原因：vision tools 和 wall tools 都持有同一个 list 引用；
+        # 原地更新可让 Qwen 后续 list/observe/move 调用立即看到新的开口位置。
+        self.wall_surfaces[:] = refreshed
+        if self.wall_tools is not None:
+            self.wall_tools.refresh_wall_surfaces(self.wall_surfaces)
 
     def _create_designer_agent(
         self, tools: list[FunctionTool], room_description: str
@@ -240,6 +274,59 @@ class StatefulWallAgent(BaseStatefulAgent, BaseWallAgent):
             wall_count=len(self.wall_surfaces),
             required_wall_objects=self.required_wall_object_constraints,
         )
+
+    def _build_scenebenchmark_critic_context(self) -> str | None:
+        """Inject wall-actionable critic issues into the wall critic prompt."""
+        self._latest_scenebenchmark_critic_context = None
+        critic_config = critic_config_from_any(self.cfg)
+        if not critic_config.enabled or not critic_config.inject_into_llm_critic:
+            return None
+        scene = getattr(self, "scene", None)
+        if scene is None:
+            return None
+        # 2026-07-14 修改原因：window + wall-mounted display 冲突属于
+        # interaction_clearance，但共享 BaseStatefulAgent 只给 furniture/
+        # manipuland 注入规则。wall agent 在本包内复用同一 critic payload，避免
+        # 修改所有 agent 的公共基类，同时让窗口优先修复建议真正可见。
+        payload = evaluate_room_scene(
+            scene,
+            config=self.cfg,
+            stage=f"llm_critic_{self.agent_type.value}",
+            blender_server=getattr(self, "blender_server", None),
+        )
+        if critic_config.agent_prompt_context_filter_enabled:
+            context = format_agent_prompt_context(
+                payload,
+                scene=scene,
+                agent_type=self.agent_type,
+                current_furniture_id=getattr(self, "current_furniture_id", None),
+                max_issues=critic_config.max_issues_for_prompt,
+            )
+        else:
+            context = format_prompt_context(
+                payload, max_issues=critic_config.max_issues_for_prompt
+            )
+        if "no degraded or failed checks" not in context.lower():
+            # 2026-07-14 修改原因：仅把规则放进 critic 输入不够；Qwen 可能在
+            # 最终 critique 中省略它，planner 随后无法把窗口操作传给 designer。
+            # 将 actionable context 原样带回 request_critique 返回值，保证反馈链路
+            # 可执行且包含准确的 window/TV/support IDs。
+            self._latest_scenebenchmark_critic_context = context
+        return context
+
+    async def _request_critique_impl(self, update_checkpoint: bool = True) -> str:
+        """Return wall critique together with actionable geometry evidence."""
+        self._latest_scenebenchmark_critic_context = None
+        critique = await super()._request_critique_impl(
+            update_checkpoint=update_checkpoint
+        )
+        if self._latest_scenebenchmark_critic_context:
+            critique += (
+                "\n\nVERBATIM SceneBenchmark action context (must be passed to "
+                "the designer):\n"
+                + self._latest_scenebenchmark_critic_context
+            )
+        return critique
 
     def _create_planner_agent(
         self, tools: list[FunctionTool], room_description: str

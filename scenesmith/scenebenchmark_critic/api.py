@@ -25,6 +25,12 @@ from scenesmith.scenebenchmark_critic.dining_seat_distribution import (
 from scenesmith.scenebenchmark_critic.manipuland_completeness import (
     evaluate_manipuland_completeness,
 )
+from scenesmith.scenebenchmark_critic.media_support_alignment import (
+    evaluate_media_support_alignment,
+)
+from scenesmith.scenebenchmark_critic.room_center_alignment import (
+    evaluate_room_center_alignment,
+)
 from scenesmith.scenebenchmark_critic.orientation_contracts import (
     stabilize_orientation_contracts,
 )
@@ -72,6 +78,15 @@ def evaluate_room_scene(
         stage=stage,
     )
     results = run_case_pack_checks(case_pack, config=critic_config)
+    # 2026-07-14 修改原因：wall-mounted TV 即使避开窗口，也可能被迫偏离 TV
+    # stand；将“TV 必须位于 TV stand 上方”作为通用 functional dependency，
+    # 让 wall critic 能给出精确、可执行的窗口释放和 TV 居中反馈。
+    if "functional_dependency" in critic_config.metrics:
+        results.extend(evaluate_media_support_alignment(case_pack))
+        # 2026-07-15 修改原因：家具 critic 只检查桌椅之间的关系，无法发现
+        # prompt 明确要求“in the center”的主家具被局部 clearance 修复推离房间中心。
+        # 增加通用 room-center functional dependency，约束中心锚点并给出成组修复建议。
+        results.extend(evaluate_room_center_alignment(case_pack))
     # 2026-07-13 修改原因：dining_set 只约束椅子朝桌，无法发现单椅偏离桌边
     # 中心或同边多椅挤在一侧；追加按桌局部坐标计算的通用座椅分布检查。
     results.extend(evaluate_dining_seat_distribution(case_pack))

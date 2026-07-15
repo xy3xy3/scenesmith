@@ -56,6 +56,7 @@ FURNITURE_RELATIONS = {
     "seating_to_media",
     "seating_to_work_surface",
     "side_or_back_against_wall",
+    "room_center_alignment",
 }
 MANIPULAND_RELATIONS = {
     "computer_peripheral_faces_screen",
@@ -118,6 +119,14 @@ def format_agent_prompt_context(
     )
     if completeness_context:
         context = f"{context}\n\n{completeness_context}"
+    wall_media_context = _format_wall_media_window_context(
+        payload, filtered, agent_type
+    )
+    if wall_media_context:
+        context = f"{context}\n\n{wall_media_context}"
+    room_center_context = _format_room_center_contract_context(payload, agent_type)
+    if room_center_context:
+        context = f"{context}\n\n{room_center_context}"
     return context
 
 
@@ -200,6 +209,208 @@ def _format_orientation_contract_context(
     return "\n".join(lines)
 
 
+def _format_room_center_contract_context(
+    payload: dict[str, Any], agent_type: AgentType | str
+) -> str:
+    """Expose prompt center anchors even when their deterministic check passes."""
+    if _agent_value(agent_type) != AgentType.FURNITURE.value:
+        return ""
+    rows = [
+        result
+        for result in payload.get("results") or []
+        if isinstance(result, dict)
+        and result.get("relation_type") == "room_center_alignment"
+    ]
+    if not rows:
+        return ""
+    lines = [
+        "Authoritative prompt room-center placement contracts:",
+        "These anchors must remain near the room center while local accessibility "
+        "or clearance issues are repaired.",
+    ]
+    for result in rows:
+        diagnostics = result.get("diagnostics") or {}
+        room_center = diagnostics.get("room_center_xy") or []
+        object_center = diagnostics.get("object_center_xy") or []
+        offset = diagnostics.get("offset_m")
+        allowed = diagnostics.get("allowed_offset_m")
+        related = ", ".join(result.get("related_objects") or []) or "none"
+        lines.append(
+            f"- `{result.get('primary_object')}`: label={result.get('label')}; "
+            f"target_room_center={room_center}; current_center={object_center}; "
+            f"offset={offset}m (allowed={allowed}m); associated_seating={related}."
+        )
+    lines.append(
+        "If a center anchor has accessibility problems, move the anchor and its "
+        "associated seating as a coordinated group, recompute table-local seating "
+        "slots, and recheck spatial_accessibility and interaction_clearance. Do not "
+        "move the anchor alone, and after any checkpoint reset call "
+        "get_current_scene_state() before using absolute x/y targets."
+    )
+    return "\n".join(lines)
+
+
+def _format_wall_media_window_context(
+    payload: dict[str, Any],
+    filtered: list[dict[str, Any]],
+    agent_type: AgentType | str,
+) -> str:
+    """Add actionable same-wall window guidance for media alignment issues."""
+    if _agent_value(agent_type) != AgentType.WALL_MOUNTED.value:
+        return ""
+    geometry = (payload.get("case_pack") or {}).get("scene_geometry") or {}
+    objects = {
+        str(obj.get("id")): obj
+        for obj in geometry.get("objects") or []
+        if isinstance(obj, dict) and obj.get("id")
+    }
+    windows = [
+        window
+        for window in ((geometry.get("scene_shell") or {}).get("windows") or [])
+        if isinstance(window, dict) and window.get("id")
+    ]
+    if not windows:
+        return ""
+
+    rows: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for result in filtered:
+        relation_type = str(result.get("relation_type") or "")
+        if relation_type == "media_over_support_alignment":
+            media = objects.get(str(result.get("primary_object") or ""))
+            support_ids = _related_ids(result)
+            support = objects.get(support_ids[0]) if support_ids else None
+            if not _is_wall_mounted_object(media) or not _is_media(media):
+                continue
+            media_id = str(media.get("id") or result.get("primary_object") or "")
+            support_id = str(support.get("id") or support_ids[0]) if support else ""
+            # 2026-07-15 修改原因：TV 与 TV stand 可能使用不同命名体系的墙面
+            # ID（如 living_room_south / south_wall）；prompt 必须使用 critic
+            # 解析出的目标墙和真实窗口，而不是让模型再次选择任意侧墙。
+            diagnostics = result.get("diagnostics") or {}
+            target_surface_id = str(
+                diagnostics.get("target_wall_surface_id") or ""
+            )
+            target_window_ids = [
+                str(item)
+                for item in diagnostics.get("target_wall_window_ids") or []
+                if str(item)
+            ]
+            if target_window_ids:
+                rows.append(
+                    f"- `{media_id}` must move to the wall containing support "
+                    f"`{support_id}` (`{target_surface_id}`), but that wall has "
+                    f"window(s) {', '.join(target_window_ids)}. First call "
+                    "`list_windows()` and repair the target opening in this order: "
+                    "shrink it, move it on the same wall, then remove it only if "
+                    "necessary; afterward call "
+                    f"`align_wall_object_over_support(object_id=\"{media_id}\", "
+                    f"support_object_id=\"{support_id}\")`. Do not move the TV "
+                    "to an arbitrary side wall to avoid the window."
+                )
+            elif target_surface_id:
+                rows.append(
+                    f"- `{media_id}` must be on support `{support_id}`'s wall "
+                    f"(`{target_surface_id}`), centered above it. Call "
+                    f"`align_wall_object_over_support(object_id=\"{media_id}\", "
+                    f"support_object_id=\"{support_id}\")`; do not leave the TV "
+                    "on an arbitrary side wall."
+                )
+            matching_windows = [
+                window for window in windows if _objects_share_wall(media, window)
+            ]
+            if not matching_windows and not target_window_ids:
+                rows.append(
+                    f"- `{media_id}` is not centered over support `{support_id}`. "
+                    "Call `align_wall_object_over_support` after checking openings; "
+                    "do not move the TV to an arbitrary side of the wall."
+                )
+            for window in matching_windows:
+                key = (media_id, str(window.get("id") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                direction = str(window.get("wall_direction") or "the same wall")
+                rows.append(
+                    f"- `{media_id}` must be centered over `{support_id}` but shares "
+                    f"the {direction} wall with window `{window.get('id')}`. Use the "
+                    "wall designer tools in this exact order: `list_windows()`; "
+                    f"`resize_window(window_id=\"{window.get('id')}\", width=0.6)`; "
+                    "then `align_wall_object_over_support(object_id=\""
+                    f"{media_id}\", support_object_id=\"{support_id}\")`. "
+                    "If the resized opening still blocks the alignment, use "
+                    "`move_window` on the same wall, and only then `remove_window`. "
+                    "Never leave the TV shifted sideways merely to avoid the window."
+                )
+            continue
+        if relation_type != "seating_to_media":
+            continue
+        for target_id in _related_ids(result):
+            media = objects.get(target_id)
+            if not _is_wall_mounted_object(media) or not _is_media(media):
+                continue
+            for window in windows:
+                if not _objects_share_wall(media, window):
+                    continue
+                key = (target_id, str(window.get("id") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                direction = str(window.get("wall_direction") or "the same wall")
+                rows.append(
+                    f"- `{target_id}` has a seating-to-media issue and shares the "
+                    f"{direction} wall with window `{window.get('id')}`. If that "
+                    "opening prevents a centered, direct media view, repair the "
+                    "window first in this order: shrink it, move it, then remove "
+                    "it; afterward center/rotate the media."
+                )
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            "Wall-mounted media/window coordination guidance:",
+            *rows,
+            "Do not mark a window as blocked solely because it shares a wall; change "
+            "it only when the opening prevents the required media alignment. The "
+            "window edit tools rebuild the wall/SDF geometry and refresh the excluded "
+            "regions; call `list_windows()` again after every edit.",
+        ]
+    )
+
+
+def _objects_share_wall(media: dict[str, Any], window: dict[str, Any]) -> bool:
+    """Return whether a wall-mounted object and shell window use the same wall."""
+    window_direction = str(window.get("wall_direction") or "").strip().lower()
+    if window_direction not in {"north", "south", "east", "west"}:
+        return False
+    placement = media.get("placement_info") or {}
+    surface_id = str(placement.get("parent_surface_id") or "").lower()
+    if window_direction in surface_id:
+        return True
+
+    bbox = media.get("bbox_world") or {}
+    window_bbox = window.get("bbox") or {}
+    omin, omax = bbox.get("min"), bbox.get("max")
+    wmin, wmax = window_bbox.get("min"), window_bbox.get("max")
+    if not all(isinstance(value, (list, tuple)) for value in (omin, omax, wmin, wmax)):
+        return False
+    if any(len(value) < 2 for value in (omin, omax, wmin, wmax)):
+        return False
+    wall_axis = 1 if window_direction in {"north", "south"} else 0
+    wall_coord = float(
+        wmax[wall_axis]
+        if window_direction in {"north", "east"}
+        else wmin[wall_axis]
+    )
+    distance_to_wall = max(
+        float(omin[wall_axis]) - wall_coord,
+        wall_coord - float(omax[wall_axis]),
+        0.0,
+    )
+    window_depth = abs(float(wmax[wall_axis]) - float(wmin[wall_axis]))
+    return distance_to_wall <= max(0.12, window_depth + 0.05)
+
+
 def filter_prompt_results_for_agent(
     payload: dict[str, Any],
     *,
@@ -221,6 +432,9 @@ def filter_prompt_results_for_agent(
             continue
         if agent == AgentType.FURNITURE.value:
             if not _furniture_issue_is_relevant(result, objects, scope):
+                continue
+        elif agent == AgentType.WALL_MOUNTED.value:
+            if not _wall_mounted_issue_is_relevant(result, objects, scope):
                 continue
         elif agent == AgentType.MANIPULAND.value:
             if not _manipuland_issue_is_relevant(result, objects, scope):
@@ -245,6 +459,18 @@ def _scope_for_agent(
         }
         return {
             "object_ids": furniture_ids,
+            "support_object_ids": set(),
+            "workstation_ids": set(),
+        }
+
+    if agent == AgentType.WALL_MOUNTED.value:
+        wall_object_ids = {
+            object_id
+            for object_id, obj in objects.items()
+            if _is_wall_mounted_object(obj)
+        }
+        return {
+            "object_ids": wall_object_ids,
             "support_object_ids": set(),
             "workstation_ids": set(),
         }
@@ -354,6 +580,26 @@ def _manipuland_issue_is_relevant(
     return False
 
 
+def _wall_mounted_issue_is_relevant(
+    result: dict[str, Any],
+    objects: dict[str, dict[str, Any]],
+    scope: dict[str, set[str]],
+) -> bool:
+    """Select critic issues actionable by the wall-mounted agent."""
+    involved = {
+        str(result.get("primary_object") or ""),
+        *_related_ids(result),
+    }
+    # Window IDs live in scene_shell rather than scene_geometry.objects. A
+    # window-clearance failure is therefore relevant when one of its related
+    # blockers is a current wall-mounted object.
+    if str(result.get("check_id") or "").startswith("window_clearance__"):
+        return bool(involved & scope["object_ids"])
+    if result.get("metric") == "interaction_clearance":
+        return bool(involved & scope["object_ids"])
+    return bool(involved & scope["object_ids"])
+
+
 def _dedupe_and_sort(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key: dict[tuple[str, str, str, tuple[str, ...]], dict[str, Any]] = {}
     for result in results:
@@ -418,9 +664,26 @@ def _scene_object_type(obj: dict[str, Any] | None) -> str:
     if not obj:
         return ""
     hints = obj.get("functional_hints") or {}
-    return str(
-        hints.get("scene_object_type") or obj.get("object_type") or ""
-    ).strip().lower()
+    hinted_type = str(hints.get("scene_object_type") or "").strip().lower()
+    declared_type = str(obj.get("object_type") or "").strip().lower()
+    # 2026-07-14 修改原因：HSSD/资产标注偶尔把 wall-mounted TV 的 functional
+    # hint 标成 furniture；只要任一来源明确声明壁挂物，wall agent 就必须收到
+    # 相关 critic issue，不能被错误 hint 覆盖。
+    if {hinted_type, declared_type} & {"wall_mounted", "wall-mounted", "mounted"}:
+        return AgentType.WALL_MOUNTED.value
+    return hinted_type or declared_type
+
+
+def _is_wall_mounted_object(obj: dict[str, Any] | None) -> bool:
+    if not obj:
+        return False
+    hints = obj.get("functional_hints") or {}
+    object_types = {
+        str(value).strip().lower()
+        for value in (hints.get("scene_object_type"), obj.get("object_type"))
+        if value
+    }
+    return bool(object_types & {"wall_mounted", "wall-mounted", "mounted"})
 
 
 def _category(obj: dict[str, Any] | None) -> str:

@@ -977,3 +977,59 @@ class DoorWindowMixin:
         opening.sill_height = new_sill
         self.layout.invalidate_room_geometry(window.room_id)
         return Result(success=True, message=f"Resized window '{window_id}'.")
+
+    def _move_window_impl(self, window_id: str, position_along_wall: float):
+        """Move a window along its current wall without changing its size."""
+        from scenesmith.floor_plan_agents.tools.floor_plan_tools import Result
+
+        # 2026-07-14 修改原因：窗口修复不能只有缩小/删除；当同墙仍需保留采光
+        # 时，wall critic/Qwen 需要把窗口移到 TV stand 对齐区之外。
+        error = self._check_rooms_exist()
+        if error:
+            return error
+        window = next((item for item in self.layout.windows if item.id == window_id), None)
+        if window is None:
+            return self._fail(f"Window '{window_id}' not found.")
+
+        placed_room = next(
+            (room for room in self.layout.placed_rooms if room.room_id == window.room_id),
+            None,
+        )
+        wall = None
+        if placed_room and window.wall_direction:
+            wall = next(
+                (item for item in placed_room.walls if item.direction == window.wall_direction),
+                None,
+            )
+        if wall is None:
+            return self._fail(f"Wall for window '{window_id}' is no longer available.")
+
+        new_position = float(position_along_wall)
+        if new_position < 0 or new_position + window.width > wall.length:
+            return self._fail(
+                f"Window '{window_id}' at position {new_position:.2f}m does not fit "
+                f"on its {wall.length:.2f}m wall."
+            )
+
+        for opening in wall.openings:
+            if opening.opening_id == window_id:
+                continue
+            if (
+                new_position < opening.position_along_wall
+                + opening.width
+                + self.min_opening_separation
+                and new_position + window.width
+                > opening.position_along_wall - self.min_opening_separation
+            ):
+                return self._fail(
+                    f"Moved window '{window_id}' overlaps opening "
+                    f"'{opening.opening_id}'."
+                )
+
+        window.position_along_wall = new_position
+        opening = next((item for item in wall.openings if item.opening_id == window_id), None)
+        if opening is None:
+            return self._fail(f"Opening for window '{window_id}' is missing.")
+        opening.position_along_wall = new_position
+        self.layout.invalidate_room_geometry(window.room_id)
+        return Result(success=True, message=f"Moved window '{window_id}'.")

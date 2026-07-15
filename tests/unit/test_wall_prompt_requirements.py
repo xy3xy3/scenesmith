@@ -25,10 +25,21 @@ class TestWallPromptRequirements(unittest.TestCase):
     def test_desktop_monitor_without_wall_context_is_not_promoted(self):
         """Desk monitors should stay out of wall-stage obligations."""
         constraints = build_required_wall_object_constraints(
-            "A home office with a desk, monitor, keyboard, and office chair."
+            "A study with a desk centered against the back wall, a computer monitor "
+            "on the desk, and an office chair tucked under the desk."
         )
 
         self.assertIn("No explicit wall-object obligations", constraints)
+
+    def test_explicit_wall_monitor_is_promoted(self):
+        """A monitor explicitly attached to a wall remains a wall obligation."""
+        # 2026-07-15 修改原因：修复桌面 monitor 误触发后，回归真正的 wall-mounted
+        # monitor 仍能进入 wall 阶段，避免用过窄的 TV-only 规则打掉合法需求。
+        constraints = build_required_wall_object_constraints(
+            "A control room with a monitor mounted on the wall above the console."
+        )
+
+        self.assertIn("REQUIRED media display", constraints)
 
     def test_wall_prompts_accept_required_wall_objects_template_var(self):
         """Prompt files should render cleanly with the new required-wall context."""

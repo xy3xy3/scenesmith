@@ -822,7 +822,7 @@ def build_clearance_checks(objects: dict[str, dict[str, Any]]) -> list[dict[str,
 def build_window_clearance_checks(
     geometry: dict[str, Any], objects: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Build checks for furniture that blocks a window's room-side zone."""
+    """Build checks for objects that make a window/wall opening unusable."""
     # 2026-07-14 修改原因：窗口可能在家具阶段被衣柜、柜体或高家具遮挡；
     # critic 应优先给出 remove_window/move_window 建议，而不是只移动家具。
     shell = geometry.get("scene_shell") or {}
@@ -840,6 +840,7 @@ def build_window_clearance_checks(
         sill = float(window.get("sill_height") or 0.0)
         blockers: list[str] = []
         advisory_blockers: list[str] = []
+        wall_mounted_blockers: list[str] = []
         for object_id, obj in objects.items():
             if _norm_category(obj) in _STRUCTURAL_BLOCKER_CATEGORIES:
                 continue
@@ -866,6 +867,15 @@ def build_window_clearance_checks(
                     advisory_blockers.append(str(object_id))
                 else:
                     blockers.append(str(object_id))
+            # 2026-07-14 修改原因：壁挂电视/镜子等不是“房间侧家具”，但窗口
+            # 仍会占用同一面墙的有效挂载区。原先只比较完整 3D AABB，且只检查
+            # 窗口被家具遮挡，导致同墙的 window + wall-mounted display 同时 pass。
+            # 沿墙轴和高度轴检查开口重叠，并验证物体确实贴近该窗口所在墙面，
+            # 适配南北/东西墙和不同厚度的壁挂资产。
+            if _wall_mounted_overlaps_window(obj, window, bbox):
+                wall_mounted_blockers.append(str(object_id))
+
+        blockers = sorted(set([*blockers, *wall_mounted_blockers]))
         checks.append(
             {
                 "check_id": f"window_clearance__{window_id}",
@@ -880,6 +890,7 @@ def build_window_clearance_checks(
                     "label": "fail" if blockers else "pass",
                     "blocking_objects": sorted(set(blockers)),
                     "advisory_blocking_objects": sorted(set(advisory_blockers)),
+                    "wall_mounted_blocking_objects": sorted(set(wall_mounted_blockers)),
                     "window_id": window_id,
                     "sill_height": sill,
                     "advisory_reason": (
@@ -898,6 +909,72 @@ def build_window_clearance_checks(
             }
         )
     return checks
+
+
+def _wall_mounted_overlaps_window(
+    obj: dict[str, Any], window: dict[str, Any], window_bbox: dict[str, Any]
+) -> bool:
+    """Return whether a wall-mounted object's wall footprint overlaps an opening."""
+    hints = obj.get("functional_hints") or {}
+    # 2026-07-14 修改原因：部分资产的 functional hint 会错误标成
+    # furniture，但 object_type 仍保留 wall_mounted；任一字段明确声明壁挂物
+    # 都应参与窗口墙面开口净空检查，避免 TV 落入窗口区域时漏报。
+    object_types = {
+        str(value).strip().lower()
+        for value in (hints.get("scene_object_type"), obj.get("object_type"))
+        if value
+    }
+    if not object_types & {"wall_mounted", "wall-mounted", "mounted"}:
+        return False
+    obbox = obj.get("bbox_world")
+    if not isinstance(obbox, dict):
+        return False
+    omin, omax = obbox.get("min"), obbox.get("max")
+    wmin, wmax = window_bbox.get("min"), window_bbox.get("max")
+    if not all(isinstance(value, (list, tuple)) for value in (omin, omax, wmin, wmax)):
+        return False
+    if any(len(value) < 3 for value in (omin, omax, wmin, wmax)):
+        return False
+
+    direction = str(window.get("wall_direction") or "").strip().lower()
+    if direction in {"north", "south"}:
+        along_axis = 0
+        wall_axis = 1
+    elif direction in {"east", "west"}:
+        along_axis = 1
+        wall_axis = 0
+    else:
+        # 2026-07-14 修改原因：部分导出的 shell 没有 wall_direction；用窗口
+        # bbox 的薄轴推断墙面方向，避免规则只适用于带完整标注的房间。
+        horizontal_sizes = [
+            float(wmax[index]) - float(wmin[index]) for index in (0, 1)
+        ]
+        wall_axis = 0 if horizontal_sizes[0] <= horizontal_sizes[1] else 1
+        along_axis = 1 - wall_axis
+
+    overlap_min = max(float(omin[along_axis]), float(wmin[along_axis]))
+    overlap_max = min(float(omax[along_axis]), float(wmax[along_axis]))
+    if overlap_max - overlap_min <= 1e-5:
+        return False
+
+    # A window bbox can include the wall thickness and a floor-to-sill sentinel;
+    # use the sill as the lower opening bound so low wall decor is not rejected.
+    sill = float(window.get("sill_height") or wmin[2])
+    if min(float(omax[2]), float(wmax[2])) - max(float(omin[2]), sill) <= 1e-5:
+        return False
+
+    wall_coord = float(
+        wmax[wall_axis]
+        if direction in {"north", "east"}
+        else wmin[wall_axis]
+    )
+    distance_to_wall = max(
+        float(omin[wall_axis]) - wall_coord,
+        wall_coord - float(omax[wall_axis]),
+        0.0,
+    )
+    window_depth = abs(float(wmax[wall_axis]) - float(wmin[wall_axis]))
+    return distance_to_wall <= max(0.12, window_depth + 0.05)
 
 
 def evaluate_clearance(check: dict[str, Any]) -> dict[str, Any]:
@@ -925,6 +1002,11 @@ def evaluate_clearance(check: dict[str, Any]) -> dict[str, Any]:
         "blocking_objects": blockers,
         "confidence": float(cr.get("confidence") or 0.0),
         "reason": reason,
+        # 2026-07-14 修改原因：window checks 的 blocker 原先只在
+        # ``blocking_objects`` 中，agent prompt 过滤器无法知道哪个 wall-mounted
+        # 对象需要修复；将它们作为关系对象暴露给对应 agent，同时保持通用
+        # interaction-clearance 结果结构不变。
+        "related_objects": blockers,
         "diagnostics": {
             "clearance_type": cr.get("clearance_type"),
             "direction": cr.get("direction"),
