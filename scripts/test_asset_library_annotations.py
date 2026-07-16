@@ -135,6 +135,36 @@ def main() -> int:
           all((r.get("scenebenchmark_functional_hints") or {}).get("accessibility_policy")
               for r in all_records.values()))
 
+    # 8) all assets carry self-emission capability; lightweight access does not
+    # trigger optional clearance/affordance enrichment.
+    emission_counts: dict[str, int] = {}
+    all_have_self_emission = True
+    for record in all_records.values():
+        emission = record.get("self_emission") or {}
+        if emission.get("schema_version") != "hssd_self_emission@1.0":
+            all_have_self_emission = False
+            break
+        key = emission.get("emission_class", "none")
+        emission_counts[key] = emission_counts.get(key, 0) + 1
+    check("all_records_have_self_emission",
+          all_have_self_emission and sum(emission_counts.values()) == 10963)
+    check("self_emission_class_counts", emission_counts == {
+        "luminaire": 998,
+        "emissive_display": 63,
+        "flame": 129,
+        "none": 9773,
+    })
+    lamp_emission = portable.get_self_emission_annotations(
+        "014fab638dc1b20201ac76b8ee36a14e92463c5a"
+    ) or {}
+    check("table_lamp_self_emissive", lamp_emission.get("is_self_emissive") is True)
+    check("table_lamp_photometry",
+          (lamp_emission.get("photometry") or {}).get("luminous_flux_lm") == 806.0)
+    emitters = portable.search_self_emission(
+        is_self_emissive=True, emission_class="luminaire", limit=10000
+    )
+    check("luminaire_search_count", len(emitters) == 998)
+
     print(f"\n{'ALL PASS' if not failures else 'FAILURES: ' + ', '.join(failures)}")
     return 1 if failures else 0
 

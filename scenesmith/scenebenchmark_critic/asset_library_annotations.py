@@ -678,6 +678,7 @@ class AssetLibraryAnnotationStore:
         self.hssd_articulation_clearance_run_path = Path(hssd_articulation_clearance_run_path)
         self.hssd_clearance_voxel_results_path = Path(hssd_clearance_voxel_results_path)
         self._records: dict[str, dict[str, Any]] | None = None
+        self._self_emission_indices: dict[str, dict[Any, list[str]]] | None = None
         self._nonartic_clearance: dict[str, dict[str, Any]] | None = None
         self._artic_clearance: dict[str, dict[str, Any]] | None = None
         self._functional_partners: dict[str, dict[str, Any]] | None = None
@@ -693,6 +694,23 @@ class AssetLibraryAnnotationStore:
             with opener(self.lookup_path, "rt", encoding="utf-8") as f:
                 self._records = json.load(f)
         return self._records
+
+    def _emission_indices(self) -> dict[str, dict[Any, list[str]]]:
+        if self._self_emission_indices is None:
+            indices: dict[str, dict[Any, list[str]]] = {
+                "is_self_emissive": {},
+                "emission_class": {},
+            }
+            for asset_id, record in self._load().items():
+                emission = record.get("self_emission") or {}
+                values = {
+                    "is_self_emissive": bool(emission.get("is_self_emissive")),
+                    "emission_class": emission.get("emission_class", "none"),
+                }
+                for name, value in values.items():
+                    indices[name].setdefault(value, []).append(asset_id)
+            self._self_emission_indices = indices
+        return self._self_emission_indices
 
     def _load_clearance_items(self, filename: str) -> dict[str, dict[str, Any]]:
         with (self.clearance_dir / filename).open("r", encoding="utf-8") as f:
@@ -952,6 +970,52 @@ class AssetLibraryAnnotationStore:
             raise KeyError(f"HSSD id not found in annotation lookup: {normalized}")
         return record
 
+    def get_self_emission_annotations(self, hssd_id: str) -> dict[str, Any] | None:
+        """Return the portable self-emission record without external enrichment."""
+        normalized = normalize_hssd_id(hssd_id)
+        record = self._load().get(normalized)
+        if record is None:
+            return None
+        emission = record.get("self_emission")
+        return dict(emission) if isinstance(emission, dict) else None
+
+    def search_self_emission(
+        self,
+        *,
+        is_self_emissive: bool = True,
+        emission_class: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search portable emitter annotations without loading auxiliary layers."""
+        if limit < 1:
+            return []
+        allowed_classes = {"none", "luminaire", "emissive_display", "flame"}
+        if emission_class is not None and emission_class not in allowed_classes:
+            raise ValueError(
+                "emission_class must be one of: " + ", ".join(sorted(allowed_classes))
+            )
+        indices = self._emission_indices()
+        ids = indices["is_self_emissive"].get(bool(is_self_emissive), [])
+        class_ids = (
+            set(indices["emission_class"].get(emission_class, []))
+            if emission_class is not None
+            else None
+        )
+        matches: list[dict[str, Any]] = []
+        records = self._load()
+        for asset_id in ids:
+            if class_ids is not None and asset_id not in class_ids:
+                continue
+            record = records[asset_id]
+            matches.append({
+                "hssd_id": asset_id,
+                "category": record.get("category") or record.get("category_key"),
+                "self_emission": record.get("self_emission"),
+            })
+            if len(matches) >= limit:
+                break
+        return matches
+
     def search_category(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         q = str(query or "").strip().lower().replace("_", " ")
         if not q:
@@ -977,3 +1041,10 @@ def get_hssd_asset_annotations(hssd_id: str) -> dict[str, Any] | None:
     if _DEFAULT_STORE is None:
         _DEFAULT_STORE = AssetLibraryAnnotationStore()
     return _DEFAULT_STORE.get(hssd_id)
+
+
+def get_hssd_self_emission_annotations(hssd_id: str) -> dict[str, Any] | None:
+    global _DEFAULT_STORE
+    if _DEFAULT_STORE is None:
+        _DEFAULT_STORE = AssetLibraryAnnotationStore()
+    return _DEFAULT_STORE.get_self_emission_annotations(hssd_id)

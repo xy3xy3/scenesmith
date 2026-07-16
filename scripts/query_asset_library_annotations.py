@@ -29,11 +29,21 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("hssd_id", help="40-character HSSD id, optionally prefixed with hssd:")
     ap.add_argument("--lookup", type=Path, default=None)
+    ap.add_argument(
+        "--self-emission-only",
+        action="store_true",
+        help="return only the lightweight self_emission annotation",
+    )
     args = ap.parse_args()
 
     module = _load_lookup_module()
     store = module.AssetLibraryAnnotationStore(args.lookup or module.DEFAULT_LOOKUP)
-    record = store.require(args.hssd_id)
+    if args.self_emission_only:
+        record = store.get_self_emission_annotations(args.hssd_id)
+        if record is None:
+            raise KeyError(f"HSSD id not found: {args.hssd_id}")
+    else:
+        record = store.require(args.hssd_id)
     print(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True))
 
 

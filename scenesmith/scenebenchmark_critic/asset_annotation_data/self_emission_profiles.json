@@ -1,0 +1,189 @@
+{
+  "schema_version": "hssd_self_emission_profiles@1.0",
+  "sources": {
+    "nist_candela": "https://www.nist.gov/pml/sensor-science/optical-radiation/realization-candela",
+    "ies_luminous_intensity": "https://ies.org/definitions/luminous-intensity/",
+    "doe_led_replacement_table": "https://www.energy.gov/cmei/femp/purchasing-energy-efficient-light-bulbs",
+    "philips_table_lamp_806lm": "https://www.assets.lighting.philips.com/is/content/PhilipsLighting/4080130p7-pss-en_in",
+    "philips_track_700lm_9w": "https://www.assets.lighting.philips.com/is/content/PhilipsConsumer/PDFDownloads/United%20States/ODLI20170328_001_UPD-en_US_PLt-1443BR_LED%20Brochure_12.2016.pdf",
+    "philips_street_2800lm_26w": "https://images.philips.com/is/content/PhilipsConsumer/PDFDownloads/United%20States/ODLI20171115_002_UPD_en_US_PLt-16171BN_High_lumen_post_top_lamps-press.pdf",
+    "dell_monitor_250nit_25w": "https://downloads.dell.com/manuals/all-products/esuprt_display_projector/esuprt_display/dell-d2216h-monitor_user%27s%20guide_en-us.pdf",
+    "doe_television_energy": "https://www.energy.gov/cmei/femp/purchasing-energy-efficient-televisions",
+    "epson_projector_2300lm": "https://files.support.epson.com/docid/cpd4/cpd41452/source/specifications/reference/plhc3000_3600e/spex_general_plhc3000.html",
+    "epson_projector_361w": "https://files.support.epson.com/docid/cpd4/cpd41452/source/specifications/reference/plhc3000_3600e/spex_electrical_plhc3000.html",
+    "nist_candle_reference": "https://www.nist.gov/si-redefinition/candela",
+    "plos_open_flame_photometry": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0250497"
+  },
+  "profiles": [
+    {
+      "id": "track_light_led",
+      "category_patterns": ["track lighting", "ceiling lamp.n.01,track lighting"],
+      "emission_class": "luminaire",
+      "confidence": 0.9,
+      "electrical_power_w": 9.0,
+      "luminous_flux_lm": 700.0,
+      "distribution_model": "uniform_cone",
+      "beam_angle_deg": 35.0,
+      "sources": ["philips_track_700lm_9w", "ies_luminous_intensity"]
+    },
+    {
+      "id": "table_lamp_led",
+      "category_patterns": ["table lamp", "lamp"],
+      "emission_class": "luminaire",
+      "confidence": 0.9,
+      "electrical_power_w": 9.5,
+      "luminous_flux_lm": 806.0,
+      "distribution_model": "uniform_hemisphere",
+      "sources": ["philips_table_lamp_806lm", "ies_luminous_intensity"]
+    },
+    {
+      "id": "floor_lamp_led",
+      "category_patterns": ["floor lamp"],
+      "emission_class": "luminaire",
+      "confidence": 0.86,
+      "electrical_power_w": 14.25,
+      "luminous_flux_lm": 1600.0,
+      "distribution_model": "uniform_hemisphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "ceiling_lamp_led",
+      "category_patterns": ["ceiling lamp", "pendant lamp"],
+      "emission_class": "luminaire",
+      "confidence": 0.86,
+      "electrical_power_w": 14.25,
+      "luminous_flux_lm": 1600.0,
+      "distribution_model": "uniform_hemisphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "wall_lamp_led",
+      "category_patterns": ["wall lamp"],
+      "emission_class": "luminaire",
+      "confidence": 0.88,
+      "electrical_power_w": 8.2,
+      "luminous_flux_lm": 800.0,
+      "distribution_model": "uniform_hemisphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "chandelier_led_4lamp",
+      "category_patterns": ["chandelier"],
+      "emission_class": "luminaire",
+      "confidence": 0.78,
+      "electrical_power_w": 32.8,
+      "luminous_flux_lm": 3200.0,
+      "distribution_model": "uniform_sphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "lantern_led",
+      "category_patterns": ["lantern"],
+      "emission_class": "luminaire",
+      "confidence": 0.82,
+      "electrical_power_w": 8.2,
+      "luminous_flux_lm": 800.0,
+      "distribution_model": "uniform_sphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "string_lights_led",
+      "category_patterns": ["string lights"],
+      "emission_class": "luminaire",
+      "confidence": 0.74,
+      "electrical_power_w": 6.0,
+      "luminous_flux_lm": 450.0,
+      "distribution_model": "uniform_sphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "pathway_light_led",
+      "category_patterns": ["pathway light"],
+      "emission_class": "luminaire",
+      "confidence": 0.8,
+      "electrical_power_w": 5.75,
+      "luminous_flux_lm": 450.0,
+      "distribution_model": "uniform_hemisphere",
+      "sources": ["doe_led_replacement_table", "ies_luminous_intensity"]
+    },
+    {
+      "id": "streetlight_led",
+      "category_patterns": ["streetlight"],
+      "emission_class": "luminaire",
+      "confidence": 0.88,
+      "electrical_power_w": 26.0,
+      "luminous_flux_lm": 2800.0,
+      "distribution_model": "uniform_hemisphere",
+      "sources": ["philips_street_2800lm_26w", "ies_luminous_intensity"]
+    },
+    {
+      "id": "projector_typical",
+      "category_patterns": ["projector"],
+      "emission_class": "luminaire",
+      "confidence": 0.78,
+      "electrical_power_w": 361.0,
+      "luminous_flux_lm": 2300.0,
+      "distribution_model": "lens_dependent_unknown_solid_angle",
+      "sources": ["epson_projector_2300lm", "epson_projector_361w"]
+    },
+    {
+      "id": "television_display",
+      "category_patterns": ["television receiver", "wall mounted screen"],
+      "emission_class": "emissive_display",
+      "confidence": 0.82,
+      "electrical_power_w": 89.0,
+      "luminance_cd_m2": 250.0,
+      "distribution_model": "extended_lambertian_surface",
+      "sources": ["doe_television_energy", "dell_monitor_250nit_25w"]
+    },
+    {
+      "id": "computer_display",
+      "category_patterns": ["monitor", "computer screen"],
+      "emission_class": "emissive_display",
+      "confidence": 0.9,
+      "electrical_power_w": 25.0,
+      "luminance_cd_m2": 250.0,
+      "distribution_model": "extended_lambertian_surface",
+      "sources": ["dell_monitor_250nit_25w"]
+    },
+    {
+      "id": "portable_display",
+      "category_patterns": ["laptop", "tablet computer"],
+      "emission_class": "emissive_display",
+      "confidence": 0.7,
+      "electrical_power_w": 25.0,
+      "luminance_cd_m2": 250.0,
+      "distribution_model": "extended_lambertian_surface",
+      "sources": ["dell_monitor_250nit_25w"]
+    },
+    {
+      "id": "candle_flame",
+      "category_contains": ["candle"],
+      "category_excludes": ["candlestick"],
+      "emission_class": "flame",
+      "confidence": 0.82,
+      "luminous_intensity_cd": 1.0,
+      "distribution_model": "uniform_sphere_from_intensity",
+      "sources": ["nist_candle_reference", "ies_luminous_intensity"]
+    },
+    {
+      "id": "candle_in_holder_flame",
+      "category_contains_all": ["candle", "candlestick"],
+      "emission_class": "flame",
+      "confidence": 0.8,
+      "luminous_intensity_cd": 1.0,
+      "distribution_model": "uniform_sphere_from_intensity",
+      "sources": ["nist_candle_reference", "ies_luminous_intensity"]
+    },
+    {
+      "id": "open_fire_flame",
+      "category_patterns": ["fireplace", "firepit"],
+      "emission_class": "flame",
+      "confidence": 0.45,
+      "luminous_intensity_cd": 3.07,
+      "distribution_model": "uniform_sphere_from_intensity",
+      "sources": ["plos_open_flame_photometry", "ies_luminous_intensity"]
+    }
+  ]
+}
+
