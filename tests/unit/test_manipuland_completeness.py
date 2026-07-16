@@ -2,10 +2,10 @@
 
 import math
 
-from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.dining_place_setting import (
     evaluate_dining_place_setting_alignment,
 )
-from scenesmith.scenebenchmark_critic.manipuland_completeness import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.manipuland_completeness import (
     evaluate_manipuland_completeness,
 )
 
@@ -30,7 +30,7 @@ def test_dining_place_setting_fails_when_required_items_missing() -> None:
 
     assert len(results) == 1
     assert results[0]["label"] == "fail"
-    assert results[0]["metric"] == "manipuland_completeness"
+    assert results[0]["metric"] == "functional_dependency"
     assert results[0]["diagnostics"]["missing"] == {
         "fork": 2,
         "knife": 2,

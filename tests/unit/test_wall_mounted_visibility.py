@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from scenesmith.scenebenchmark_critic.prompt_context import format_agent_prompt_context
-from scenesmith.scenebenchmark_critic.wall_mounted_visibility import (
+from scenesmith.scenebenchmark_critic.metrics.visual_clearance.furniture_occlusion import (
     evaluate_wall_mounted_visibility,
 )
 
@@ -84,7 +84,7 @@ def test_batch_003_painting_occluded_by_wardrobe_fails() -> None:
     result = _result([painting, wardrobe], "painting_0")
 
     assert result["label"] == "fail"
-    assert result["metric"] == "interaction_clearance"
+    assert result["metric"] == "visual_clearance"
     assert result["relation_type"] == "wall_mounted_visibility"
     assert result["blocking_objects"] == ["wardrobe_0"]
     assert result["diagnostics"]["occluded_fraction"] > 0.70

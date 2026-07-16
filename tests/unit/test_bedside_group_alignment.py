@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from scenesmith.scenebenchmark_critic.bedside_group_alignment import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.bedside_group import (
     evaluate_bedside_group_alignment,
 )
 from scenesmith.scenebenchmark_critic.prompt_context import format_agent_prompt_context

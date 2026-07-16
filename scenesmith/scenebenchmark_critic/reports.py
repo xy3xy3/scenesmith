@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scenesmith.scenebenchmark_critic.config import CriticConfig
-from scenesmith.scenebenchmark_critic.vendor.rules import aggregate_results
+from scenesmith.scenebenchmark_critic.aggregation import aggregate_results
 
 
 def build_evaluation_payload(

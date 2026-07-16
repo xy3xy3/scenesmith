@@ -67,7 +67,7 @@ from scenesmith.manipuland_agents.tools.window_clearance_guard import (
     window_clearance_placement_error,
 )
 from scenesmith.scenebenchmark_critic import room_scene_to_case_pack
-from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.dining_place_setting import (
     evaluate_dining_place_setting_alignment,
 )
 

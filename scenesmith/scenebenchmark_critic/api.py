@@ -15,37 +15,16 @@ from scenesmith.scenebenchmark_critic.adapter import (
     room_scene_to_case_pack,
 )
 from scenesmith.scenebenchmark_critic.asset_annotation import annotate_room_scene
-from scenesmith.scenebenchmark_critic.bedside_group_alignment import (
-    evaluate_bedside_group_alignment,
-)
 from scenesmith.scenebenchmark_critic.config import CriticConfig, critic_config_from_any
-from scenesmith.scenebenchmark_critic.dining_place_setting_alignment import (
-    evaluate_dining_place_setting_alignment,
-)
-from scenesmith.scenebenchmark_critic.dining_seat_distribution import (
-    evaluate_dining_seat_distribution,
-)
-from scenesmith.scenebenchmark_critic.manipuland_completeness import (
-    evaluate_manipuland_completeness,
-)
-from scenesmith.scenebenchmark_critic.media_support_alignment import (
-    evaluate_media_support_alignment,
-)
-from scenesmith.scenebenchmark_critic.room_center_alignment import (
-    evaluate_room_center_alignment,
-)
-from scenesmith.scenebenchmark_critic.wall_mounted_visibility import (
-    evaluate_wall_mounted_visibility,
-)
-from scenesmith.scenebenchmark_critic.orientation_contracts import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.orientation_contracts import (
     stabilize_orientation_contracts,
 )
+from scenesmith.scenebenchmark_critic.evaluator import run_case_pack_checks
 from scenesmith.scenebenchmark_critic.reports import (
     build_evaluation_payload,
     format_prompt_context as _format_prompt_context,
     write_report,
 )
-from scenesmith.scenebenchmark_critic.vendor.rules import run_case_pack_checks
 
 if TYPE_CHECKING:
     from scenesmith.agent_utils.blender.server_manager import BlenderServer
@@ -84,32 +63,6 @@ def evaluate_room_scene(
         stage=stage,
     )
     results = run_case_pack_checks(case_pack, config=critic_config)
-    # 2026-07-14 修改原因：wall-mounted TV 即使避开窗口，也可能被迫偏离 TV
-    # stand；将“TV 必须位于 TV stand 上方”作为通用 functional dependency，
-    # 让 wall critic 能给出精确、可执行的窗口释放和 TV 居中反馈。
-    if "functional_dependency" in critic_config.metrics:
-        results.extend(evaluate_media_support_alignment(case_pack))
-        # 2026-07-15 修改原因：原 bedside_pair 只检查相邻距离和 front 轴平行，
-        # 会把两个床头柜都搬到床脚、或为门净空拆散床组的布局误判为通过。
-        # 增加 bed-local 床头端/左右分列及门净空下整组换墙约束。
-        results.extend(evaluate_bedside_group_alignment(case_pack))
-        # 2026-07-15 修改原因：家具 critic 只检查桌椅之间的关系，无法发现
-        # prompt 明确要求“in the center”的主家具被局部 clearance 修复推离房间中心。
-        # 增加通用 room-center functional dependency，约束中心锚点并给出成组修复建议。
-        results.extend(evaluate_room_center_alignment(case_pack))
-    # 2026-07-13 修改原因：dining_set 只约束椅子朝桌，无法发现单椅偏离桌边
-    # 中心或同边多椅挤在一侧；追加按桌局部坐标计算的通用座椅分布检查。
-    results.extend(evaluate_dining_seat_distribution(case_pack))
-    # 2026-07-09 修改原因：餐桌等成组 tabletop manipulands 可能在物理后处理
-    # 后被删除；规则报告需要直接暴露必需小物缺失，而不只看几何可达性。
-    results.extend(evaluate_manipuland_completeness(case_pack))
-    # 2026-07-13 修改原因：库存完整不代表餐位可用；餐盘及配套餐具还必须
-    # 与最近离散座椅一对一对应，并位于该座椅正前方。
-    results.extend(evaluate_dining_place_setting_alignment(case_pack))
-    # 2026-07-15 修改原因：物理碰撞和现有 FD 无法发现高柜在墙面投影中遮住
-    # 画、镜子或时钟；将观看表面的可见区域作为 wall-mounted 视觉净空检查。
-    if "interaction_clearance" in critic_config.metrics:
-        results.extend(evaluate_wall_mounted_visibility(case_pack))
     return build_evaluation_payload(
         case_pack=case_pack,
         results=results,

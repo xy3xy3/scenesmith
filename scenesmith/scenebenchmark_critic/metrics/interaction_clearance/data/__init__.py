@@ -1,0 +1,1 @@
+"""Precomputed interaction-clearance indexes."""

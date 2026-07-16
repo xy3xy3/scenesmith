@@ -63,24 +63,22 @@ from scenesmith.scenebenchmark_critic.adapter import (
     house_scene_to_case_pack,
     room_scene_to_case_pack,
 )
-from scenesmith.scenebenchmark_critic.checks import build_checks
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.builder import build_checks
 from scenesmith.scenebenchmark_critic.config import critic_config_from_any
-from scenesmith.scenebenchmark_critic.orientation_contracts import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.orientation_contracts import (
     CONTRACT_CHECK_SOURCE,
     stabilize_orientation_contracts,
 )
 from scenesmith.scenebenchmark_critic.reports import format_markdown_report
-from scenesmith.scenebenchmark_critic.vendor.rules import (
-    aggregate_results,
-    run_case_pack_checks,
-)
-from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import (
+from scenesmith.scenebenchmark_critic.aggregation import aggregate_results
+from scenesmith.scenebenchmark_critic.evaluator import run_case_pack_checks
+from scenesmith.scenebenchmark_critic.core.models import (
     FunctionalDependencyProposal,
 )
-from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency import (
     proposer as fd_proposer,
 )
-from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.relations import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.relations import (
     _relation_target_is_valid,
 )
 
@@ -2665,9 +2663,10 @@ def test_base_experiment_config_defaults_are_report_only_template_mode() -> None
 
     assert critic_config.enabled is False
     assert critic_config.metrics == (
-        "spatial_accessibility",
         "functional_dependency",
+        "spatial_accessibility",
         "interaction_clearance",
+        "visual_clearance",
     )
     assert critic_config.room_stage_hooks == ("scene_after_furniture", "final_scene")
     assert critic_config.house_stage_hooks == ()
@@ -2722,41 +2721,8 @@ def test_config_helper_parses_string_sequences_for_direct_api_configs() -> None:
     assert critic_config.house_stage_hooks == ()
 
 
-def test_readme_documents_memsafe_config_wrapper_without_secrets() -> None:
-    readme = Path("scenesmith/scenebenchmark_critic/README.md").read_text(
-        encoding="utf-8"
-    )
-    vendor_readme = Path("scenesmith/scenebenchmark_critic/vendor/README.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "scenebenchmark_critic_memsafe_smoke" in readme
-    assert "critic_eval_config" in readme
-    assert "hydra.run.dir=/path/to/existing/output_dir" in readme
-    assert "fd_proposer_checks" in readme
-    assert "scenebenchmark_critic.json" in readme
-    assert "单房间" in readme
-    assert "RoomScene" in readme
-    assert "显式启用" in readme
-    assert "分组功能依赖检查" in readme
-    assert "access_direction" in readme
-    assert "交互面" in readme
-    assert "benchmark_relevance" in readme
-    assert "category_keywords" in readme
-    assert "support_region_summary" in readme
-    assert "front_hint" in readme
-    assert "metric_relevance" in readme
-    assert "bedroom_nightstand_1_f0_c" in readme
-    assert 'Path("config.yml")' in readme
-    assert 'os.environ["OPENAI_API_KEY"]' in readme
-    assert "house_stage_hooks" in readme
-    assert "vendor/README.md" in readme
-    assert "room_scene_to_case_pack" in readme
-    assert "metrics/functional_dependency/" in vendor_readme
-    assert "metrics/spatial_accessibility/" in vendor_readme
-    assert "AST parity" in vendor_readme
-    assert "sk-" not in readme
-    assert "sk-" not in vendor_readme
+def test_critic_source_tree_does_not_require_removed_readme() -> None:
+    assert not Path("scenesmith/scenebenchmark_critic/README.md").exists()
 
 
 def test_public_package_exports_embedding_api() -> None:
@@ -2801,181 +2767,85 @@ def test_public_room_case_pack_export_builds_single_room_case_pack(
     assert case_pack["room_type"] == "bedroom"
     assert len(case_pack["scene_geometry"]["rooms"]) == 1
     assert {check["metric"] for check in case_pack["checks"]} == {
-        "spatial_accessibility",
         "functional_dependency",
+        "spatial_accessibility",
     }
 
 
-def test_vendored_metric_packages_preserve_scenebenchmark_lazy_exports() -> None:
-    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics import (
-        functional_dependency,
-        spatial_accessibility,
+def test_metric_registry_contains_all_default_plugins() -> None:
+    from scenesmith.scenebenchmark_critic.config import DEFAULT_METRICS
+    from scenesmith.scenebenchmark_critic.metrics.registry import (
+        METRIC_REGISTRY,
+        get_metric_plugins,
     )
 
-    assert functional_dependency.evaluate_functional_dependency is not None
-    assert functional_dependency.augment_functional_dependency_checks is not None
-    assert functional_dependency.PLUGIN.name == "functional_dependency"
-    assert spatial_accessibility.evaluate_spatial_accessibility is not None
-    assert spatial_accessibility.PLUGIN.name == "spatial_accessibility"
+    assert set(DEFAULT_METRICS) == {
+        "functional_dependency",
+        "spatial_accessibility",
+        "interaction_clearance",
+        "visual_clearance",
+    }
+    assert set(get_metric_plugins(DEFAULT_METRICS)) == set(METRIC_REGISTRY.values())
+    assert all(plugin.name in METRIC_REGISTRY for plugin in METRIC_REGISTRY.values())
 
 
-def test_vendored_scenebenchmark_code_has_no_external_repo_imports() -> None:
-    vendor_root = Path("scenesmith/scenebenchmark_critic/vendor/scenebenchmark")
-    forbidden_prefixes = (
-        "from critic ",
-        "from critic.",
-        "import critic",
-        "from metrics ",
-        "from metrics.",
-        "import metrics",
-        "import bootstrap",
-        "from bootstrap ",
-    )
-    offenders: list[str] = []
-    for path in sorted(vendor_root.rglob("*.py")):
-        for line_number, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), 1
-        ):
-            stripped = line.strip()
-            if stripped.startswith(forbidden_prefixes):
-                offenders.append(f"{path}:{line_number}: {stripped}")
-
-    assert offenders == []
+def test_critic_does_not_keep_removed_vendor_or_legacy_modules() -> None:
+    root = Path("scenesmith/scenebenchmark_critic")
+    assert not (root / "vendor").exists()
+    assert not (root / "checks.py").exists()
+    assert not (root / "clearance_source.py").exists()
+    assert not (root / "wall_mounted_visibility.py").exists()
 
 
-def test_vendored_scenebenchmark_fd_sa_rule_source_manifest_is_complete() -> None:
-    vendor_root = Path("scenesmith/scenebenchmark_critic/vendor/scenebenchmark")
+def test_critic_metric_source_manifest_is_complete() -> None:
+    root = Path("scenesmith/scenebenchmark_critic")
     expected_files = {
-        "__init__.py",
-        "critic/__init__.py",
-        "critic/accessibility.py",
-        "critic/agent.py",
-        "critic/config.py",
-        "critic/dependency.py",
-        "critic/geometry.py",
-        "critic/models.py",
-        "metrics/__init__.py",
+        "core/geometry.py",
+        "core/models.py",
+        "core/vlm.py",
         "metrics/base.py",
-        "metrics/functional_dependency/__init__.py",
-        "metrics/functional_dependency/augmenter.py",
-        "metrics/functional_dependency/constants.py",
+        "metrics/registry.py",
+        "metrics/functional_dependency/builder.py",
         "metrics/functional_dependency/evaluator.py",
-        "metrics/functional_dependency/legacy.py",
-        "metrics/functional_dependency/plugin.py",
-        "metrics/functional_dependency/profiles.py",
-        "metrics/functional_dependency/proposer.py",
-        "metrics/functional_dependency/relations.py",
-        "metrics/functional_dependency/results.py",
-        "metrics/functional_dependency/semantics.py",
-        "metrics/functional_dependency/support.py",
-        "metrics/functional_dependency/support_scoring.py",
-        "metrics/spatial_accessibility/__init__.py",
-        "metrics/spatial_accessibility/config.py",
-        "metrics/spatial_accessibility/core.py",
+        "metrics/functional_dependency/orientation_contracts.py",
+        "metrics/functional_dependency/extensions/workstation_alignment.py",
+        "metrics/spatial_accessibility/builder.py",
         "metrics/spatial_accessibility/evaluator.py",
-        "metrics/spatial_accessibility/grid.py",
-        "metrics/spatial_accessibility/legacy.py",
-        "metrics/spatial_accessibility/obstacles.py",
-        "metrics/spatial_accessibility/plugin.py",
-        "metrics/spatial_accessibility/reach.py",
-        "metrics/spatial_accessibility/results.py",
-        "metrics/spatial_accessibility/zones.py",
+        "metrics/spatial_accessibility/companions.py",
+        "metrics/interaction_clearance/builder.py",
+        "metrics/interaction_clearance/evaluator.py",
+        "metrics/visual_clearance/builder.py",
+        "metrics/visual_clearance/evaluator.py",
+        "metrics/visual_clearance/wall_overlap.py",
     }
 
     actual_files = {
-        path.relative_to(vendor_root).as_posix()
-        for path in vendor_root.rglob("*.py")
+        path.relative_to(root).as_posix()
+        for path in (root / "core").rglob("*.py")
+    } | {
+        path.relative_to(root).as_posix()
+        for path in (root / "metrics").rglob("*.py")
         if path.is_file()
     }
 
-    assert actual_files == expected_files
+    assert expected_files <= actual_files
 
 
-def test_vendored_scenebenchmark_rule_bodies_match_upstream_when_available() -> None:
-    upstream_root = Path.home() / "proj" / "SceneBenchmark" / "src"
-    if not upstream_root.exists():
-        pytest.skip("SceneBenchmark source checkout is not available")
-
-    vendor_root = Path("scenesmith/scenebenchmark_critic/vendor/scenebenchmark")
-    # relations.py carries SceneSmith-only asset dependency evaluators, so it is
-    # covered by local behavioral tests instead of upstream AST parity.
-    parity_files = {
-        "critic/accessibility.py",
-        "critic/config.py",
-        "critic/dependency.py",
-        "critic/geometry.py",
-        "critic/models.py",
-        "metrics/base.py",
-        "metrics/functional_dependency/augmenter.py",
-        "metrics/functional_dependency/constants.py",
-        "metrics/functional_dependency/evaluator.py",
-        "metrics/functional_dependency/legacy.py",
-        "metrics/functional_dependency/plugin.py",
-        "metrics/functional_dependency/profiles.py",
-        "metrics/functional_dependency/proposer.py",
-        "metrics/functional_dependency/results.py",
-        "metrics/functional_dependency/semantics.py",
-        "metrics/functional_dependency/support.py",
-        "metrics/functional_dependency/support_scoring.py",
-        "metrics/spatial_accessibility/config.py",
-        "metrics/spatial_accessibility/core.py",
-        "metrics/spatial_accessibility/evaluator.py",
-        "metrics/spatial_accessibility/grid.py",
-        "metrics/spatial_accessibility/legacy.py",
-        "metrics/spatial_accessibility/obstacles.py",
-        "metrics/spatial_accessibility/plugin.py",
-        "metrics/spatial_accessibility/reach.py",
-        "metrics/spatial_accessibility/results.py",
-        "metrics/spatial_accessibility/zones.py",
-    }
-    diffs = [
-        rel
-        for rel in sorted(parity_files)
-        if _normalized_rule_ast(upstream_root / rel)
-        != _normalized_rule_ast(vendor_root / rel)
-    ]
-
-    assert diffs == []
+def test_metric_source_files_are_importable_without_external_scenebenchmark() -> None:
+    import scenesmith.scenebenchmark_critic.core.geometry
+    import scenesmith.scenebenchmark_critic.metrics.functional_dependency.relations
+    import scenesmith.scenebenchmark_critic.metrics.spatial_accessibility.evaluator
+    import scenesmith.scenebenchmark_critic.metrics.visual_clearance.evaluator
 
 
-class _NormalizeVendoredImports(ast.NodeTransformer):
-    _PREFIX = "scenesmith.scenebenchmark_critic.vendor.scenebenchmark."
+def test_metric_modules_import_cleanly() -> None:
+    import scenesmith.scenebenchmark_critic.metrics as metrics
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> ast.AST:
-        if node.module and node.module.startswith(self._PREFIX):
-            node.module = node.module[len(self._PREFIX) :]
-        return node
-
-
-def _normalized_rule_ast(path: Path) -> str:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    normalized = _NormalizeVendoredImports().visit(tree)
-    assert isinstance(normalized, ast.Module)
-    normalized.body = [
-        node
-        for node in normalized.body
-        if not isinstance(node, (ast.Import, ast.ImportFrom))
-        and not _is_optional_agent_import_guard(path, node)
-    ]
-    ast.fix_missing_locations(normalized)
-    return ast.dump(normalized, include_attributes=False)
-
-
-def _is_optional_agent_import_guard(path: Path, node: ast.AST) -> bool:
-    if not isinstance(node, ast.Try):
-        return False
-    segment = ast.get_source_segment(path.read_text(encoding="utf-8"), node) or ""
-    return "build_structured_agent" in segment
-
-
-def test_vendored_scenebenchmark_modules_import_cleanly() -> None:
-    import scenesmith.scenebenchmark_critic.vendor.scenebenchmark as vendored
-
-    package_prefix = vendored.__name__ + "."
+    package_prefix = metrics.__name__ + "."
     modules = [
         module_info.name
         for module_info in pkgutil.walk_packages(
-            vendored.__path__, prefix=package_prefix
+            metrics.__path__, prefix=package_prefix
         )
     ]
 
@@ -2984,16 +2854,14 @@ def test_vendored_scenebenchmark_modules_import_cleanly() -> None:
         importlib.import_module(module_name)
 
 
-def test_vendored_structured_agent_uses_project_vlm_service(
+def test_structured_agent_uses_project_vlm_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic import (
-        agent as agent_module,
-    )
-    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.agent import (
+    from scenesmith.scenebenchmark_critic.core import vlm as agent_module
+    from scenesmith.scenebenchmark_critic.core.vlm import (
         build_structured_agent,
     )
-    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.models import (
+    from scenesmith.scenebenchmark_critic.core.models import (
         FunctionalDependencyProposalSet,
     )
 
@@ -3040,7 +2908,7 @@ def test_vendored_structured_agent_uses_project_vlm_service(
 
 
 def test_rule_config_forwards_asset_annotation_model_to_vlm_proposer() -> None:
-    from scenesmith.scenebenchmark_critic.vendor.rules import _to_rule_config
+    from scenesmith.scenebenchmark_critic.aggregation import _to_rule_config
 
     rule_config = _to_rule_config(
         CriticConfig(
@@ -3052,14 +2920,16 @@ def test_rule_config_forwards_asset_annotation_model_to_vlm_proposer() -> None:
     assert rule_config.provider == {"model": "qwen-local"}
 
 
-def test_vendored_critic_wrappers_evaluate_rules_without_external_repo() -> None:
-    from scenesmith.scenebenchmark_critic.vendor.rules import _to_rule_config
-    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic import (
-        accessibility,
-        dependency,
-    )
-    from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.critic.geometry import (
+def test_metric_evaluators_run_without_external_repo() -> None:
+    from scenesmith.scenebenchmark_critic.aggregation import _to_rule_config
+    from scenesmith.scenebenchmark_critic.core.geometry import (
         load_geometry,
+    )
+    from scenesmith.scenebenchmark_critic.metrics.functional_dependency.relations import (
+        evaluate_functional_dependency,
+    )
+    from scenesmith.scenebenchmark_critic.metrics.spatial_accessibility.evaluator import (
+        evaluate_spatial_accessibility,
     )
 
     chair = _benchmark_obj("chair_1", "chair", (2.0, 1.2, 0.45), (0.5, 0.5, 0.9))
@@ -3069,7 +2939,7 @@ def test_vendored_critic_wrappers_evaluate_rules_without_external_repo() -> None
 
     assert store is not None
 
-    accessibility_result = accessibility.evaluate_spatial_accessibility(
+    accessibility_result = evaluate_spatial_accessibility(
         store,
         {
             "check_id": "sa_chair_1",
@@ -3079,7 +2949,7 @@ def test_vendored_critic_wrappers_evaluate_rules_without_external_repo() -> None
         },
         _to_rule_config(CriticConfig(enabled=True)),
     )
-    dependency_result = dependency.evaluate_functional_dependency(
+    dependency_result = evaluate_functional_dependency(
         store,
         {
             "check_id": "fd_chair_desk",

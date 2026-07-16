@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-DEFAULT_METRICS = ("spatial_accessibility", "functional_dependency")
+# 2026-07-16 修改原因：critic 迁移到统一 registry 后，四个一级指标必须
+# 使用同一默认集合，避免视觉规则在 API、配置和回放之间被静默漏掉。
+DEFAULT_METRICS = (
+    "functional_dependency",
+    "spatial_accessibility",
+    "interaction_clearance",
+    "visual_clearance",
+)
 
 
 @dataclass(frozen=True)
@@ -59,9 +66,15 @@ def critic_config_from_any(cfg: Any) -> CriticConfig:
         "asset_annotation",
     }
     extra = {key: value for key, value in data.items() if key not in known}
+    metrics = _as_tuple(data.get("metrics", DEFAULT_METRICS), DEFAULT_METRICS)
+    # 2026-07-16 修改原因：旧调度器会静默跳过未知 metric，迁移后应在配置
+    # 入口直接失败，避免回放得到缺指标但看似成功的报告。
+    from scenesmith.scenebenchmark_critic.metrics.registry import get_metric_plugins
+
+    get_metric_plugins(metrics)
     return CriticConfig(
         enabled=_as_bool(data.get("enabled", False)),
-        metrics=_as_tuple(data.get("metrics", DEFAULT_METRICS), DEFAULT_METRICS),
+        metrics=metrics,
         room_stage_hooks=_as_tuple(
             data.get("room_stage_hooks", ("scene_after_furniture", "final_scene")),
             ("scene_after_furniture", "final_scene"),

@@ -18,7 +18,10 @@ from pydrake.math import RollPitchYaw
 
 from scenesmith.agent_utils.room import ObjectType, RoomScene, SceneObject
 from scenesmith.agent_utils.vlm_service import VLMService
-from scenesmith.scenebenchmark_critic import adapter, clearance_source
+from scenesmith.scenebenchmark_critic import adapter
+from scenesmith.scenebenchmark_critic.metrics.interaction_clearance import (
+    evaluator as clearance_source,
+)
 from scenesmith.utils.llm_json import parse_llm_json_object
 from scenesmith.utils.openai import encode_image_to_base64
 

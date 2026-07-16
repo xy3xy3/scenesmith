@@ -21,8 +21,8 @@ from scenesmith.agent_utils.room import (
 from scenesmith.scenebenchmark_critic.asset_library_annotations import (
     get_hssd_asset_annotations,
 )
-from scenesmith.scenebenchmark_critic.checks import build_checks
-from scenesmith.scenebenchmark_critic.vendor.scenebenchmark.metrics.functional_dependency.constants import (
+from scenesmith.scenebenchmark_critic.evaluator import build_all_checks
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.constants import (
     BEDS,
     MEDIA,
     NIGHTSTANDS,
@@ -328,7 +328,7 @@ def room_scene_to_case_pack(
         "scene_geometry": scene_geometry,
         "checks": [],
     }
-    case_pack["checks"] = build_checks(case_pack, metrics=metrics)
+    case_pack["checks"] = build_all_checks(case_pack, metrics=metrics)
     return case_pack
 
 
@@ -371,7 +371,7 @@ def house_scene_to_case_pack(
         },
         "checks": [],
     }
-    case_pack["checks"] = build_checks(case_pack, metrics=metrics)
+    case_pack["checks"] = build_all_checks(case_pack, metrics=metrics)
     return case_pack
 
 

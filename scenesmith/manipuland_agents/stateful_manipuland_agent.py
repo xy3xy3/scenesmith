@@ -46,7 +46,7 @@ from scenesmith.manipuland_agents.tools.manipuland_tools import ManipulandTools
 from scenesmith.manipuland_agents.tools.vision_tools import ManipulandVisionTools
 from scenesmith.prompts.registry import ManipulandAgentPrompts
 from scenesmith.scenebenchmark_critic import room_scene_to_case_pack
-from scenesmith.scenebenchmark_critic.manipuland_completeness import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.manipuland_completeness import (
     evaluate_manipuland_completeness,
 )
 from scenesmith.utils.logging import BaseLogger

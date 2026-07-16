@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from scenesmith.scenebenchmark_critic.dining_seat_distribution import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.dining_seat import (
     evaluate_dining_seat_distribution,
 )
 

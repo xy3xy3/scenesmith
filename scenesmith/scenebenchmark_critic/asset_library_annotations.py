@@ -16,7 +16,9 @@ DEFAULT_LOOKUP = (
     / "asset_annotation_data"
     / "hssd_annotation_lookup.json.gz"
 )
-DEFAULT_CLEARANCE_DIR = Path(__file__).resolve().parent / "clearance_data"
+DEFAULT_CLEARANCE_DIR = (
+    Path(__file__).resolve().parent / "metrics" / "interaction_clearance" / "data"
+)
 DEFAULT_UNIFIED_AFFORDANCE_DIR = Path(
     "/data/share/ud4scenesmith/ud4scenesmith_3_2_final_20260513/"
     "affordance_annotations/unified_layer_v0_1"

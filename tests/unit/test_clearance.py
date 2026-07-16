@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from scenesmith.scenebenchmark_critic import clearance_source
+from scenesmith.scenebenchmark_critic.metrics.interaction_clearance import evaluator as clearance_source
 
 
 def _sit_record() -> dict:

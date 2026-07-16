@@ -2,17 +2,17 @@
 
 from scenesmith.agent_utils.house import HouseLayout
 from scenesmith.floor_plan_agents.tools.floor_plan_tools import FloorPlanTools
-from scenesmith.scenebenchmark_critic.checks import build_checks
-from scenesmith.scenebenchmark_critic.dining_seat_distribution import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.builder import build_checks
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.dining_seat import (
     _seat_facing_error_deg,
 )
-from scenesmith.scenebenchmark_critic.orientation_contracts import _plan_contract
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.orientation_contracts import _plan_contract
 from scenesmith.scenebenchmark_critic.prompt_context import (
     filter_prompt_results_for_agent,
 )
 from scenesmith.agent_utils.room import AgentType
-from scenesmith.scenebenchmark_critic.clearance_source import evaluate_clearance
-from scenesmith.scenebenchmark_critic.media_support_alignment import (
+from scenesmith.scenebenchmark_critic.metrics.interaction_clearance.evaluator import evaluate_clearance
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.media_support import (
     evaluate_media_support_alignment,
 )
 def test_bedroom_window_budget_preserves_wall_capacity() -> None:

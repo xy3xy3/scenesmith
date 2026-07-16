@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from scenesmith.scenebenchmark_critic.prompt_context import format_agent_prompt_context
-from scenesmith.scenebenchmark_critic.room_center_alignment import (
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.extensions.room_center import (
     evaluate_room_center_alignment,
 )
 
