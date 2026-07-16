@@ -15,8 +15,6 @@ from scenesmith.scenebenchmark_critic.clearance_source import evaluate_clearance
 from scenesmith.scenebenchmark_critic.media_support_alignment import (
     evaluate_media_support_alignment,
 )
-
-
 def test_bedroom_window_budget_preserves_wall_capacity() -> None:
     # 2026-07-14 修改原因：回归卧室最多两个窗，避免 share base 为后续电视/壁挂物
     # 留不出可用墙面。

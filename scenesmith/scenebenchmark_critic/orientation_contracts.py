@@ -65,6 +65,7 @@ MEDIA_REJECT_HINTS = (
 MEDIA_INTENT_HINTS = MEDIA_TEXT_HINTS + ("viewing", "watch", "watching")
 MEDIA_ROOM_HINTS = ("family", "living", "media", "theater", "tv")
 LIVING_SEATING = {"armchair", "chair", "loveseat", "sofa"}
+LIVING_NEAREST_FOCUS_SEATING = {"armchair", "chair"}
 WORK_SURFACE_CATEGORIES = {
     "bar_table",
     "coffee_table",
@@ -224,12 +225,32 @@ def _contract_is_usable(
         if wall is None or str(wall.get("id") or "") != target_ids[0]:
             return False
 
+    # 2026-07-16 修改原因：客厅独立椅允许按就近原则朝茶几或媒体焦点；旧的
+    # media contract 会永久锁定 TV，即使茶几明显更近，也会把正常内收姿态
+    # 强行转走。每次评估都重新确认最近功能焦点，只有拓扑未变化才复用 contract。
+    nearest_focus = _nearest_living_seat_focus(
+        subject,
+        objects,
+        media_focus=media_focus if media_intent else None,
+    )
+    uses_nearest_living_focus = (
+        relation_type in SEATING_RELATIONS and nearest_focus is not None
+    )
+    if uses_nearest_living_focus and nearest_focus is not None:
+        preferred_target, preferred_relation = nearest_focus
+        if (
+            relation_type != preferred_relation
+            or target_ids[0] != str(preferred_target.get("id") or "")
+        ):
+            return False
+
     # A newly available semantic focal point is a legitimate topology change for
     # ordinary seating, but not for a guest chair whose explicit topology is the wall.
     if (
         media_intent
         and media_focus is not None
         and relation_type not in {"seating_to_media", "back_against_wall"}
+        and not uses_nearest_living_focus
     ):
         return False
     return True
@@ -267,6 +288,26 @@ def _plan_contract(
             reason=(
                 "wall-anchored standalone seating keeps its back at the "
                 "wall and its front normal to the wall"
+            ),
+        )
+
+    nearest_focus = _nearest_living_seat_focus(
+        subject,
+        objects,
+        media_focus=media_focus if media_intent else None,
+    )
+    if nearest_focus is not None:
+        target, relation_type = nearest_focus
+        # 2026-07-16 修改原因：客厅扶手椅可朝最近的茶几而不必统一朝 TV；
+        # 锁定最近的有效室内焦点后，FD 只需阻止椅子反向朝向房间外侧。
+        return _contract(
+            subject,
+            target,
+            relation_type=relation_type,
+            stage=stage,
+            reason=(
+                "living-room chair uses the nearest valid coffee-table or media "
+                "focus so its front points into the local activity area"
             ),
         )
 
@@ -497,6 +538,45 @@ def _is_seating(obj: dict[str, Any]) -> bool:
 def _should_face_media(subject: dict[str, Any]) -> bool:
     category = object_category(subject)
     return _is_seating(subject) and category in LIVING_SEATING
+
+
+def _nearest_living_seat_focus(
+    subject: dict[str, Any],
+    objects: list[dict[str, Any]],
+    *,
+    media_focus: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str] | None:
+    """Choose the nearest coffee-table/media focus for an independent chair."""
+    if object_category(subject) not in LIVING_NEAREST_FOCUS_SEATING:
+        return None
+    surfaces = [
+        obj
+        for obj in objects
+        if obj.get("id") != subject.get("id")
+        and object_category(obj) == "coffee_table"
+        and _is_actionable_seating_surface_pair(subject, obj)
+    ]
+    candidates = [
+        (obj, "seating_to_work_surface") for obj in surfaces
+    ]
+    if media_focus is not None:
+        candidates.append((media_focus, "seating_to_media"))
+    if not candidates:
+        return None
+    # 2026-07-16 修改原因：目标选择只使用距离/间隙，不使用当前 yaw；否则一把
+    # 已朝外的椅子会因角度惩罚换目标，critic 无法稳定修回最近活动区。
+    candidates.sort(
+        key=lambda item: (
+            bbox_gap_xy(subject, item[0])
+            if bbox_gap_xy(subject, item[0]) is not None
+            else 999.0,
+            distance_xy(subject, item[0])
+            if distance_xy(subject, item[0]) is not None
+            else 999.0,
+            str(item[0].get("id") or ""),
+        )
+    )
+    return candidates[0]
 
 
 def _nearest_work_surface(

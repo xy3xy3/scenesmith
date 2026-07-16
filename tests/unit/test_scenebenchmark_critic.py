@@ -2200,10 +2200,12 @@ def test_orientation_contract_keeps_living_room_seat_target_stable(
     first_check = _contract_check_for(first, "armchair_0")
     second_check = _contract_check_for(second, "armchair_0")
 
-    assert first_check["relation_type"] == "seating_to_media"
-    assert first_check["target_ids"] == ["tv_stand_0"]
-    assert second_check["relation_type"] == "seating_to_media"
-    assert second_check["target_ids"] == ["tv_stand_0"]
+    # 2026-07-16 修改原因：客厅独立椅按就近原则选择功能焦点；此布局中茶几
+    # 明显比 TV stand 更近，因此稳定 contract 应允许椅子朝茶几。
+    assert first_check["relation_type"] == "seating_to_work_surface"
+    assert first_check["target_ids"] == ["coffee_table_0"]
+    assert second_check["relation_type"] == "seating_to_work_surface"
+    assert second_check["target_ids"] == ["coffee_table_0"]
 
 
 def test_orientation_contract_ignores_noisy_sittable_affordance_on_non_seats(
@@ -4666,6 +4668,48 @@ def test_rule_functional_dependency_allows_oblique_media_view() -> None:
     result = next(item for item in results if item["check_id"] == "fd_sofa_tv_oblique")
     assert result["label"] == "pass"
     assert "usable media view" in result["reason"]
+
+
+@pytest.mark.parametrize(
+    ("chair_id", "position", "yaw", "expected_label"),
+    [
+        ("armchair_left_good", (-0.877, -0.407, 0.5), -53.2, "pass"),
+        ("armchair_right_good", (0.921, -0.437, 0.5), 46.34, "pass"),
+        ("armchair_left_outward", (-1.2, -1.1, 0.5), 45.0, "degraded"),
+        ("armchair_right_outward", (1.2, -1.1, 0.5), -45.0, "degraded"),
+    ],
+)
+def test_rule_functional_dependency_checks_nearest_coffee_focus_from_probe(
+    chair_id: str,
+    position: tuple[float, float, float],
+    yaw: float,
+    expected_label: str,
+) -> None:
+    chair = _benchmark_obj(chair_id, "armchair", position, (0.8, 0.8, 1.0), yaw=yaw)
+    chair["functional_hints"]["functional_categories"] = ["sittable"]
+    coffee_table = _benchmark_obj(
+        "coffee_table_0", "coffee_table", (0.04, 0.164, 0.25), (1.1, 0.55, 0.5)
+    )
+    coffee_table["functional_hints"]["functional_categories"] = ["work_surface"]
+    check = {
+        "check_id": f"fd_{chair_id}_coffee",
+        "metric": "functional_dependency",
+        "subject_id": chair_id,
+        "target_ids": ["coffee_table_0"],
+        "relation_type": "seating_to_work_surface",
+    }
+
+    result = _run_direct_case_pack(
+        _benchmark_case_pack([chair, coffee_table], [check]),
+        metrics=["functional_dependency"],
+    )[0]
+
+    # 2026-07-16 修改原因：直接复现 renders_002（内收、正常）与
+    # renders_003（符号反转、朝外）。规则应看相对最近焦点的夹角，而不是 yaw 绝对值。
+    assert result["label"] == expected_label
+    if expected_label == "degraded":
+        assert "points obliquely or outward" in result["reason"]
+        assert "Nearest-focus repair" in result["repair_advice"]
 
 
 def test_rule_functional_dependency_wall_media_checks_both_facing_directions() -> None:

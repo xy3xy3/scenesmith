@@ -91,6 +91,24 @@ def evaluate_functional_dependency(
         for item in (diagnostics.get("selected_target_ids") or [])
         if str(item)
     ]
+    repair_advice = ""
+    living_room_coffee_pair = (
+        relation_type == "seating_to_work_surface"
+        and object_category(subject) in LIVING_ROOM_SEATING
+        and any(object_category(target) == "coffee_table" for target in targets)
+    )
+    if living_room_coffee_pair and label in {"degraded", "fail"}:
+        repair_targets = selected_related_objects or target_ids
+        target_text = ", ".join(f"`{item}`" for item in repair_targets)
+        # 2026-07-16 修改原因：客厅椅允许面向最近茶几，但必须指向茶几所在的
+        # 室内活动区；宽松射线相交检查会把约 90 度的外翻姿态误当作可用。
+        repair_advice = (
+            f"Nearest-focus repair: rotate `{subject_id}` toward {target_text} until "
+            "the SceneBenchmark seat-to-focus angle is at most 45 degrees. Use the "
+            "exact optimal rotation for this seat/target pair even if the facing "
+            "tool's broad `is_facing` boolean is true; do not leave the chair facing "
+            "outward from the local activity area."
+        )
     return {
         "check_id": check.get("check_id"),
         "metric": "functional_dependency",
@@ -104,6 +122,7 @@ def evaluate_functional_dependency(
         "selected_related_objects": selected_related_objects,
         "relation_type": relation_type,
         "diagnostics": diagnostics,
+        "repair_advice": repair_advice,
         **_result_scoring_tier_payload(check.get("scoring_tier")),
     }
 
@@ -656,7 +675,7 @@ def _eval_seating_to_surface(
             f"(gap {gap:.2f}m, facing angle {angle:.0f}deg{angle_note}).",
         )
     living_room_pair = (
-        object_category(subject) in LIVING_ROOM_SEATING
+        object_category(subject) in {"armchair", "chair"}
         and object_category(target) == "coffee_table"
     )
     if _is_side_surface_target(target):
@@ -673,6 +692,30 @@ def _eval_seating_to_surface(
                 f"side surface is usable but loose: gap {gap:.2f}m.",
             )
         return "fail", 0.8, f"side surface is too far from the seat: gap {gap:.2f}m."
+    # 2026-07-16 修改原因：原规则先执行通用 close-pair <=110 度分支，导致
+    # renders_003 中朝房间外侧、与茶几夹角约 90 度的扶手椅仍然 pass。
+    # 客厅独立椅若按就近原则绑定茶几，应严格朝向该局部活动区。
+    if living_room_pair:
+        if gap <= 1.35 and angle <= 45.0:
+            return (
+                "pass",
+                0.93,
+                f"living-room chair faces its nearby coffee-table focus: gap {gap:.2f}m, "
+                f"facing angle {angle:.0f}deg{angle_note}.",
+            )
+        if gap <= 1.35 and angle <= 110.0:
+            return (
+                "degraded",
+                0.82,
+                f"living-room chair points obliquely or outward from its nearby coffee-table focus: "
+                f"gap {gap:.2f}m, facing angle {angle:.0f}deg{angle_note}.",
+            )
+        return (
+            "fail",
+            0.88,
+            f"living-room chair does not face its nearby coffee-table focus: gap {gap:.2f}m, "
+            f"facing angle {angle:.0f}deg{angle_note}.",
+        )
     if gap <= 0.35 and angle <= 110.0:
         return (
             "pass",
@@ -703,12 +746,6 @@ def _eval_seating_to_surface(
             0.86,
             f"seat is moderately spaced but well oriented: gap {gap:.2f}m, facing angle {angle:.0f}deg{angle_note}.",
         )
-    if living_room_pair and gap <= 1.35 and angle <= 110.0:
-        return (
-            "pass",
-            0.88,
-            f"living-room seating is well paired with the coffee table: gap {gap:.2f}m, facing angle {angle:.0f}deg{angle_note}.",
-        )
     if gap <= 1.2 and angle <= 75.0:
         return (
             "pass",
@@ -720,12 +757,6 @@ def _eval_seating_to_surface(
             "fail",
             0.85,
             f"subject is back-facing relative to the target: gap {gap:.2f}m, facing angle {angle:.0f}deg{angle_note}.",
-        )
-    if living_room_pair and gap <= 1.35 and angle <= 135.0:
-        return (
-            "degraded",
-            0.78,
-            f"living-room pair is usable but loose: gap {gap:.2f}m, facing angle {angle:.0f}deg{angle_note}.",
         )
     if gap <= 1.0 and angle <= 125.0:
         return (

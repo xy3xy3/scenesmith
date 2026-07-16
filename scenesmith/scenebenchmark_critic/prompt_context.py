@@ -205,6 +205,14 @@ def _format_orientation_contract_context(
     for subject_id, relation_type, target_ids in sorted(rows):
         targets = ", ".join(target_ids)
         lines.append(f"- `{subject_id}`: `{relation_type}` -> `{targets}`")
+        if relation_type in {"seating_to_media", "seating_to_work_surface"}:
+            # 2026-07-16 修改原因：客厅椅按就近原则可绑定茶几或 TV；提示 critic
+            # 修复当前 contract 选中的室内焦点，避免用宽松 is_facing 结果忽略反向 yaw。
+            lines.append(
+                "  This chosen functional focus is authoritative for this evaluation: validate the exact "
+                "seat/target pair and make the seat point into that activity area. A broad "
+                "`is_facing=true` result must not override the stricter SceneBenchmark angle."
+            )
         if relation_type == "back_against_wall":
             lines.append(
                 "  Validate its front as normal to that wall and pointing into the room. "
