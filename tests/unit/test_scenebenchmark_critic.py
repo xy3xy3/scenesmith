@@ -64,7 +64,11 @@ from scenesmith.scenebenchmark_critic.adapter import (
     house_scene_to_case_pack,
     room_scene_to_case_pack,
 )
-from scenesmith.scenebenchmark_critic.metrics.functional_dependency.builder import build_checks
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.builder import (
+    _matches_target_relation,
+    _targets_matching_relations,
+    build_checks,
+)
 from scenesmith.scenebenchmark_critic.config import critic_config_from_any
 from scenesmith.scenebenchmark_critic.metrics.functional_dependency.orientation_contracts import (
     CONTRACT_CHECK_SOURCE,
@@ -81,6 +85,9 @@ from scenesmith.scenebenchmark_critic.metrics.functional_dependency import (
 )
 from scenesmith.scenebenchmark_critic.metrics.functional_dependency.relations import (
     _relation_target_is_valid,
+)
+from scenesmith.scenebenchmark_critic.metrics.functional_dependency.support import (
+    _is_primary_support_target,
 )
 
 
@@ -1484,6 +1491,90 @@ def test_explicit_target_relation_skips_incompatible_floor_lamp_surface() -> Non
         and check.get("subject_id") == "tripod_floor_lamp_1"
         for check in checks
     )
+
+
+def test_explicit_target_relation_uses_category_token_boundaries() -> None:
+    tablet = _benchmark_obj(
+        "tablet_1", "tablet_computer", (0.0, 0.0, 0.8), (0.3, 0.2, 0.03)
+    )
+    lamp = _benchmark_obj(
+        "lamp_1", "desk_lamp", (0.0, 0.0, 0.8), (0.2, 0.2, 0.4)
+    )
+    coffee_table = _benchmark_obj(
+        "coffee_table_1", "coffee_table", (0.0, 0.0, 0.4), (1.0, 0.8, 0.7)
+    )
+    desk = _benchmark_obj("desk_1", "desk", (0.0, 0.0, 0.4), (1.0, 0.8, 0.7))
+
+    # 2026-07-17 修改原因：回归显式 target_relation 的 token 边界，避免
+    # tablet/lamp 这类名称子串被误认为 table/desk，同时保留真实工作面类别。
+    assert not _matches_target_relation(tablet, ["table"])
+    assert not _matches_target_relation(lamp, ["desk"])
+    assert _matches_target_relation(coffee_table, ["table"])
+    assert _matches_target_relation(desk, ["desk"])
+
+
+def test_explicit_target_relation_drops_false_tablet_and_lamp_candidates() -> None:
+    plant = _benchmark_obj(
+        "plant_1", "plant", (0.0, 0.0, 1.0), (0.2, 0.2, 0.3)
+    )
+    plant["functional_hints"].update(
+        {
+            "scene_object_type": "manipuland",
+            "explicit_target_relation": ["table"],
+        }
+    )
+    tablet = _benchmark_obj(
+        "tablet_1", "tablet_computer", (0.0, 0.0, 0.8), (0.3, 0.2, 0.03)
+    )
+    checks = build_checks(
+        _benchmark_case_pack([plant, tablet]), metrics=["functional_dependency"]
+    )
+
+    assert not any(
+        check.get("check_source") == "asset_explicit_target_relation"
+        and check.get("subject_id") == "plant_1"
+        for check in checks
+    )
+
+
+def test_noisy_small_lamp_profile_is_not_a_support_target() -> None:
+    lamp = _benchmark_obj(
+        "lamp_1", "desk_lamp", (0.0, 0.0, 0.8), (0.2, 0.2, 0.4)
+    )
+    lamp["functional_hints"].update(
+        {"scene_object_type": "manipuland", "category_group": "lighting"}
+    )
+    lamp["object_function_profile"] = {
+        "can_support_top": True,
+        "is_small_placeable": True,
+    }
+
+    assert not _is_primary_support_target(lamp)
+
+
+def test_explicit_target_prefers_direct_parent_surface_owner() -> None:
+    book = _benchmark_obj(
+        "book_1", "book", (0.0, 0.0, 1.1), (0.2, 0.16, 0.12)
+    )
+    book["functional_hints"].update(
+        {
+            "scene_object_type": "manipuland",
+            "functional_categories": ["graspable"],
+            "explicit_target_relation": ["bookcase", "desk"],
+        }
+    )
+    book["placement_info"] = {"parent_surface_id": "S_bookshelf"}
+    bookshelf = _benchmark_obj(
+        "bookshelf_1", "bookshelf", (0.0, 0.0, 0.5), (0.8, 0.4, 1.0)
+    )
+    bookshelf["support_regions"] = [{"region_id": "S_bookshelf"}]
+    desk = _benchmark_obj("desk_1", "desk", (0.8, 0.0, 0.4), (0.8, 0.5, 0.8))
+
+    targets = _targets_matching_relations(
+        book, [bookshelf, desk], ["bookcase", "desk"]
+    )
+
+    assert [target["id"] for target in targets] == ["bookshelf_1"]
 
 
 def test_small_placeable_profile_overrides_noisy_work_surface_category() -> None:

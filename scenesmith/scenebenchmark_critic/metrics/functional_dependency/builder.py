@@ -24,6 +24,7 @@ from scenesmith.scenebenchmark_critic.metrics.functional_dependency.relations im
     _relation_target_is_valid,
 )
 from scenesmith.scenebenchmark_critic.metrics.functional_dependency.semantics import (
+    _is_any_lamp_object,
     _is_nightstand_target,
     _is_seating_subject,
     _is_work_surface_target,
@@ -531,9 +532,26 @@ def _targets_matching_relations(
     candidates: Any,
     target_relations: list[str],
 ) -> list[dict[str, Any]]:
+    candidate_list = list(candidates)
+    placement = subject.get("placement_info") or {}
+    parent_surface_id = str(placement.get("parent_surface_id") or "")
+    if parent_surface_id:
+        # 2026-07-17 修改原因：对象已有直接 parent surface 时，显式 target
+        # 候选优先使用该 surface 的 owner，避免把同一批附近的 desk/table
+        # 当成真实支撑物。只有 owner 本身符合显式类别时才收敛，保留不匹配
+        # parent 的语义错误检查。
+        for candidate in candidate_list:
+            owns_surface = any(
+                str(region.get("region_id") or "") == parent_surface_id
+                for region in candidate.get("support_regions") or []
+                if isinstance(region, dict)
+            )
+            if owns_surface and _matches_target_relation(candidate, target_relations):
+                if _is_useful_explicit_target(subject, candidate, target_relations):
+                    return [candidate]
     targets = _nearby_targets(
         subject,
-        candidates,
+        candidate_list,
         predicate=lambda candidate: _matches_target_relation(
             candidate, target_relations
         )
@@ -560,10 +578,21 @@ def _matches_target_relation(
             return True
         if normalized_target == normalized_category:
             return True
-        if (
-            normalized_target in {"table", "desk"}
-            and normalized_target in normalized_category
+        if {normalized_target, normalized_category} == {"bookcase", "bookshelf"}:
+            # 2026-07-17 修改原因：HSSD 同时使用 bookcase/bookshelf 两种
+            # 类别名；缺少别名会让真实 bookshelf parent 被错误降级为 desk 候选。
+            return True
+        # 2026-07-17 修改原因：显式 target_relation 使用子串匹配会把
+        # `tablet_computer` 误当成 `table`，把 `desk_lamp` 误当成 `desk`。
+        # 仅接受完整类别 token 边界，并对灯具排除桌面/书桌语义。
+        if normalized_target in {"table", "desk"} and (
+            normalized_category.startswith(normalized_target + "_")
+            or normalized_category.endswith("_" + normalized_target)
         ):
+            if _is_any_lamp_object(candidate):
+                continue
+            if not _is_work_surface_target(candidate):
+                continue
             return True
         if normalized_category.startswith(normalized_target + "_"):
             return True

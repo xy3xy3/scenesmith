@@ -1939,12 +1939,18 @@ def _is_horizontally_plausible_support_candidate(
 
 def _is_support_target(target: dict[str, Any]) -> bool:
     profile = object_function_profile(target)
+    # 2026-07-17 修改原因：灯具和小型 manipuland 即使带有噪声
+    # `can_support_top` 标注，也不应成为其他物体的主支撑目标。
+    if _is_any_lamp_object(target):
+        return False
+    if profile.source == "explicit" and profile.is_small_placeable:
+        scene_type = _scene_object_type(target)
+        if scene_type == "manipuland":
+            return False
     if profile.source == "explicit" and (
         profile.can_support_top or profile.has_internal_shelf
     ):
         return True
-    if _is_any_lamp_object(target):
-        return False
     if _category_token_has_any(target, SMALL_OBJECT_TEXT_HINTS):
         return False
     if _category_token_has_any(target, SOFT_SUPPORT_TARGET_REJECT_HINTS):
