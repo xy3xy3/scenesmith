@@ -486,7 +486,7 @@ def _object_to_geometry(
     size = np.maximum(world_max - world_min, 0.0)
     local_size = _local_bbox_size(obj, fallback_size=size)
     category = _category_for_object(obj)
-    yaw = _semantic_yaw_deg(obj)
+    yaw = _semantic_yaw_deg(obj, scene=scene)
     functional_hints = _functional_hints(obj, category, yaw_deg=yaw)
 
     support_regions = _metadata_support_regions(obj, offset)
@@ -723,13 +723,43 @@ def _front_vector_from_hint(
     return fx, fy
 
 
-def _semantic_yaw_deg(obj: SceneObject) -> float:
-    # 2026-07-08 修改原因：桌面 manipuland 的 transform yaw 会受资产 canonicalization
-    # 和物理投影扰动影响；SceneBenchmark 朝向规则应优先使用工具记录的 surface 语义摆放角。
+def _semantic_yaw_deg(obj: SceneObject, *, scene: RoomScene | None = None) -> float:
+    # 2026-07-17 修改原因：PlacementInfo.rotation_2d 是父支撑面的局部角度，
+    # 不能直接当成 world yaw；桌面自身经常带有 180° 朝向，直接使用会把
+    # monitor 等 surface manipuland 的 front 判反。合并父 surface yaw 后再供
+    # SceneBenchmark 规则使用，同时继续避免物理投影带来的微小姿态噪声。
     placement_info = getattr(obj, "placement_info", None)
     if obj.object_type == ObjectType.MANIPULAND and placement_info is not None:
-        return math.degrees(float(placement_info.rotation_2d))
+        local_yaw = float(placement_info.rotation_2d)
+        world_yaw = _parent_surface_world_yaw(
+            obj, scene=scene, local_yaw=local_yaw
+        )
+        if world_yaw is not None:
+            return math.degrees(world_yaw)
+        # 2026-07-17 修改原因：父 surface 可能来自被裁剪的 scene 或铰接 link，
+        # 找不到 metadata 时不能把 surface-local 角度静默当成 world 角度；退回
+        # 当前对象实际世界姿态，避免泛化场景中再次固定误判为 0°。
+        return math.degrees(RollPitchYaw(obj.transform.rotation()).yaw_angle())
     return math.degrees(RollPitchYaw(obj.transform.rotation()).yaw_angle())
+
+
+def _parent_surface_world_yaw(
+    obj: SceneObject, *, scene: RoomScene | None, local_yaw: float
+) -> float | None:
+    """Return composed world yaw for a manipuland's parent support surface."""
+    placement_info = getattr(obj, "placement_info", None)
+    if placement_info is None or scene is None:
+        return None
+
+    parent_surface_id = str(placement_info.parent_surface_id)
+    for owner in getattr(scene, "objects", {}).values():
+        for surface in getattr(owner, "support_surfaces", []):
+            if str(surface.surface_id) != parent_surface_id:
+                continue
+            local_rotation = RollPitchYaw(0.0, 0.0, float(local_yaw)).ToRotationMatrix()
+            world_rotation = surface.transform.rotation() @ local_rotation
+            return float(RollPitchYaw(world_rotation).yaw_angle())
+    return None
 
 
 def _front_hint_from_access_direction(raw: Any, *, yaw_deg: float) -> str | None:

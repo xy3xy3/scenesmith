@@ -54,6 +54,7 @@ def _workstation_case(
     chair_x: float = 0.0,
     chair_yaw: float = 180.0,
     monitor_parent: str = "desk_top",
+    monitor_yaw: float = 0.0,
 ) -> dict:
     desk = _object(
         "desk_0",
@@ -77,6 +78,7 @@ def _workstation_case(
         scene_type="manipuland",
         parent_surface=monitor_parent,
     )
+    monitor["yaw_deg"] = monitor_yaw
     return {
         "scene_geometry": {"objects": [desk, chair, monitor]},
         "checks": [
@@ -123,6 +125,40 @@ def test_workstation_extension_requires_focus_on_the_same_desk() -> None:
     assert evaluate_workstation_focal_alignment(
         _workstation_case(monitor_parent="another_desk_top")
     ) == []
+
+
+def test_workstation_extension_checks_display_front_toward_user() -> None:
+    facing = evaluate_workstation_focal_alignment(
+        _workstation_case(monitor_yaw=0.0)
+    )
+    display_result = next(
+        item for item in facing if item["relation_type"] == "display_faces_user"
+    )
+    assert display_result["label"] == "pass"
+
+    reversed_display = evaluate_workstation_focal_alignment(
+        _workstation_case(monitor_yaw=180.0)
+    )
+    display_result = next(
+        item
+        for item in reversed_display
+        if item["relation_type"] == "display_faces_user"
+    )
+    assert display_result["label"] == "fail"
+    assert display_result["diagnostics"]["priority"] == "orientation"
+
+
+def test_registry_executes_display_orientation_extension() -> None:
+    results = run_case_pack_checks(
+        _workstation_case(),
+        CriticConfig(enabled=True, metrics=("functional_dependency",)),
+    )
+
+    display_results = [
+        result for result in results if result.get("relation_type") == "display_faces_user"
+    ]
+    assert len(display_results) == 1
+    assert display_results[0]["label"] == "pass"
 
 
 def _wall_object(

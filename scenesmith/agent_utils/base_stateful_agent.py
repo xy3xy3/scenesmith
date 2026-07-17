@@ -7,8 +7,11 @@ subclass-defined tools.
 """
 
 import copy
+import hashlib
+import inspect
 import json
 import logging
+import re
 import shutil
 
 from abc import ABC, abstractmethod
@@ -186,6 +189,14 @@ class BaseStatefulAgent(ABC):
         self._planner_last_critique_scene_hash: str | None = None
         self._planner_unchanged_design_changes = 0
         self._planner_stop_reason: str | None = None
+        # 2026-07-17 修改原因：critic session 可能把上一轮视觉结论带入新场景，
+        # 且模型可能在场景已改变后重复返回同一份 critique；按 workflow 清理这些
+        # 跨轮状态，后续由 scene hash/fingerprint 再做有界检测。
+        self._critic_session_scene_hash: str | None = None
+        self._last_critique_scene_hash: str | None = None
+        self._last_critique_fingerprint: str | None = None
+        self._critique_feedback_stale = False
+        self._critique_feedback_stale_reason: str | None = None
 
     def _planner_hard_stop(self, reason: str) -> str:
         """Return a stable message that tells the planner to finish immediately."""
@@ -200,6 +211,90 @@ class BaseStatefulAgent(ABC):
     def _configured_no_progress_limit(self) -> int:
         """Return the optional consecutive unchanged-design limit."""
         return max(0, int(getattr(self.cfg, "max_no_progress_rounds", 0)))
+
+    async def _clear_critic_session_history(self) -> None:
+        """Clear critic history when a new scene state must be evaluated."""
+        session = getattr(self, "critic_session", None)
+        clear_session = getattr(session, "clear_session", None)
+        if not callable(clear_session):
+            self._critic_session_scene_hash = None
+            return
+        cleared = clear_session()
+        if inspect.isawaitable(cleared):
+            await cleared
+        self._critic_session_scene_hash = None
+        console_logger.info("Cleared critic session history for a fresh scene state")
+
+    async def _prepare_critic_session(self, scene_hash: str | None) -> None:
+        """Keep only same-scene history in the critic session."""
+        if scene_hash is None or getattr(self, "_critic_session_scene_hash", None) == scene_hash:
+            return
+        await self._clear_critic_session_history()
+        self._critic_session_scene_hash = scene_hash
+
+    @staticmethod
+    def _critique_fingerprint(response: CritiqueWithScores) -> str:
+        """Build a stable fingerprint for duplicate model feedback detection."""
+        payload = {
+            "critique": " ".join(str(response.critique or "").split()).casefold(),
+            "scores": [
+                {
+                    "name": " ".join(str(score.name or "").split()).casefold(),
+                    "grade": int(score.grade),
+                    "comment": " ".join(str(score.comment or "").split()).casefold(),
+                }
+                for score in response.get_scores()
+            ],
+        }
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _critique_inconsistency_reason(
+        self,
+        *,
+        scene_hash: str | None,
+        fingerprint: str,
+        invalid_surface_ids: set[str],
+    ) -> str | None:
+        """Return a stop reason for feedback stale against the current scene."""
+        if invalid_surface_ids:
+            return (
+                "critic referenced invalid current-furniture surface IDs: "
+                f"{sorted(invalid_surface_ids)}"
+            )
+        if (
+            scene_hash is not None
+            and getattr(self, "_last_critique_scene_hash", None) is not None
+            and self._last_critique_scene_hash != scene_hash
+            and getattr(self, "_last_critique_fingerprint", None) == fingerprint
+        ):
+            # 2026-07-17 修改原因：仅比较 scene hash 无法发现模型在场景已改变后
+            # 重放上一轮相同结论；将规范化 critique/score 指纹纳入 no-progress
+            # 判定，避免重复 Designer 修改。
+            return "critic returned the same critique fingerprint after the scene changed"
+        return None
+
+    def _invalid_critic_surface_ids(self, response: CritiqueWithScores) -> set[str]:
+        """Return S_* surface IDs mentioned by critic but absent from current furniture."""
+        if self.agent_type != AgentType.MANIPULAND:
+            return set()
+        scene = getattr(self, "scene", None)
+        furniture_id = getattr(self, "current_furniture_id", None)
+        if scene is None or furniture_id is None or not hasattr(scene, "get_object"):
+            return set()
+        furniture = scene.get_object(furniture_id)
+        if furniture is None:
+            return set()
+        valid_ids = {
+            str(surface.surface_id)
+            for surface in getattr(furniture, "support_surfaces", [])
+        }
+        text_parts = [str(response.critique or "")]
+        text_parts.extend(str(score.comment or "") for score in response.get_scores())
+        mentioned = set(
+            re.findall(r"\bS_[A-Za-z0-9]+\b", "\n".join(text_parts))
+        )
+        return mentioned - valid_ids
 
     def _get_model_settings(
         self,
@@ -779,8 +874,15 @@ class BaseStatefulAgent(ABC):
                 )
 
             self._planner_critique_calls += 1
+            self._critique_feedback_stale = False
+            self._critique_feedback_stale_reason = None
             result = await self._request_critique_impl()
             self._planner_last_critique_scene_hash = self.scene.content_hash()
+            if self._critique_feedback_stale:
+                return self._planner_hard_stop(
+                    self._critique_feedback_stale_reason
+                    or "critic feedback was stale or inconsistent with current scene"
+                )
             return result
 
         @function_tool
@@ -1036,6 +1138,37 @@ class BaseStatefulAgent(ABC):
                 else None
             )
             if current_furniture is not None:
+                # 2026-07-17 修改原因：视觉 critic 曾把当前 6 层书架误读成
+                # 10 层并引用不存在的 S_b/S_d 等 surface；把家具、合法 surface
+                # 以及每个 surface 的实际对象列表作为权威上下文注入每轮 critique。
+                context["current_furniture_id"] = str(current_furniture.object_id)
+                context["current_furniture_name"] = current_furniture.name
+                support_surfaces: list[dict[str, Any]] = []
+                surface_object_ids: dict[str, list[str]] = {}
+                for surface in getattr(current_furniture, "support_surfaces", []):
+                    surface_id = str(surface.surface_id)
+                    surface_object_ids[surface_id] = []
+                    support_surfaces.append(
+                        {
+                            "surface_id": surface_id,
+                            "local_bounds": {
+                                "min": [
+                                    round(float(value), 4)
+                                    for value in surface.bounding_box_min.tolist()
+                                ],
+                                "max": [
+                                    round(float(value), 4)
+                                    for value in surface.bounding_box_max.tolist()
+                                ],
+                            },
+                        }
+                    )
+                context["support_surfaces"] = support_surfaces
+                context["valid_surface_ids"] = [
+                    surface["surface_id"] for surface in support_surfaces
+                ]
+                context["current_furniture_surface_count"] = len(support_surfaces)
+
                 relevant_objects.append(summarize_object(current_furniture))
 
                 surface_ids = {
@@ -1054,7 +1187,29 @@ class BaseStatefulAgent(ABC):
                         or placement_info.parent_surface_id not in surface_ids
                     ):
                         continue
-                    relevant_objects.append(summarize_object(obj))
+                    obj_summary = summarize_object(obj)
+                    parent_surface_id = str(placement_info.parent_surface_id)
+                    obj_summary["parent_surface_id"] = parent_surface_id
+                    obj_summary["surface_position_2d"] = [
+                        round(float(value), 4)
+                        for value in placement_info.position_2d.tolist()
+                    ]
+                    obj_summary["surface_rotation_degrees"] = round(
+                        float(placement_info.rotation_2d) * 180.0 / 3.141592653589793,
+                        3,
+                    )
+                    relevant_objects.append(obj_summary)
+                    surface_object_ids.setdefault(parent_surface_id, []).append(
+                        str(obj.object_id)
+                    )
+                context["surface_object_ids"] = surface_object_ids
+                context["current_furniture_manipuland_count"] = sum(
+                    len(object_ids) for object_ids in surface_object_ids.values()
+                )
+                # 保留旧字段名称，避免已有 inline-retry 解析器因 schema 演进失效。
+                context["current_furniture_object_count"] = context[
+                    "current_furniture_manipuland_count"
+                ]
         else:
             relevant_object_type = self.agent_type.to_object_type()
             if relevant_object_type is not None:
@@ -1070,7 +1225,7 @@ class BaseStatefulAgent(ABC):
         return json.dumps(context, ensure_ascii=True, indent=2)
 
     def _build_inline_critic_retry_input(
-        self, critique_instruction: str
+        self, critique_instruction: str, *, retry_reason: str | None = None
     ) -> str | list[dict[str, Any]]:
         """Build retry input with inline observation/state for local models."""
         scene_summary = self._build_inline_critic_scene_summary()
@@ -1081,11 +1236,11 @@ class BaseStatefulAgent(ABC):
         fallback_text = (
             f"{critique_instruction}\n\n"
             "IMPORTANT FALLBACK CONTEXT:\n"
-            "The previous critique attempt skipped the required read-only tools and "
-            "refused to evaluate. Treat the inline images below as the equivalent of "
+            f"{retry_reason or 'The previous critique attempt did not provide a reliable current-scene evaluation.'} "
+            "Treat the inline images below as the equivalent of "
             "observe_scene(), and treat the inline scene summary below as the "
-            "equivalent of get_current_scene_state(). Do not refuse evaluation due to "
-            "missing tool calls on this retry.\n\n"
+            "equivalent of get_current_scene_state(). Use the structured surface/object "
+            "inventory as authoritative; do not invent surface IDs.\n\n"
             "Inline scene summary:\n"
             f"{scene_summary or '{}'}"
         )
@@ -1114,6 +1269,11 @@ class BaseStatefulAgent(ABC):
 
         # Get current furniture ID for manipuland agents.
         current_furniture_id = getattr(self, "current_furniture_id", None)
+        scene_hash = None
+        content_hash = getattr(self.scene, "content_hash", None)
+        if callable(content_hash):
+            scene_hash = str(content_hash())
+        await self._prepare_critic_session(scene_hash)
 
         # Get physics violations using the same logic as the check_physics tool.
         # This ensures the critic sees exactly the same information as the designer.
@@ -1129,6 +1289,17 @@ class BaseStatefulAgent(ABC):
                 f"{physics_context}\n\n"
                 f"Additional SceneBenchmark geometry critic context:\n"
                 f"{benchmark_context}"
+            )
+        structured_context = self._build_inline_critic_scene_summary()
+        if self.agent_type == AgentType.MANIPULAND and structured_context:
+            physics_context = (
+                f"{physics_context}\n\n"
+                "Authoritative current-furniture critic context:\n"
+                "Use this inventory to interpret the images. The listed surface IDs "
+                "are complete for the current furniture; do not invent additional "
+                "shelves/surfaces or reuse IDs from an earlier turn. Placement angles "
+                "are local to the listed parent surface.\n"
+                f"{structured_context}"
             )
 
         # Critic evaluates with physics context. It will call observe_scene to
@@ -1159,16 +1330,31 @@ class BaseStatefulAgent(ABC):
             self._critic_called_required_read_only_tools(result)
         )
         all_zero_scores = all(score.grade == 0 for score in response.get_scores())
+        invalid_surface_ids = self._invalid_critic_surface_ids(response)
         # 2026-07-10 修改原因：llama.cpp/Qwen 经常返回有效非零 critique，
         # 但 SDK 未记录只读工具调用；过去会因此无条件再跑一次完整 VLM 请求。
-        # 仅在输出本身显示缺少上下文，或零分且确实没调用工具时重试。
+        # 仅在输出本身显示缺少上下文、零分且确实没调用工具，或引用了
+        # 当前家具不存在的 surface ID 时重试。
         needs_inline_retry = self._critic_response_needs_inline_retry(response) or (
             not critic_used_required_tools and all_zero_scores
-        )
+        ) or bool(invalid_surface_ids)
 
         if needs_inline_retry:
-            retry_input = self._build_inline_critic_retry_input(critique_instruction)
+            retry_reason = None
+            if invalid_surface_ids:
+                retry_reason = (
+                    "The previous critique referenced invalid surface IDs "
+                    f"{sorted(invalid_surface_ids)}. Re-evaluate against the current "
+                    "furniture inventory and ignore that stale geometry."
+                )
+            retry_input = self._build_inline_critic_retry_input(
+                critique_instruction, retry_reason=retry_reason
+            )
             if retry_input != critique_instruction:
+                await self._clear_critic_session_history()
+                # 2026-07-17 修改原因：inline retry 已经清空了 session；直接记录
+                # 当前 hash，避免 prepare 再次清理同一个 session 并浪费一次状态操作。
+                self._critic_session_scene_hash = scene_hash
                 if not critic_used_required_tools:
                     missing_tools = sorted(
                         {"observe_scene", "get_current_scene_state"} - called_tools
@@ -1192,6 +1378,7 @@ class BaseStatefulAgent(ABC):
                 )
                 log_agent_usage(result=result, agent_name="CRITIC (INLINE RETRY)")
                 response = result.final_output_as(CritiqueWithScores)
+                invalid_surface_ids = self._invalid_critic_surface_ids(response)
             else:
                 if not critic_used_required_tools:
                     console_logger.warning(
@@ -1203,6 +1390,25 @@ class BaseStatefulAgent(ABC):
                         "Critic produced a fallback critique, but no inline retry "
                         "context was available."
                     )
+
+        self._critique_feedback_stale = False
+        self._critique_feedback_stale_reason = None
+        fingerprint = self._critique_fingerprint(response)
+        inconsistency_reason = self._critique_inconsistency_reason(
+            scene_hash=scene_hash,
+            fingerprint=fingerprint,
+            invalid_surface_ids=invalid_surface_ids,
+        )
+        if inconsistency_reason is not None:
+            self._critique_feedback_stale = True
+            self._critique_feedback_stale_reason = inconsistency_reason
+        self._last_critique_scene_hash = scene_hash
+        self._last_critique_fingerprint = fingerprint
+        if self._critique_feedback_stale:
+            console_logger.warning(
+                "Critique feedback marked stale/inconsistent: "
+                f"{self._critique_feedback_stale_reason}"
+            )
 
         # Log critique text and scores to console.
         log_agent_response(response=response.critique, agent_name="CRITIC")
@@ -1273,7 +1479,13 @@ class BaseStatefulAgent(ABC):
         self.final_render_dir = images_dir
 
         # Return natural language critique with score deltas for planner.
-        return response.critique + score_change_msg
+        result_text = response.critique + score_change_msg
+        if self._critique_feedback_stale:
+            result_text += (
+                "\n\nCRITIQUE FEEDBACK MARKED STALE/INCONSISTENT: "
+                f"{self._critique_feedback_stale_reason}"
+            )
+        return result_text
 
     def _build_scenebenchmark_critic_context(self) -> str | None:
         """Evaluate lightweight SceneBenchmark rules for critic prompt context."""

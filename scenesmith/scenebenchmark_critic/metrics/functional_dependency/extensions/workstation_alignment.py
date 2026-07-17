@@ -57,6 +57,10 @@ def evaluate_workstation_focal_alignment(
             result = _evaluate_pair(seat, desk, focus)
             if result is not None:
                 results.append(result)
+            # 2026-07-17 修改原因：原 workstation 检查只验证椅子是否朝向
+            # 显示器中心，无法阻止 monitor 自身背向椅子；补充 display_faces_user
+            # 结果，让 deterministic critic context 可以否决 LLM 的反向修复。
+            results.extend(_evaluate_display_orientation(seat, desk, focus))
     return results
 
 
@@ -135,6 +139,71 @@ def _evaluate_pair(
         },
         "scoring_tier": "core",
     }
+
+
+def _evaluate_display_orientation(
+    seat: dict[str, Any], desk: dict[str, Any], focus: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Check that each display's semantic front points toward the work chair."""
+    seat_center = bbox_center_xy(seat)
+    if seat_center is None:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for display in focus:
+        display_center = bbox_center_xy(display)
+        if display_center is None:
+            continue
+        angle = _angle_to_target(display, display_center, seat_center)
+        if angle is None:
+            continue
+        if angle <= 25.0:
+            label = "pass"
+            priority = "none"
+        elif angle <= 45.0:
+            label = "degraded"
+            priority = "orientation"
+        else:
+            label = "fail"
+            priority = "orientation"
+        display_id = str(display["id"])
+        seat_id = str(seat["id"])
+        desk_id = str(desk["id"])
+        results.append(
+            {
+                "check_id": f"display_faces_user__{display_id}__{seat_id}",
+                "metric": "functional_dependency",
+                "label": label,
+                "confidence": 0.97,
+                "primary_object": display_id,
+                "related_objects": [seat_id, desk_id],
+                "selected_related_objects": [seat_id, desk_id],
+                "blocking_objects": [],
+                "relation_type": "display_faces_user",
+                "reason": (
+                    f"Display {display_id!r} is {angle:.1f} degrees off the work "
+                    f"chair {seat_id!r}."
+                ),
+                "repair_advice": (
+                    f"Rotate or reposition {display_id!r} so its screen/front points "
+                    f"toward {seat_id!r}; use the parent surface's local frame when "
+                    "issuing a placement change."
+                ),
+                "diagnostics": {
+                    "display_id": display_id,
+                    "seat_id": seat_id,
+                    "desk_id": desk_id,
+                    "angle_to_user_deg": round(angle, 6),
+                    "priority": priority,
+                },
+                "evidence": {
+                    "constraint": "display_front_to_workstation_seat",
+                    "desk_local_axis": "surface/front",
+                },
+                "scoring_tier": "core",
+            }
+        )
+    return results
 
 
 def _is_work_surface(obj: dict[str, Any]) -> bool:

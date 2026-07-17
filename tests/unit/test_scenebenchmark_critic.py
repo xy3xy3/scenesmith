@@ -60,6 +60,7 @@ from scenesmith.scenebenchmark_critic.prompt_context import (
     format_agent_prompt_context,
 )
 from scenesmith.scenebenchmark_critic.adapter import (
+    _semantic_yaw_deg,
     house_scene_to_case_pack,
     room_scene_to_case_pack,
 )
@@ -252,6 +253,76 @@ def _house(tmp_path: Path) -> HouseScene:
         ],
     )
     return HouseScene(layout=layout, rooms={"main": room})
+
+
+def test_surface_manipuland_semantic_yaw_includes_parent_surface_yaw(
+    tmp_path: Path,
+) -> None:
+    """Surface-local 0° must preserve the parent's world-facing direction."""
+    scene = _scene(tmp_path)
+    table = scene.get_object("table_0")
+    assert table is not None
+    surface = table.support_surfaces[0]
+    surface.transform = RigidTransform(
+        RollPitchYaw(0.0, 0.0, math.pi).ToRotationMatrix(),
+        [0.0, 0.0, 0.7],
+    )
+    monitor = _box_object(
+        "monitor_0",
+        "computer monitor",
+        ObjectType.MANIPULAND,
+        center=(0.0, 0.0, 0.8),
+        size=(0.4, 0.12, 0.35),
+    )
+    monitor.placement_info = PlacementInfo(
+        parent_surface_id=surface.surface_id,
+        position_2d=np.array([0.0, 0.0]),
+        rotation_2d=0.0,
+    )
+    monitor.transform = surface.to_world_pose(
+        monitor.placement_info.position_2d,
+        monitor.placement_info.rotation_2d,
+    )
+    scene.add_object(monitor)
+
+    assert math.isclose(
+        _semantic_yaw_deg(monitor, scene=scene),
+        180.0,
+        abs_tol=1e-6,
+    )
+
+    monitor.placement_info.rotation_2d = math.pi
+    monitor.transform = surface.to_world_pose(
+        monitor.placement_info.position_2d,
+        monitor.placement_info.rotation_2d,
+    )
+    assert math.isclose(
+        abs(_semantic_yaw_deg(monitor, scene=scene)),
+        0.0,
+        abs_tol=1e-6,
+    )
+
+
+def test_surface_manipuland_semantic_yaw_falls_back_to_world_pose_for_missing_surface(
+    tmp_path: Path,
+) -> None:
+    scene = _scene(tmp_path)
+    monitor = _box_object(
+        "monitor_missing_surface",
+        "computer monitor",
+        ObjectType.MANIPULAND,
+        center=(0.0, 0.0, 0.8),
+        size=(0.4, 0.12, 0.35),
+        yaw_deg=90.0,
+    )
+    monitor.placement_info = PlacementInfo(
+        parent_surface_id=UniqueID("S_missing"),
+        position_2d=np.array([0.0, 0.0]),
+        rotation_2d=0.0,
+    )
+    scene.add_object(monitor)
+
+    assert _semantic_yaw_deg(monitor, scene=scene) == pytest.approx(90.0)
 
 
 def test_room_scene_adapter_builds_geometry_and_checks(tmp_path: Path) -> None:
@@ -479,6 +550,20 @@ def test_room_scene_adapter_uses_surface_placement_yaw_for_manipuland(
 ) -> None:
     scene = _scene(tmp_path)
     scene.objects.clear()
+    desk = _box_object(
+        "desk_0",
+        "study desk",
+        ObjectType.FURNITURE,
+        center=(0.0, 0.0, 0.45),
+        size=(1.2, 0.6, 0.9),
+    )
+    surface = SupportSurface(
+        surface_id=UniqueID("desk_top"),
+        bounding_box_min=np.array([-0.6, -0.3, 0.0]),
+        bounding_box_max=np.array([0.6, 0.3, 0.0]),
+        transform=RigidTransform(p=[0.0, 0.0, 0.9]),
+    )
+    desk.support_surfaces = [surface]
     monitor = _box_object(
         "computer_monitor_0",
         "computer monitor",
@@ -495,6 +580,11 @@ def test_room_scene_adapter_uses_surface_placement_yaw_for_manipuland(
         rotation_2d=np.pi,
         placement_method="surface_placement",
     )
+    monitor.transform = surface.to_world_pose(
+        monitor.placement_info.position_2d,
+        monitor.placement_info.rotation_2d,
+    )
+    scene.add_object(desk)
     scene.add_object(monitor)
 
     case_pack = room_scene_to_case_pack(scene, stage="final_scene")
@@ -6712,6 +6802,36 @@ def test_manipuland_prompt_context_includes_authoritative_completeness_pass() ->
     assert "plate=4" in context
     assert "utensil=4" in context
     assert "wholesale removal/regeneration" in context
+
+
+def test_manipuland_prompt_context_includes_authoritative_display_orientation() -> None:
+    payload = _workstation_payload()
+    payload["results"].append(
+        {
+            "check_id": "display_faces_user__computer_monitor_0__office_chair_0",
+            "metric": "functional_dependency",
+            "label": "pass",
+            "primary_object": "computer_monitor_0",
+            "related_objects": ["office_chair_0", "study_desk_0"],
+            "relation_type": "display_faces_user",
+            "diagnostics": {
+                "display_id": "computer_monitor_0",
+                "seat_id": "office_chair_0",
+                "desk_id": "study_desk_0",
+                "angle_to_user_deg": 15.2,
+            },
+        }
+    )
+
+    context = format_agent_prompt_context(
+        payload,
+        agent_type=AgentType.MANIPULAND,
+        current_furniture_id="study_desk_0",
+    )
+
+    assert "Authoritative deterministic display-to-user orientation checks" in context
+    assert "computer_monitor_0` -> `office_chair_0`: label=pass" in context
+    assert "do not rotate that display based on visual ambiguity" in context
 
 
 def test_agent_prompt_context_keeps_furniture_layout_issues() -> None:

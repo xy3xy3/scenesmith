@@ -120,6 +120,11 @@ def format_agent_prompt_context(
     )
     if completeness_context:
         context = f"{context}\n\n{completeness_context}"
+    orientation_context = _format_manipuland_orientation_context(
+        payload, agent_type, current_furniture_id
+    )
+    if orientation_context:
+        context = f"{context}\n\n{orientation_context}"
     wall_media_context = _format_wall_media_window_context(
         payload, filtered, agent_type
     )
@@ -175,6 +180,79 @@ def _format_manipuland_completeness_context(
             "Do not claim these required groups are absent or request wholesale "
             "removal/regeneration based only on visual ambiguity. You may still "
             "report concrete geometry, spacing, or presentation defects.",
+        ]
+    )
+
+
+def _format_manipuland_orientation_context(
+    payload: dict[str, Any],
+    agent_type: AgentType | str,
+    current_furniture_id: str | None,
+) -> str:
+    # 2026-07-17 修改原因：仅注入 failed/degraded 项会让 critic 看不到已经通过的
+    # 显示器朝向，视觉误判仍可能触发反向 rotation；把当前家具的 pass/fail 方向
+    # 合同一并注入，并明确 rotation 使用 parent surface-local frame。
+    """Expose deterministic display orientation, including passing checks."""
+    if _agent_value(agent_type) != AgentType.MANIPULAND.value:
+        return ""
+    furniture_id = str(current_furniture_id or "").strip()
+    if not furniture_id:
+        return ""
+
+    objects = _objects_by_id(payload)
+    furniture = objects.get(furniture_id)
+    if furniture is None:
+        return ""
+    owned_surface_ids = _surface_ids(furniture)
+
+    rows: list[str] = []
+    for result in payload.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        if result.get("relation_type") != "display_faces_user":
+            continue
+        if _is_ignored_scoring_tier(result):
+            continue
+
+        display_id = str(result.get("primary_object") or "")
+        display = objects.get(display_id)
+        diagnostics = result.get("diagnostics") or {}
+        desk_id = str(diagnostics.get("desk_id") or "")
+        if desk_id and desk_id != furniture_id:
+            continue
+        if not desk_id and _parent_surface_id(display) not in owned_surface_ids:
+            continue
+
+        related_ids = _related_ids(result)
+        seat_id = str(diagnostics.get("seat_id") or "")
+        if not seat_id:
+            seat_id = next(
+                (
+                    object_id
+                    for object_id in related_ids
+                    if _is_seating(objects.get(object_id))
+                ),
+                "unknown_seat",
+            )
+        label = str(result.get("label") or "unknown")
+        angle = diagnostics.get("angle_to_user_deg")
+        angle_text = f"; angle_to_user={angle}°" if angle is not None else ""
+        rows.append(
+            f"- `{display_id}` -> `{seat_id}`: label={label}{angle_text}; "
+            f"desk=`{furniture_id}`"
+        )
+
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            "Authoritative deterministic display-to-user orientation checks:",
+            *rows,
+            "These checks use the display's world front after composing its parent "
+            "surface transform with its local placement angle. A `pass` result is "
+            "authoritative: do not rotate that display based on visual ambiguity "
+            "alone. For `fail` or `degraded`, issue rotation in the parent surface "
+            "local frame and re-evaluate the same check afterward.",
         ]
     )
 
