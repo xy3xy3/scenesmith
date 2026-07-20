@@ -379,13 +379,14 @@ def list_hssd_glb_assets(
     hssd_root: Path,
     metadata_by_id: dict[str, HssdMeshMetadata],
     limit: int | None,
+    require_metadata: bool = True,
 ) -> list[tuple[str, Path, HssdMeshMetadata | None]]:
     assets: list[tuple[str, Path, HssdMeshMetadata | None]] = []
     skipped_without_metadata = 0
     for asset_path in sorted((hssd_root / "objects").glob("*/*.glb")):
         asset_id = asset_path.stem.lower()
         metadata = metadata_by_id.get(asset_id)
-        if metadata is None:
+        if require_metadata and metadata is None:
             skipped_without_metadata += 1
             continue
         assets.append((asset_id, asset_path, metadata))
@@ -462,6 +463,25 @@ def _render_hssd_asset_job(job: RenderJob) -> RenderJobResult:
                 width=job.width,
                 height=job.height,
             )
+
+        # Blender can return without raising while a requested output is
+        # missing (for example after a worker or shared-disk interruption).
+        # Do not mark such an asset as complete, otherwise incremental indexing
+        # could replace a previously usable document with another partial one.
+        missing_after_render = [
+            view_name
+            for view_name in job.view_names
+            if not is_usable_image_file(asset_render_dir / f"{view_name}.png")
+        ]
+        if missing_after_render:
+            return RenderJobResult(
+                asset_id=job.asset_id,
+                rendered=False,
+                error=(
+                    "render completed but output view(s) are missing or empty: "
+                    + ", ".join(missing_after_render)
+                ),
+            )
         return RenderJobResult(asset_id=job.asset_id, rendered=True)
     except Exception as exc:
         return RenderJobResult(asset_id=job.asset_id, rendered=False, error=str(exc))
@@ -477,7 +497,8 @@ def render_hssd_assets_if_needed(
     width: int,
     height: int,
     render_workers: int,
-) -> int:
+    require_metadata: bool = True,
+) -> set[str]:
     if hssd_root is None:
         raise ValueError("HSSD root is required for rendering")
     if not render_views:
@@ -486,7 +507,10 @@ def render_hssd_assets_if_needed(
     render_root.mkdir(parents=True, exist_ok=True)
     jobs: list[RenderJob] = []
     for asset_id, asset_path, metadata in list_hssd_glb_assets(
-        hssd_root, metadata_by_id, limit
+        hssd_root,
+        metadata_by_id,
+        limit,
+        require_metadata=require_metadata,
     ):
         needed_views = missing_render_views(
             render_root=render_root,
@@ -512,7 +536,7 @@ def render_hssd_assets_if_needed(
 
     if not jobs:
         LOGGER.info("No missing HSSD render views found")
-        return 0
+        return set()
 
     render_workers = max(1, render_workers)
     LOGGER.info(
@@ -541,11 +565,11 @@ def render_hssd_assets_if_needed(
                 )
             )
 
-    rendered_assets = 0
+    rendered_asset_ids: set[str] = set()
     failed_assets = 0
     for result in results:
         if result.rendered:
-            rendered_assets += 1
+            rendered_asset_ids.add(result.asset_id)
         else:
             failed_assets += 1
             LOGGER.warning(
@@ -556,7 +580,7 @@ def render_hssd_assets_if_needed(
 
     if failed_assets:
         LOGGER.warning("Skipped %d assets due to render failures", failed_assets)
-    return rendered_assets
+    return rendered_asset_ids
 
 
 def build_asset_content(asset: RenderedAsset) -> str:
@@ -982,6 +1006,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="HSSD preprocessed directory for names and WordNet metadata.",
     )
     parser.add_argument(
+        "--allow-missing-metadata",
+        action="store_true",
+        help=(
+            "Also render and index HSSD GLBs absent from the preprocessed "
+            "metadata index. Their name and WordNet fields will be empty."
+        ),
+    )
+    parser.add_argument(
         "--hssd-root",
         type=Path,
         default=Path("data/hssd-models"),
@@ -1044,6 +1076,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--render-overwrite",
         action="store_true",
         help="Re-render requested views even if output PNGs already exist.",
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help=(
+            "Keep the existing Zvec collection and, with --render-first, "
+            "re-embed only assets whose missing views were rendered successfully. "
+            "Existing PNGs are preserved."
+        ),
     )
     parser.add_argument(
         "--render-workers",
@@ -1169,9 +1210,14 @@ def main(argv: list[str] | None = None) -> int:
     include_views = parse_include_views(args.include_views)
     render_views = parse_view_list(args.render_views)
 
+    if args.incremental and not args.render_first:
+        LOGGER.error("--incremental requires --render-first")
+        return 2
+
+    rendered_asset_ids: set[str] | None = None
     if args.render_first:
         try:
-            rendered_assets = render_hssd_assets_if_needed(
+            rendered_asset_ids = render_hssd_assets_if_needed(
                 render_root=args.render_root,
                 hssd_root=hssd_root,
                 metadata_by_id=metadata_by_id,
@@ -1181,13 +1227,14 @@ def main(argv: list[str] | None = None) -> int:
                 width=args.render_width,
                 height=args.render_height,
                 render_workers=args.render_workers,
+                require_metadata=not args.allow_missing_metadata,
             )
         except Exception as exc:
             LOGGER.error("Pre-render stage failed: %s", exc)
             return 2
         LOGGER.info(
             "Pre-render stage completed, rendered %d asset directories",
-            rendered_assets,
+            len(rendered_asset_ids),
         )
 
     if not args.render_root.exists():
@@ -1200,12 +1247,27 @@ def main(argv: list[str] | None = None) -> int:
         groups_by_wordnet=groups_by_wordnet,
         hssd_root=hssd_root,
         include_views=include_views,
-        require_metadata=True,
+        require_metadata=not args.allow_missing_metadata,
     )
     if args.limit is not None:
         assets = assets[: args.limit]
 
+    # In the repair workflow the collection already contains embeddings for
+    # the assets that were indexed before the render job was interrupted.
+    # Only successful repair jobs need a new embedding/upsert. If the
+    # collection does not exist yet, index every discovered asset instead.
+    if args.incremental and args.collection_path.exists():
+        assert rendered_asset_ids is not None
+        assets = [asset for asset in assets if asset.asset_id in rendered_asset_ids]
+        LOGGER.info(
+            "Incremental mode selected %d successfully repaired asset(s) for embedding",
+            len(assets),
+        )
+
     if not assets:
+        if args.incremental and args.collection_path.exists():
+            LOGGER.info("No repaired assets require embedding; collection is unchanged")
+            return 0
         LOGGER.error("No rendered assets found under %s", args.render_root)
         if hssd_root is not None and not args.render_first:
             LOGGER.error(
@@ -1255,7 +1317,9 @@ def main(argv: list[str] | None = None) -> int:
     collection = open_or_create_collection(
         collection_path=args.collection_path,
         schema=schema,
-        recreate=args.recreate,
+        # Incremental repair must never delete the existing collection, even
+        # though historical behavior keeps --recreate enabled by default.
+        recreate=False if args.incremental else args.recreate,
     )
 
     pending_docs: list[zvec.Doc] = []
